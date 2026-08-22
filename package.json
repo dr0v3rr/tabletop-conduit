@@ -1,0 +1,62 @@
+{
+  "name": "tabletop-conduit",
+  "version": "0.2.2",
+  "description": "Conduit — a bridge between your character sheets (D&D Beyond, poke5e, monsters) and your virtual tabletop.",
+  "license": "GPL-3.0-or-later",
+  "type": "module",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "shell:build": "node scripts/build-electron.mjs",
+    "shell": "npm run shell:build && electron .",
+    "pack": "npm run shell:build && electron-builder --dir",
+    "dist": "npm run shell:build && electron-builder",
+    "dist:mac": "npm run shell:build && electron-builder --mac",
+    "dist:win": "npm run shell:build && electron-builder --win"
+  },
+  "build": {
+    "appId": "com.hwest.conduit",
+    "productName": "Conduit",
+    "afterPack": "scripts/afterpack-fuses.mjs",
+    "files": [
+      "dist-electron/**",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.games"
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "executableName": "conduit",
+      "category": "Game"
+    }
+  },
+  "devDependencies": {
+    "@electron/fuses": "^1.8.0",
+    "@types/node": "^22.20.1",
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8",
+    "esbuild": "^0.24.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.4"
+  }
+}

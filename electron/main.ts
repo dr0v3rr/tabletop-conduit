@@ -1,0 +1,1354 @@
+// Electron main. One window with a splash chooser + a left sheet-UI view and two right-hand panes
+// (the VTT — Roll20 — and the character source's site). Character sources: D&D Beyond, poke5e,
+// and Open5e/DDB monsters. The engine runs here in main; the renderer is a thin client over IPC.
+import { app, BaseWindow, BrowserWindow, WebContentsView, ipcMain, dialog, session, clipboard, net, Notification, shell } from "electron";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+import { writeFile, readFile } from "node:fs/promises";
+import { rollFrom, buildCharacter, availableToggles } from "../src/pipeline.js";
+import type { CharacterData, RollRequest } from "../src/pipeline.js";
+import { buildSendExpression } from "../src/roll20/inject.js";
+import { r20TokenExpr } from "../src/roll20/token.js";
+import { ddbSlotsExpr, ddbHitDiceExpr, ddbInventoryExpr, ddbFetchCharExpr } from "../src/ddb/inject.js";
+import { extractReadKey, fetchTrainer, trainerToRollModel, buildInventory, fetchTrainerFeats, updateTrainerHp, updatePokemonHp, updateMovePp } from "../src/poke5e/source.js";
+import { fetchPokemon, fetchMoveset, movesMap, pokemonToCharacter, resolveAbilities, fetchPokemonFeats, pokemonMeta } from "../src/poke5e/pokemon.js";
+import { abilityIds, passiveAbilityEffects } from "../src/poke5e/abilities-engine.js";
+import { searchMonsters, fetchMonster, monsterToCharacter } from "../src/monster/source.js";
+import { searchDdbMonsters, fetchDdbMonster, ddbMonsterToCharacter } from "../src/monster/ddb.js";
+import { roll20LogExpr } from "../src/roll20/log.js";
+import type { RollRecord } from "../src/roll20/log.js";
+import { aggregate, recordsToCSV, statsToCSV } from "../src/stats/roll-stats.js";
+
+/** Accumulated roll history. Deduped by Roll20 message id and PERSISTED to disk, so it survives
+ *  restarts and grows far beyond Roll20's ~100-message chat buffer. */
+const sessionLog = new Map<string, RollRecord>();
+const actionLog: Array<{ at: number; character?: string; name: string; command: string }> = []; // what WE sent
+const campaignNames = new Map<string, string>(); // campaign id -> display name
+
+const storePath = () => join(app.getPath("userData"), "roll-history.json");
+
+async function loadStore() {
+  try {
+    const data = JSON.parse(await readFile(storePath(), "utf8"));
+    for (const r of data.records ?? []) if (r?.id) sessionLog.set(r.id, r);
+    if (Array.isArray(data.actions)) actionLog.push(...data.actions);
+    for (const [id, name] of Object.entries(data.campaigns ?? {})) campaignNames.set(id, String(name));
+  } catch {
+    /* no store yet — first run */
+  }
+}
+
+/** Read the Roll20 pane's current campaign id + name (best-effort). */
+async function readCampaign(): Promise<{ id: string | null; name: string | null }> {
+  try {
+    return await roll20View.webContents.executeJavaScript(
+      `(function(){ try { var id=(typeof window.campaign_id!=='undefined'&&window.campaign_id!=null)?String(window.campaign_id):null; var name=(window.Campaign&&window.Campaign.get&&window.Campaign.get('name'))||null; if(!name&&document.title){name=document.title.replace(/\\s*\\|\\s*Roll20.*$/i,'').trim()||null;} return {id:id,name:name}; } catch(e){ return {id:null,name:null}; } })()`,
+      true,
+    );
+  } catch {
+    return { id: null, name: null };
+  }
+}
+
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+function saveStoreSoon() {
+  if (saveTimer) return;
+  saveTimer = setTimeout(async () => {
+    saveTimer = null;
+    try {
+      await writeFile(storePath(), JSON.stringify({ records: [...sessionLog.values()], actions: actionLog, campaigns: Object.fromEntries(campaignNames) }), "utf8");
+    } catch {
+      /* best-effort */
+    }
+  }, 1500);
+}
+
+/** Merge freshly-scraped records into the persistent store. Returns true if anything changed. */
+function mergeRecords(records: RollRecord[]): boolean {
+  let changed = false;
+  for (const r of records ?? []) {
+    if (!r || !r.id) continue;
+    const prev = sessionLog.get(r.id);
+    // update if new, or if a later scrape filled in a value (e.g. rawD20 once the title rendered)
+    if (!prev || JSON.stringify(prev) !== JSON.stringify(r)) { sessionLog.set(r.id, r); changed = true; }
+  }
+  if (changed) saveStoreSoon();
+  return changed;
+}
+
+/** Background capture: scrape the Roll20 chat on a timer so rolls are stored BEFORE they scroll
+ *  off Roll20's buffer — independent of the renderer's Live-display toggle. */
+async function captureLoop() {
+  try {
+    if (!roll20View) return;
+    const records: RollRecord[] = await roll20View.webContents.executeJavaScript(roll20LogExpr(), true);
+    mergeRecords(records);
+  } catch {
+    /* no game open / transient */
+  }
+}
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const SHEET_W = 400;
+
+let win: BaseWindow;
+let sheetView: WebContentsView;
+let roll20View: WebContentsView;
+let ddbView: WebContentsView;
+let splashView: WebContentsView;
+let rightMode: "roll20" | "ddb" = "roll20";
+let launched = false; // false until the user picks a source + VTT on the splash screen
+let activeSource: "ddb" | "poke5e" | "monster" = "ddb";
+let activeVtt: "roll20" = "roll20";
+
+/** Currently loaded character (raw character-service data). Kept in main for roll resolution. */
+let current: { data: CharacterData; name: string; id: string; model?: import("../src/engine/types.js").RollModel } | null = null;
+// poke5e team context, so switching to a Pokémon doesn't re-fetch the whole trainer.
+let poke5eCtx: { readKey: string; trainerId: string; trainerRow: any; team: Map<number, any>; writeKey: string } | null = null;
+
+// poke5e.app doesn't live-update when we write HP/PP through its API, so the pane shows stale values.
+// After a write settles, reload the poke5e pane (in the background) so it re-fetches the new state.
+// Debounced so a burst of writes triggers a single reload, and only when the pane is on poke5e.app.
+let poke5eRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+function schedulePoke5ePaneRefresh() {
+  if (poke5eRefreshTimer) clearTimeout(poke5eRefreshTimer);
+  poke5eRefreshTimer = setTimeout(() => {
+    poke5eRefreshTimer = null;
+    try {
+      if ((ddbView?.webContents?.getURL?.() || "").includes("poke5e.app")) ddbView.webContents.reload();
+    } catch { /* pane gone / navigating — ignore */ }
+  }, 2500);
+}
+
+function layout() {
+  const [w, h] = win.getContentSize();
+  // Before launch the splash covers the whole window and the panes sit at 0×0 behind it.
+  if (splashView) splashView.setBounds(launched ? { x: 0, y: 0, width: 0, height: 0 } : { x: 0, y: 0, width: w, height: h });
+  if (!launched) {
+    sheetView.setBounds({ x: 0, y: 0, width: 0, height: 0 });
+    roll20View.setBounds({ x: 0, y: 0, width: 0, height: 0 });
+    ddbView.setBounds({ x: 0, y: 0, width: 0, height: 0 });
+    return;
+  }
+  sheetView.setBounds({ x: 0, y: 0, width: SHEET_W, height: h });
+  // BOTH right-pane views get the full right region at all times — the inactive one sits BEHIND
+  // the active one (z-order), so it's invisible but still rendered at desktop width. A 0×0 view
+  // makes D&D Beyond switch to its mobile layout, which breaks the rest/hit-dice controls.
+  const right = { x: SHEET_W, y: 0, width: Math.max(1, w - SHEET_W), height: h };
+  roll20View.setBounds(right);
+  ddbView.setBounds(right);
+}
+
+/** Bring the active right-pane view to the front (Electron z-order = child add order). */
+function raiseRightPane() {
+  const active = rightMode === "ddb" ? ddbView : roll20View;
+  win.contentView.removeChildView(active);
+  win.contentView.addChildView(active);
+  win.contentView.removeChildView(sheetView); // keep the sheet on top
+  win.contentView.addChildView(sheetView);
+}
+
+/** Shared, persistent session for both remote sites. We rewrite incoming Set-Cookie headers so
+ *  that pure session cookies (no Expires/Max-Age) get a long Max-Age — Electron only persists
+ *  cookies with an expiry to disk, so this is what keeps D&D Beyond and Roll20 logged in across
+ *  app restarts. Deletion cookies (which already carry Max-Age/Expires) are left untouched. */
+function setupPersistentSession(): string {
+  const PARTITION = "persist:main";
+  const s = session.fromPartition(PARTITION);
+  const THIRTY_DAYS = 60 * 60 * 24 * 30;
+  s.webRequest.onHeadersReceived((details, cb) => {
+    const headers = details.responseHeaders ?? {};
+    const key = Object.keys(headers).find((k) => k.toLowerCase() === "set-cookie");
+    if (key) {
+      headers[key] = (headers[key] as string[]).map((c) =>
+        /expires=|max-age=/i.test(c) ? c : `${c}; Max-Age=${THIRTY_DAYS}`,
+      );
+    }
+    cb({ responseHeaders: headers });
+  });
+
+  // Google (and some others) refuse OAuth in browsers they flag as embedded. Beyond the UA
+  // string, the real tell is User-Agent Client Hints (Sec-CH-UA), which Electron stamps with an
+  // "Electron" brand. Rewrite those for Google's auth hosts so the in-app sign-in popup presents
+  // as stock Chrome. Scoped to accounts.google.com so nothing else is affected.
+  const cleanUa = chromeUA(app.userAgentFallback || "");
+  const major = (cleanUa.match(/Chrome\/(\d+)/) || [])[1] || "130";
+  const fullVer = (cleanUa.match(/Chrome\/([\d.]+)/) || [])[1] || "130.0.0.0";
+  const chShort = `"Chromium";v="${major}", "Google Chrome";v="${major}", "Not?A_Brand";v="99"`;
+  const chFull = `"Chromium";v="${fullVer}", "Google Chrome";v="${fullVer}", "Not?A_Brand";v="99.0.0.0"`;
+  s.webRequest.onBeforeSendHeaders(
+    { urls: ["*://accounts.google.com/*", "*://accounts.youtube.com/*"] },
+    (details, cb) => {
+      const h = details.requestHeaders;
+      if (cleanUa) h["User-Agent"] = cleanUa;
+      for (const k of Object.keys(h)) {
+        const lk = k.toLowerCase();
+        if (lk === "sec-ch-ua") h[k] = chShort;
+        else if (lk === "sec-ch-ua-full-version-list") h[k] = chFull;
+      }
+      cb({ requestHeaders: h });
+    },
+  );
+  return PARTITION;
+}
+
+/** Navigation hardening for a view: never spawn in-app popups (route real links to the OS
+ *  browser), and block navigations to dangerous schemes (javascript:/data:/file:). The local
+ *  sheet view is additionally locked to file:// so it can never be navigated away from. */
+// Identity-provider hosts whose sign-in popups must stay INSIDE the app (same session) so the
+// auth cookie lands in our persistent session — not the system browser. Also covers the sites'
+// own auth popups (dndbeyond.com / roll20.net).
+function isAuthPopup(url: string): boolean {
+  try {
+    const h = new URL(url).host.toLowerCase();
+    return (
+      /(^|\.)accounts\.google\.com$/.test(h) ||
+      /(^|\.)appleid\.apple\.com$/.test(h) ||
+      /(^|\.)login\.(microsoftonline|live)\.com$/.test(h) ||
+      /(^|\.)(facebook|discord|twitch|amazon|apple)\.com$/.test(h) ||
+      /(^|\.)twitch\.tv$/.test(h) ||
+      /(^|\.)dndbeyond\.com$/.test(h) ||
+      /(^|\.)roll20\.net$/.test(h)
+    );
+  } catch {
+    return false;
+  }
+}
+
+// Strip the "AppName/x.y.z" and "Electron/x.y.z" tokens so the UA reads as stock Chrome — Google
+// (and others) block OAuth in browsers they flag as embedded/insecure, and the Electron token is
+// the tell. Leaves the correct per-platform Chrome UA otherwise.
+function chromeUA(ua: string): string {
+  const appToken = new RegExp(" " + app.getName().replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\/[\\d.]+", "i");
+  return ua.replace(appToken, "").replace(/ Electron\/[\d.]+/i, "").replace(/\s{2,}/g, " ").trim();
+}
+
+function isGoogleAuth(url: string): boolean {
+  try { return /(^|\.)accounts\.google\.com$/.test(new URL(url).host.toLowerCase()); } catch { return false; }
+}
+
+// Google blocks OAuth inside desktop apps (and defeats UA/client-hint spoofing), so we never let
+// the user reach its dead-end "browser may not be secure" page. Instead, steer them to a login
+// method that works in-app — email/password or Twitch. One-time; the session then persists.
+async function guideToEmailLogin(spawningView: WebContentsView) {
+  const toRoll20 = spawningView === roll20View;
+  const site = toRoll20 ? "Roll20" : "D&D Beyond";
+  const loginUrl = toRoll20 ? "https://app.roll20.net/sessions/new" : "https://www.dndbeyond.com/login";
+  const { response } = await dialog.showMessageBox(win, {
+    type: "info",
+    title: "Google sign-in isn’t supported in apps",
+    message: "Google blocks “Sign in with Google” inside desktop apps.",
+    detail: `This is Google’s policy for every desktop app, not a bug here. Sign in to ${site} with email & password (or Twitch) instead — those work inside the app, and it’s a one-time thing. Open the ${site} email login now?`,
+    buttons: ["Open email login", "Cancel"],
+    defaultId: 0,
+    cancelId: 1,
+  });
+  if (response === 0) spawningView.webContents.loadURL(loginUrl);
+}
+
+// Open an OAuth/sign-in popup as an in-app child window sharing the persistent session, so the
+// resulting cookies are visible to the D&D Beyond / Roll20 panes. Closes itself once the flow
+// returns to the originating site, then reloads that pane to reflect the new signed-in state.
+function openAuthPopup(url: string, spawningView: WebContentsView) {
+  // A Google target is doomed — skip the popup entirely and guide to a login method that works.
+  if (isGoogleAuth(url)) { void guideToEmailLogin(spawningView); return; }
+  const popup = new BrowserWindow({
+    width: 520,
+    height: 700,
+    parent: win,
+    title: "Sign in",
+    autoHideMenuBar: true,
+    // contextIsolation OFF (this popup only) so oauth-preload can patch navigator.userAgentData in
+    // the page's own world — the last client-side "embedded browser" tell Google checks. The popup
+    // loads only trusted identity providers and exposes no IPC, so it can't reach our app internals.
+    webPreferences: {
+      partition: "persist:main",
+      preload: join(__dirname, "oauth-preload.cjs"),
+      sandbox: false,
+      contextIsolation: false,
+      nodeIntegration: false,
+    },
+  });
+  const ua = chromeUA(popup.webContents.getUserAgent());
+  popup.webContents.setUserAgent(ua);
+  let sawExternal = false;
+  let guided = false;
+  let closeTimer: ReturnType<typeof setTimeout> | null = null;
+  const onNav = (u: string) => {
+    // The instant the flow touches Google (directly, or via a D&D Beyond → Google redirect), bail
+    // out and guide to email login — before the block page ever renders.
+    if (!guided && isGoogleAuth(u)) {
+      guided = true;
+      if (!popup.isDestroyed()) popup.close();
+      void guideToEmailLogin(spawningView);
+      return;
+    }
+    let h = "";
+    try { h = new URL(u).host.toLowerCase(); } catch { return; }
+    const home = /(^|\.)dndbeyond\.com$/.test(h) || /(^|\.)roll20\.net$/.test(h);
+    if (!home) {
+      sawExternal = true; // at the identity provider — keep the popup open
+      if (closeTimer) { clearTimeout(closeTimer); closeTimer = null; }
+    } else if (sawExternal) {
+      // Back on the app's own site: let the OAuth callback finish writing cookies, then close.
+      if (closeTimer) clearTimeout(closeTimer);
+      closeTimer = setTimeout(() => { if (!popup.isDestroyed()) popup.close(); }, 1500);
+    }
+  };
+  popup.webContents.on("will-redirect", (_e, u) => onNav(u));
+  popup.webContents.on("will-navigate", (_e, u) => onNav(u));
+  popup.webContents.on("did-navigate", (_e, u) => onNav(u));
+  // Nested popups (rare) reuse the same in-app treatment.
+  popup.webContents.setWindowOpenHandler(({ url: u }) => {
+    if (isAuthPopup(u)) openAuthPopup(u, spawningView);
+    else shell.openExternal(u).catch(() => {});
+    return { action: "deny" };
+  });
+  popup.on("closed", () => { if (!guided) spawningView.webContents.reload(); }); // pick up the new session
+  popup.loadURL(url, { userAgent: ua });
+}
+
+function hardenView(view: WebContentsView, opts: { externalLinks?: boolean; lockToFile?: boolean }) {
+  const wc = view.webContents;
+  wc.setWindowOpenHandler(({ url }) => {
+    // Sign-in popups stay in-app (shared session); other links open in the system browser.
+    if (!opts.lockToFile && isAuthPopup(url)) { openAuthPopup(url, view); return { action: "deny" }; }
+    if (opts.externalLinks && /^https?:\/\//i.test(url)) shell.openExternal(url).catch(() => {});
+    return { action: "deny" };
+  });
+  wc.on("will-navigate", (e, url) => {
+    if (opts.lockToFile) { if (!url.startsWith("file://")) e.preventDefault(); return; }
+    let proto = "";
+    try { proto = new URL(url).protocol; } catch { e.preventDefault(); return; }
+    if (proto !== "http:" && proto !== "https:") e.preventDefault(); // block javascript:/data:/file:/...
+  });
+}
+
+function createWindow() {
+  win = new BaseWindow({ width: 1500, height: 950, title: "D&D Beyond ↔ Roll20" });
+
+  const partition = setupPersistentSession();
+  // Remote panes: explicit hardening (don't rely on Electron defaults) — sandboxed, isolated,
+  // no Node, web security on, and NO preload, so a compromised remote page can't reach our IPC.
+  const remotePrefs = { partition, sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true };
+  roll20View = new WebContentsView({ webPreferences: remotePrefs });
+  ddbView = new WebContentsView({ webPreferences: remotePrefs });
+  sheetView = new WebContentsView({
+    webPreferences: {
+      preload: join(__dirname, "preload.cjs"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true, // the preload uses only contextBridge/ipcRenderer, which work sandboxed
+    },
+  });
+  hardenView(roll20View, { externalLinks: true });
+  hardenView(ddbView, { externalLinks: true });
+  hardenView(sheetView, { externalLinks: true, lockToFile: true });
+
+  // The inactive pane is sized 0×0 (see layout()); Chromium would otherwise throttle its
+  // timers/React re-render when hidden, making slot write-backs to the background DDB pane
+  // flaky. Keep both live panes running at full speed.
+  roll20View.webContents.setBackgroundThrottling(false);
+  ddbView.webContents.setBackgroundThrottling(false);
+
+  // Splash: a full-window chooser (character source | VTT) shown before the panes.
+  splashView = new WebContentsView({
+    webPreferences: { preload: join(__dirname, "preload.cjs"), contextIsolation: true, nodeIntegration: false, sandbox: true },
+  });
+  hardenView(splashView, { externalLinks: true, lockToFile: true });
+
+  win.contentView.addChildView(ddbView); // bottom of the right stack
+  win.contentView.addChildView(roll20View); // active by default (rightMode = 'roll20')
+  win.contentView.addChildView(sheetView); // left pane
+  win.contentView.addChildView(splashView); // on top until the user launches
+  layout();
+  win.on("resize", layout);
+
+  // The VTT can warm up behind the splash; the character-source pane and the sheet UI load at
+  // launch (they depend on whether you picked D&D Beyond or poke5e).
+  roll20View.webContents.loadURL("https://app.roll20.net/");
+  splashView.webContents.loadFile(join(__dirname, "splash.html"));
+
+  // Continuously capture rolls into the persistent store so nothing is lost past Roll20's buffer.
+  setInterval(captureLoop, 25000);
+}
+
+/** The splash's "Enter the table" button: record the chosen source/VTT, load the source pane,
+ *  then reveal the three-pane layout. */
+ipcMain.handle("launch-app", (_e, config: { source: string; vtt: string }) => {
+  activeSource = config?.source === "poke5e" ? "poke5e" : config?.source === "monster" ? "monster" : "ddb";
+  // (Roll20 is the only VTT for now; activeVtt stays "roll20".)
+  const paneUrl =
+    activeSource === "poke5e" ? "https://poke5e.app/" : activeSource === "monster" ? "https://open5e.com/" : "https://www.dndbeyond.com/";
+  ddbView.webContents.loadURL(paneUrl);
+  // Load the sheet UI now that the source is known, so its init reads the right config.
+  sheetView.webContents.loadFile(join(__dirname, "sheet.html"));
+  launched = true;
+  win.contentView.removeChildView(splashView); // reveal the panes
+  layout();
+  raiseRightPane();
+  return { ok: true };
+});
+
+/** Let the sheet renderer learn which source/VTT the user chose on the splash. */
+ipcMain.handle("get-config", () => ({ source: activeSource, vtt: activeVtt }));
+
+/** Return to the splash to pick a different character source / VTT. */
+ipcMain.handle("show-splash", () => {
+  launched = false;
+  win.contentView.addChildView(splashView); // back on top of the panes
+  splashView.webContents.reload(); // fresh selection
+  layout();
+  return { ok: true };
+});
+
+/** Monster/NPC search + load via the free Open5e API (read-only; HP tracked locally). */
+ipcMain.handle("search-monsters", async (_e, query: string) => {
+  try {
+    return { ok: true, results: await searchMonsters(query) };
+  } catch (err) {
+    return { ok: false, error: String(err), results: [] };
+  }
+});
+/** D&D Beyond monster search + load (your owned Monster Manual etc.; SRD when not signed in). */
+ipcMain.handle("search-ddb-monsters", async (_e, query: string) => {
+  try {
+    const token = await mintDdbToken();
+    return { ok: true, results: await searchDdbMonsters(token, query) };
+  } catch (err) {
+    return { ok: false, error: String(err), results: [] };
+  }
+});
+ipcMain.handle("load-ddb-monster", async (_e, id: string) => {
+  try {
+    const token = await mintDdbToken();
+    const m = await fetchDdbMonster(token, id);
+    if (!m) return { ok: false, error: "Monster not found" };
+    const { model, hp, weapons, ac } = ddbMonsterToCharacter(m);
+    current = { data: {} as CharacterData, name: model.name, id, model };
+    return {
+      ok: true, model, hp, weapons, spellcasting: null, spellSlots: [], hitDice: null,
+      inventory: [], conditions: [], defenses: { resist: [], immune: [], vulnerable: [] }, writable: false, ac,
+    };
+  } catch (err) {
+    return { ok: false, error: "Couldn't reach D&D Beyond monsters: " + String(err) };
+  }
+});
+
+ipcMain.handle("load-monster", async (_e, slug: string) => {
+  try {
+    const m = await fetchMonster(slug);
+    if (!m) return { ok: false, error: "Monster not found" };
+    const { model, hp, weapons } = monsterToCharacter(m);
+    current = { data: {} as CharacterData, name: model.name, id: slug, model };
+    return {
+      ok: true,
+      model,
+      hp,
+      weapons,
+      spellcasting: null,
+      spellSlots: [],
+      hitDice: null,
+      inventory: [],
+      conditions: [],
+      defenses: { resist: [], immune: [], vulnerable: [] },
+      writable: false, // monsters never write back — HP is a local session value
+      ac: typeof (m as any).armor_class === "number" ? (m as any).armor_class : undefined,
+    };
+  } catch (err) {
+    return { ok: false, error: "Couldn't reach Open5e: " + String(err) };
+  }
+});
+
+/** Load a poke5e trainer from a pasted share link or read key. Read-only; no auth needed. */
+/** Auto-discover the user's poke5e trainers from the poke5e pane's own localStorage (the site
+ *  keeps a comma-separated list of read keys under "trainers"), so they get a picker instead of
+ *  pasting a link — like the D&D Beyond character list. */
+ipcMain.handle("list-poke5e-trainers", async (_e, extraKeys: string[] = []) => {
+  try {
+    const raw: string = await ddbView.webContents
+      .executeJavaScript(`(function(){try{return localStorage.getItem("trainers")||"";}catch(e){return "";}})()`, true)
+      .catch(() => "");
+    // Union of poke5e's own local list and any keys the app itself has remembered.
+    const keys = [...new Set([...String(raw).split(","), ...(extraKeys ?? [])].map((s) => s.trim()).filter(Boolean))];
+    if (!keys.length) return { ok: true, trainers: [] as any[] };
+    const trainers: { readKey: string; name: string; level: number }[] = [];
+    for (const key of keys.slice(0, 40)) {
+      const row = await fetchTrainer(key).catch(() => null);
+      if (row) trainers.push({ readKey: key, name: row.name || "Trainer", level: Number(row.level) || 0 });
+    }
+    return { ok: true, trainers };
+  } catch (err) {
+    return { ok: false, trainers: [], error: String(err) };
+  }
+});
+
+/** GM view: every remembered trainer WITH its team and write-access, for the grouped roster
+ *  switcher. poke5e has no campaign concept, so "the GM's party" is just the union of trainers the
+ *  user has loaded/opened (poke5e's own list + the app's remembered keys). */
+ipcMain.handle("poke5e-gm-roster", async (_e, extraKeys: string[] = []) => {
+  try {
+    const raw: string = await ddbView.webContents
+      .executeJavaScript(`(function(){try{return localStorage.getItem("trainers")||"";}catch(e){return "";}})()`, true)
+      .catch(() => "");
+    const keys = [...new Set([...String(raw).split(","), ...(extraKeys ?? [])].map((s) => s.trim()).filter(Boolean))].slice(0, 40);
+    const trainers: any[] = [];
+    for (const key of keys) {
+      const row = await fetchTrainer(key).catch(() => null);
+      if (!row) continue;
+      const [team, wk] = await Promise.all([
+        fetchPokemon((row as any).id).catch(() => []),
+        ddbView.webContents
+          .executeJavaScript(`(function(){try{return localStorage.getItem("write:"+${JSON.stringify(key)})||"";}catch(e){return "";}})()`, true)
+          .catch(() => ""),
+      ]);
+      trainers.push({
+        readKey: key,
+        name: (row as any).name || "Trainer",
+        writable: !!wk,
+        team: (Array.isArray(team) ? team : []).map((p: any) => ({
+          id: p.id,
+          name: (p.nickname && String(p.nickname).trim()) || p.species || "Pokémon",
+        })),
+      });
+    }
+    return { ok: true, trainers };
+  } catch (err) {
+    return { ok: false, trainers: [], error: String(err) };
+  }
+});
+
+/** Write HP back to poke5e (trainer or the active Pokémon) via a full-row upsert with the write key. */
+ipcMain.handle("poke5e-set-hp", async (_e, curHp: number, maxHp: number) => {
+  if (!poke5eCtx?.writeKey || !current) return { ok: false, error: "This trainer is read-only (no write key)" };
+  try {
+    if (String(current.id).startsWith("pmon:")) {
+      const pid = Number(String(current.id).slice(5));
+      const pk = poke5eCtx.team.get(pid);
+      if (!pk) return { ok: false, error: "Pokémon not loaded" };
+      const ok = await updatePokemonHp(poke5eCtx.writeKey, pk, curHp, maxHp);
+      if (ok) { pk.hp_cur = curHp; pk.hp_max = maxHp; schedulePoke5ePaneRefresh(); }
+      return ok ? { ok: true } : { ok: false, error: "poke5e rejected the write (check your write key)" };
+    }
+    const ok = await updateTrainerHp(poke5eCtx.writeKey, poke5eCtx.trainerRow, curHp, maxHp);
+    if (ok) { poke5eCtx.trainerRow.hp_cur = curHp; poke5eCtx.trainerRow.hp_max = maxHp; schedulePoke5ePaneRefresh(); }
+    return ok ? { ok: true } : { ok: false, error: "poke5e rejected the write (check your write key)" };
+  } catch (err) {
+    return { ok: false, error: "Couldn't reach poke5e: " + String(err) };
+  }
+});
+
+/** Write a Pokémon move's remaining PP back to poke5e (targeted update_move; needs write key). */
+ipcMain.handle("poke5e-set-pp", async (_e, learnedId: number, moveId: string, ppCur: number, ppMax: number, notes?: string) => {
+  if (!poke5eCtx?.writeKey) return { ok: false, error: "read-only" };
+  try {
+    // Pass the move's existing notes through — update_move upserts notes too, so omitting them would blank the field.
+    const ok = await updateMovePp(poke5eCtx.writeKey, learnedId, moveId, ppCur, ppMax, notes ?? "");
+    if (ok) schedulePoke5ePaneRefresh();
+    return ok ? { ok: true } : { ok: false, error: "poke5e rejected the PP write" };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+});
+
+/** Surface the loaded trainer's own poke5e keys so the user can back them up (the write key is a
+ *  secret only cached in the poke5e pane's localStorage; there's no way to regenerate it if lost). */
+ipcMain.handle("poke5e-keys", async () => {
+  if (!poke5eCtx) return { ok: false, error: "Load a trainer first" };
+  return {
+    ok: true,
+    name: poke5eCtx.trainerRow?.name || "Trainer",
+    readKey: poke5eCtx.readKey,
+    writeKey: poke5eCtx.writeKey || "", // empty = trainer was loaded read-only (no write key cached)
+  };
+});
+
+/** Load one of the trainer's Pokémon (from the cached team) with its moves as rollable "spells". */
+ipcMain.handle("load-poke5e-pokemon", async (_e, pokemonId: number) => {
+  if (!poke5eCtx) return { ok: false, error: "Load your trainer first" };
+  const pk = poke5eCtx.team.get(Number(pokemonId));
+  if (!pk) return { ok: false, error: "Pokémon not found on this trainer" };
+  try {
+    const [moveset, moves, abilities, pfeats] = await Promise.all([
+      fetchMoveset(Number(pokemonId)),
+      movesMap(),
+      resolveAbilities(pk),
+      fetchPokemonFeats(Number(pokemonId)),
+    ]);
+    const featNames = (Array.isArray(pfeats) ? pfeats : []).map((f: any) => f.name).filter(Boolean);
+    const { model, hp, spellcasting } = pokemonToCharacter(pk, moveset, moves, featNames);
+    current = { data: {} as CharacterData, name: model.name, id: `pmon:${pokemonId}`, model };
+    // A Pokémon's "feats" section = its passive abilities (Blaze, …) plus any Pokémon feats.
+    const feats = [...abilities, ...pfeats];
+    // Pokémon-wide passives (resist/immunity/AC/form/…) surfaced as live, condition-lit reminders.
+    const passives = passiveAbilityEffects(abilityIds(pk));
+    return {
+      ok: true, model, hp, weapons: [], spellcasting, spellSlots: [], hitDice: null,
+      inventory: [], conditions: [], defenses: { resist: [], immune: [], vulnerable: [] }, writable: !!poke5eCtx.writeKey,
+      ac: typeof pk.ac === "number" ? pk.ac : undefined,
+      feats, passives,
+      poke: pokemonMeta(pk),
+    };
+  } catch (err) {
+    return { ok: false, error: "Couldn't load Pokémon: " + String(err) };
+  }
+});
+
+ipcMain.handle("load-poke5e", async (_e, input: string) => {
+  const key = extractReadKey(input);
+  if (!key) return { ok: false, error: "Paste your poke5e share link or read key" };
+  try {
+    const row = await fetchTrainer(key);
+    if (!row) return { ok: false, error: "No trainer found for that link/key — check it and try again" };
+    const { model, hp } = trainerToRollModel(row);
+    current = { data: {} as CharacterData, name: model.name, id: key, model };
+    const [inventory, feats, team] = await Promise.all([
+      buildInventory(key).catch(() => []),
+      fetchTrainerFeats(key).catch(() => []),
+      fetchPokemon((row as any).id).catch(() => []),
+    ]);
+    // The write key poke5e stores locally ("write:<readKey>") — presence = we can save back.
+    const writeKey: string = await ddbView.webContents
+      .executeJavaScript(`(function(){try{return localStorage.getItem("write:"+${JSON.stringify(key)})||"";}catch(e){return "";}})()`, true)
+      .catch(() => "");
+    // Cache the team + trainer row so switching / write-back doesn't re-fetch the whole trainer.
+    poke5eCtx = { readKey: key, trainerId: (row as any).id, trainerRow: row, team: new Map(team.map((p: any) => [p.id, p])), writeKey };
+    // Roster: the Trainer plus each Pokémon, as switchable chips (like GM-mode).
+    const roster = [
+      { ref: key, name: model.name, mine: true },
+      ...team.map((p: any) => ({ ref: `pmon:${p.id}`, name: (p.nickname && String(p.nickname).trim()) || p.species || "Pokémon", mine: true })),
+    ];
+    return {
+      ok: true,
+      model,
+      hp,
+      weapons: [],
+      spellcasting: null,
+      spellSlots: [],
+      hitDice: null,
+      inventory,
+      conditions: [],
+      defenses: { resist: [], immune: [], vulnerable: [] },
+      writable: !!writeKey, // read/write if we hold this trainer's write key, else read-only
+      ac: typeof (row as any).ac === "number" ? (row as any).ac : undefined,
+      readKey: key, // resolved key, so the app can remember it for the auto-load picker
+      feats,
+      roster,
+    };
+  } catch (err) {
+    return { ok: false, error: "Couldn't reach poke5e: " + String(err) };
+  }
+});
+
+// ---- IPC: character loading + rolling --------------------------------------
+
+ipcMain.handle("load-character", async (_e, id: string) => {
+  try {
+    const cleanId = String(id).trim().match(/\d+/)?.[0];
+    if (!cleanId) return { ok: false, error: "Enter a numeric character ID" };
+
+    let data: CharacterData | null = null;
+    // Prefer the authenticated DDB pane — this works for PRIVATE characters too (the plain,
+    // unauthenticated endpoint 403s on private sheets even for the owner).
+    try {
+      const authed: any = await ddbView.webContents.executeJavaScript(ddbFetchCharExpr(cleanId), true);
+      if (authed?.ok && authed.data) data = authed.data as CharacterData;
+    } catch { /* DDB pane not ready — fall back below */ }
+    // Fallback: the public unauthenticated endpoint (public characters, or DDB not signed in).
+    if (!data) {
+      const res = await fetch(`https://character-service.dndbeyond.com/character/v5/character/${cleanId}`);
+      if (res.ok) {
+        const json: any = await res.json();
+        if (json?.success && json?.data) data = json.data as CharacterData;
+      }
+    }
+    if (!data) {
+      return { ok: false, error: "Couldn't load this character. If it's private, open the D&D Beyond pane and make sure you're signed in, then try again." };
+    }
+    // Point the embedded DDB sheet at this character so slot writes hit the right sheet.
+    ddbView.webContents.loadURL(`https://www.dndbeyond.com/characters/${cleanId}`);
+    const character = buildCharacter(data);
+    current = { data, name: data.name, id: cleanId, model: character.model };
+    // Writable only if the signed-in user OWNS this character; a public/other's sheet loads
+    // read-only (play with it, track HP locally, but never write back).
+    const uid = await ddbUserId();
+    const ownerId = (data as any).userId;
+    const writable = !!uid && ownerId != null && String(ownerId) === uid;
+    // The character sheet carries its whole campaign roster — expose it for GM-mode's switcher.
+    const camp = (data as any).campaign;
+    const campaign = camp
+      ? {
+          id: camp.id,
+          name: camp.name,
+          dmUserId: camp.dmUserId,
+          characters: (camp.characters ?? []).map((c: any) => ({
+            characterId: c.characterId,
+            characterName: c.characterName,
+            avatarUrl: c.avatarUrl,
+            userId: c.userId,
+            privacyType: c.privacyType,
+          })),
+        }
+      : null;
+    return { ok: true, model: character.model, weapons: character.weapons, spellcasting: character.spellcasting, spellSlots: character.spellSlots, hitDice: character.hitDice, inventory: character.inventory, hp: character.hp, conditions: character.conditions, defenses: character.defenses, writable, campaign, userId: uid };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+});
+
+ipcMain.handle("list-toggles", async (_e, request: RollRequest) => {
+  if (!current || !(current.data as { stats?: unknown }).stats) return []; // non-DDB sources have no rule toggles
+  return availableToggles(current.data, request).map((r) => ({ id: r.id, name: r.name }));
+});
+
+ipcMain.handle("roll", async (_e, request: RollRequest, enabledToggleIds: string[]) => {
+  if (!current) return { ok: false, error: "No character loaded" };
+  const { command, request: merged } = rollFrom(current.data, request, enabledToggleIds ?? [], current.model);
+  const expr = buildSendExpression(command, merged.speakingAs);
+  let injected: any;
+  try {
+    injected = await roll20View.webContents.executeJavaScript(expr, true);
+  } catch (err) {
+    injected = { ok: false, error: String(err) };
+  }
+  // Only record the action once it actually reached Roll20 — don't log rolls that never sent.
+  if (injected?.ok) {
+    actionLog.push({ at: Date.now(), character: merged.speakingAs, name: request.key ?? request.kind, command });
+    saveStoreSoon();
+  }
+  return { ok: injected?.ok === true, command, injected };
+});
+
+// ---- IPC: D&D Beyond slot sync (drives the real sheet, writes back to DDB) --------------
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function ddbExec(method: "ensureSpellsTab" | "read" | "spend" | "restore" | "restoreAll" | "loggedIn", arg?: number) {
+  return ddbView.webContents.executeJavaScript(ddbSlotsExpr(method, arg), true);
+}
+
+/** Ensure the DDB Spells tab is rendered (its slot managers exist), retrying briefly. */
+async function ensureSlots(): Promise<boolean> {
+  for (let i = 0; i < 8; i++) {
+    const ready = await ddbExec("ensureSpellsTab").catch(() => false);
+    if (ready) return true;
+    await sleep(500);
+  }
+  return false;
+}
+
+/** Read the current used-slot count for a level (or 0 if that level isn't present). */
+function usedAt(slots: any[], level: number): number {
+  const s = (slots || []).find((x: any) => x.level === level);
+  return s ? s.used : 0;
+}
+
+/** Poll read() up to `tries`×`waitMs` until `done(slots)` holds, then return the last read.
+ *  A background DDB pane can lag its React re-render, so we can't trust a single fixed sleep. */
+async function pollRead(done: (slots: any[]) => boolean, tries = 5, waitMs = 400): Promise<any[]> {
+  let slots = await ddbExec("read").catch(() => []);
+  for (let i = 0; i < tries && !done(slots); i++) {
+    await sleep(waitMs);
+    slots = await ddbExec("read").catch(() => []);
+  }
+  return slots;
+}
+
+// ---- Authenticated D&D Beyond requests from the MAIN process ---------------------------------
+// Uses net.request with the shared session's cookies + the short-lived cobalt→JWT. This is
+// decoupled from the ddbView page state, so it never breaks when that pane reloads/navigates
+// (unlike executeJavaScript-in-the-pane writes) and it works for PRIVATE characters too.
+
+/** The signed-in D&D Beyond user id (from the cobalt→JWT's nameidentifier claim), or null. */
+async function ddbUserId(): Promise<string | null> {
+  const token = await mintDdbToken();
+  if (!token) return null;
+  try {
+    const p = JSON.parse(Buffer.from(token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"));
+    const uid = p["http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier"] || p.sub;
+    return uid ? String(uid) : null;
+  } catch {
+    return null;
+  }
+}
+
+function mintDdbToken(): Promise<string | null> {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (t: string | null) => { if (!done) { done = true; resolve(t); } };
+    try {
+      const req = net.request({ method: "POST", url: "https://auth-service.dndbeyond.com/v1/cobalt-token", session: session.fromPartition("persist:main"), useSessionCookies: true });
+      let body = "";
+      req.on("response", (r) => { r.on("data", (c) => (body += c.toString())); r.on("end", () => { try { finish(JSON.parse(body).token || null); } catch { finish(null); } }); });
+      req.on("error", () => finish(null));
+      setTimeout(() => finish(null), 6000);
+      req.end();
+    } catch { finish(null); }
+  });
+}
+
+function ddbApiRequest(method: string, url: string, token: string, body?: unknown): Promise<{ ok: boolean; status: number; json: any; error?: string }> {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (v: { ok: boolean; status: number; json: any; error?: string }) => { if (!done) { done = true; resolve(v); } };
+    try {
+      const req = net.request({ method, url, session: session.fromPartition("persist:main"), useSessionCookies: true });
+      req.setHeader("Authorization", "Bearer " + token);
+      if (body !== undefined) req.setHeader("Content-Type", "application/json");
+      let buf = "";
+      req.on("response", (r) => {
+        r.on("data", (c) => (buf += c.toString()));
+        r.on("end", () => { let j: any = null; try { j = JSON.parse(buf); } catch { /* non-JSON */ } finish({ ok: r.statusCode! >= 200 && r.statusCode! < 300 && (j?.success ?? true), status: r.statusCode!, json: j }); });
+      });
+      req.on("error", (e) => finish({ ok: false, status: 0, json: null, error: String(e) }));
+      setTimeout(() => finish({ ok: false, status: 0, json: null, error: "timeout" }), 8000);
+      if (body !== undefined) req.write(JSON.stringify(body));
+      req.end();
+    } catch (e) { finish({ ok: false, status: 0, json: null, error: String(e) }); }
+  });
+}
+
+ipcMain.handle("set-right-pane", (_e, mode: "roll20" | "ddb") => {
+  rightMode = mode === "ddb" ? "ddb" : "roll20";
+  layout();
+  raiseRightPane();
+  return { mode: rightMode };
+});
+
+ipcMain.handle("ddb-status", async () => {
+  const loggedIn = await ddbExec("loggedIn").catch(() => false);
+  return { loggedIn: !!loggedIn };
+});
+
+/** Reliable "signed in to D&D Beyond?" check. Runs in the MAIN process against the shared
+ *  session's cookies (net.request + useSessionCookies), so it does NOT depend on the DDB pane
+ *  having finished navigating/rendering — a slow character load can't make it miss or hang. */
+ipcMain.handle("ddb-auth", async () => {
+  return new Promise<{ authed: boolean }>((resolve) => {
+    let done = false;
+    const finish = (authed: boolean) => { if (!done) { done = true; resolve({ authed }); } };
+    try {
+      const req = net.request({
+        method: "POST",
+        url: "https://auth-service.dndbeyond.com/v1/cobalt-token",
+        session: session.fromPartition("persist:main"),
+        useSessionCookies: true,
+      });
+      let body = "";
+      req.on("response", (r) => {
+        r.on("data", (c) => (body += c.toString()));
+        r.on("end", () => {
+          try { finish(r.statusCode === 200 && !!JSON.parse(body).token); }
+          catch { finish(r.statusCode === 200); }
+        });
+      });
+      req.on("error", () => finish(false));
+      setTimeout(() => finish(false), 6000); // never hang the chip
+      req.end();
+    } catch {
+      finish(false);
+    }
+  });
+});
+
+ipcMain.handle("ddb-sync", async () => {
+  const ok = await ensureSlots();
+  if (!ok) return { ok: false, slots: [] };
+  const slots = await ddbExec("read").catch(() => []);
+  return { ok: true, slots };
+});
+
+// Gentle read-only poll — does NOT click tabs; returns [] if the spell managers aren't
+// currently rendered (e.g. user navigated the DDB pane elsewhere), so it never disrupts.
+ipcMain.handle("ddb-peek", async () => {
+  const slots = await ddbExec("read").catch(() => []);
+  return { slots };
+});
+
+ipcMain.handle("ddb-spend", async (_e, level: number) => {
+  if (!(await ensureSlots())) return { ok: false, error: "DDB sheet not ready — open the D&D Beyond pane and sign in" };
+  const before = await ddbExec("read").catch(() => []);
+  const prevUsed = usedAt(before, level);
+  const res = await ddbExec("spend", level).catch((e) => ({ ok: false, error: String(e) }));
+  // Only wait for a change when we actually clicked a slot; otherwise a single read is enough.
+  const slots = res && (res as any).ok
+    ? await pollRead((s) => usedAt(s, level) > prevUsed)
+    : await ddbExec("read").catch(() => []);
+  return { ...res, slots };
+});
+
+ipcMain.handle("ddb-restore", async (_e, level: number) => {
+  if (!(await ensureSlots())) return { ok: false, error: "DDB sheet not ready" };
+  const before = await ddbExec("read").catch(() => []);
+  const prevUsed = usedAt(before, level);
+  const res = await ddbExec("restore", level).catch((e) => ({ ok: false, error: String(e) }));
+  const slots = res && (res as any).ok
+    ? await pollRead((s) => usedAt(s, level) < prevUsed)
+    : await ddbExec("read").catch(() => []);
+  return { ...res, slots };
+});
+
+ipcMain.handle("ddb-restore-all", async () => {
+  if (!(await ensureSlots())) return { ok: false, slots: [] };
+  await ddbExec("restoreAll").catch(() => ({}));
+  // Restore-all clears every used slot; wait until the re-render shows them all free.
+  const slots = await pollRead((s) => (s || []).every((x: any) => x.used === 0));
+  return { ok: true, slots };
+});
+
+// ---- IPC: D&D Beyond hit-dice / short rest (Short Rest sidebar; stage -> commit) ----------
+
+async function ddbHd(method: "open" | "isOpen" | "read" | "stage" | "commit" | "reset" | "loggedIn", a1?: number | null, a2?: number) {
+  return ddbView.webContents.executeJavaScript(ddbHitDiceExpr(method, a1, a2), true);
+}
+
+/** Ensure the Short Rest sidebar (its hit-dice pane) is rendered, retrying briefly. */
+async function ensureShortRest(): Promise<boolean> {
+  for (let i = 0; i < 10; i++) {
+    const open = await ddbHd("open").catch(() => false);
+    if (open) return true;
+    await sleep(400);
+  }
+  return false;
+}
+
+/** Read hit-dice pools from the Short Rest pane (opens it if needed). */
+ipcMain.handle("ddb-hd-read", async () => {
+  if (!(await ensureShortRest())) return { ok: false, pools: [] };
+  const pools = await ddbHd("read").catch(() => []);
+  return { ok: true, pools };
+});
+
+/** Stage `count` spent dice (die size optional) WITHOUT committing — for previewing. */
+ipcMain.handle("ddb-hd-stage", async (_e, count: number, die?: number) => {
+  if (!(await ensureShortRest())) return { ok: false, error: "Short Rest pane not ready — open the D&D Beyond pane and sign in" };
+  const res = await ddbHd("stage", die ?? null, count).catch((e) => ({ ok: false, error: String(e) }));
+  const pools = await ddbHd("read").catch(() => []);
+  return { ...res, pools };
+});
+
+/** Revert any staged spend (no server change). */
+ipcMain.handle("ddb-hd-reset", async () => {
+  const res = await ddbHd("reset").catch((e) => ({ ok: false, error: String(e) }));
+  const pools = await ddbHd("read").catch(() => []);
+  return { ...res, pools };
+});
+
+/** Full short-rest spend driver: open -> stage `count` dice -> commit (persists
+ *  hitDiceUsed and applies the short-rest healing on D&D Beyond). This is a real,
+ *  user-initiated mutation of the live sheet — only ever runs on an explicit click. */
+ipcMain.handle("ddb-short-rest", async (_e, count: number, die?: number) => {
+  if (!(await ensureShortRest())) return { ok: false, error: "Short Rest pane not ready — open the D&D Beyond pane and sign in" };
+  if (count > 0) {
+    const staged = await ddbHd("stage", die ?? null, count).catch((e) => ({ ok: false, error: String(e) }));
+    if (!staged || !(staged as any).ok) {
+      await ddbHd("reset").catch(() => ({}));
+      return { ok: false, error: `could only stage ${(staged as any)?.staged ?? 0}/${count} hit dice` };
+    }
+  }
+  const res = await ddbHd("commit").catch((e) => ({ ok: false, error: String(e) }));
+  await sleep(700);
+  // After committing, the pane closes; re-open read-only to report the persisted state.
+  const pools = (await ensureShortRest()) ? await ddbHd("read").catch(() => []) : [];
+  return { ...res, pools };
+});
+
+// ---- IPC: inventory (quantity write-back via DDB's own API; add/search via native UI) ----
+
+/** Set one inventory row's quantity on D&D Beyond (drives the real endpoint the sheet uses),
+ *  then CONFIRM the write landed by re-reading the row from character-service — so a write can
+ *  never silently no-op (e.g. a stale row id). Returns the server-confirmed quantity. */
+ipcMain.handle("ddb-item-set-qty", async (_e, id: number, quantity: number) => {
+  if (!current) return { ok: false, error: "No character loaded" };
+  const q = Math.max(0, Math.floor(quantity));
+  const res: any = await ddbView.webContents
+    .executeJavaScript(ddbInventoryExpr("setQuantity", Number(current.id), id, q), true)
+    .catch((err) => ({ ok: false, error: String(err) }));
+  if (!res || !res.ok) return res;
+  // Verify against the source of truth (character-service reflects writes immediately, uncached).
+  try {
+    const r = await fetch(`https://character-service.dndbeyond.com/character/v5/character/${current.id}`);
+    const j: any = await r.json();
+    const row = (j?.data?.inventory ?? []).find((x: any) => x.id === id);
+    if (j?.data) current = { ...current, data: j.data as CharacterData };
+    if (!row) return { ok: false, stale: true, error: "Item not on D&D Beyond anymore — re-syncing" };
+    if (row.quantity !== q) return { ok: false, error: `D&D Beyond kept quantity at ${row.quantity}`, quantity: row.quantity };
+    scheduleDdbReload(); // the embedded DDB sheet's React view won't reflect an API write until it re-fetches
+    return { ok: true, quantity: row.quantity, confirmed: true };
+  } catch {
+    scheduleDdbReload();
+    return res; // driver said ok; couldn't double-check — trust the 200
+  }
+});
+
+// A direct character-service write updates DDB's server but not the open sheet's in-memory
+// React state, so the embedded DDB pane shows stale quantities until it re-fetches. Reload it
+// (debounced, so a burst of ± clicks triggers a single reload) to keep the pane in sync.
+let ddbReloadTimer: ReturnType<typeof setTimeout> | null = null;
+function scheduleDdbReload() {
+  if (ddbReloadTimer) clearTimeout(ddbReloadTimer);
+  ddbReloadTimer = setTimeout(() => {
+    ddbReloadTimer = null;
+    if (current) ddbView.webContents.reload();
+  }, 1500);
+}
+
+/** List the logged-in user's own D&D Beyond characters (for the picker). Read-only.
+ *  Runs entirely in the MAIN process against the shared session's cookies (the same
+ *  proven path as HP/condition writes), so it does NOT depend on the DDB pane having
+ *  navigated to a dndbeyond.com page — which is why it was failing after loading a
+ *  character sheet or on a fresh machine. */
+ipcMain.handle("list-characters", async () => {
+  try {
+    const token = await mintDdbToken();
+    if (!token) return { ok: false, error: "Not signed in to D&D Beyond", characters: [] };
+    // Derive the user id from the cobalt→JWT's nameidentifier claim.
+    let uid: string | undefined;
+    try {
+      const payload = JSON.parse(
+        Buffer.from(token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"),
+      );
+      uid = payload["http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier"] || payload.sub;
+    } catch { /* malformed token */ }
+    if (!uid) return { ok: false, error: "Could not determine your D&D Beyond user id", characters: [] };
+    const r = await ddbApiRequest(
+      "GET",
+      `https://character-service.dndbeyond.com/character/v5/characters/list?userId=${encodeURIComponent(String(uid))}`,
+      token,
+    );
+    if (!r.ok) return { ok: false, error: `Character list HTTP ${r.status}`, characters: [] };
+    const characters = ((r.json?.data?.characters ?? []) as any[])
+      .map((c) => ({
+        id: c.id,
+        name: c.name || "Character " + c.id,
+        level: c.level || 0,
+        classDescription: c.classDescription || "",
+        raceName: c.raceName || "",
+        campaignName: c.campaignName || "",
+        lastModified: c.lastModifiedDate || "",
+      }))
+      .sort((a, b) => String(b.lastModified).localeCompare(String(a.lastModified)));
+    return { ok: true, characters };
+  } catch (err) {
+    return { ok: false, error: String(err), characters: [] };
+  }
+});
+
+/** Sign out: wipe the shared session (cookies + storage + cache) so the next launch
+ *  behaves like a fresh install. Reloads both panes back to their signed-out landing
+ *  pages. Handy for testing the first-run experience without a clean profile. */
+ipcMain.handle("logout", async () => {
+  try {
+    const s = session.fromPartition("persist:main");
+    await s.clearStorageData(); // cookies, localStorage, IndexedDB, service workers, cache…
+    await s.clearCache();
+    current = null;
+    roll20View?.webContents.loadURL("https://app.roll20.net/");
+    ddbView?.webContents.loadURL("https://www.dndbeyond.com/");
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+});
+
+/** Re-fetch the character and recompute the inventory (reflects DDB-side add/edit/use). */
+ipcMain.handle("inventory-refresh", async () => {
+  if (!current) return { ok: false, items: [] };
+  try {
+    const res = await fetch(`https://character-service.dndbeyond.com/character/v5/character/${current.id}`);
+    if (!res.ok) return { ok: false, items: [], error: `HTTP ${res.status}` };
+    const json: any = await res.json();
+    if (!json?.data) return { ok: false, items: [] };
+    current = { ...current, data: json.data as CharacterData };
+    return { ok: true, items: buildCharacter(json.data as CharacterData).inventory };
+  } catch (err) {
+    return { ok: false, items: [], error: String(err) };
+  }
+});
+
+/** Set HP on D&D Beyond (damage taken + temp), then confirm against character-service and
+ *  refresh the embedded sheet so its view isn't stale (same pattern as inventory quantity). */
+ipcMain.handle("ddb-set-hp", async (_e, removed: number, temp: number) => {
+  if (!current) return { ok: false, error: "No character loaded" };
+  const r = Math.max(0, Math.floor(removed));
+  const t = Math.max(0, Math.floor(temp));
+  const token = await mintDdbToken();
+  if (!token) return { ok: false, error: "Not signed in to D&D Beyond" };
+  const res = await ddbApiRequest(
+    "PUT",
+    "https://character-service.dndbeyond.com/character/v5/life/hp/damage-taken",
+    token,
+    { characterId: Number(current.id), removedHitPoints: r, temporaryHitPoints: t },
+  );
+  if (!res.ok) return { ok: false, error: res.json?.message || res.error || `HTTP ${res.status}` };
+  // Confirm against the source of truth (authenticated — works for private characters too).
+  const confirmed = await ddbApiRequest("GET", `https://character-service.dndbeyond.com/character/v5/character/${current.id}`, token);
+  if (confirmed.ok && confirmed.json?.data) current = { ...current, data: confirmed.json.data as CharacterData };
+  scheduleDdbReload(); // refresh the VISUAL pane only — the write path above no longer needs it
+  return {
+    ok: true,
+    removed: confirmed.json?.data?.removedHitPoints ?? r,
+    temp: confirmed.json?.data?.temporaryHitPoints ?? t,
+  };
+});
+
+/** Add/remove a condition on D&D Beyond (PUT to apply, DELETE to clear — the exact calls the
+ *  sheet's condition toggles make), authenticated from the main process. */
+ipcMain.handle("ddb-set-condition", async (_e, id: number, active: boolean, level: number | null) => {
+  if (!current) return { ok: false, error: "No character loaded" };
+  const token = await mintDdbToken();
+  if (!token) return { ok: false, error: "Not signed in to D&D Beyond" };
+  const cid = Number(current.id);
+  const url = "https://character-service.dndbeyond.com/character/v5/condition";
+  const totalHp = (current.data as any)?.overrideHitPoints ?? undefined;
+  const res = active
+    ? await ddbApiRequest("PUT", url, token, { characterId: cid, id, level: level ?? null, totalHp })
+    : await ddbApiRequest("DELETE", url, token, { characterId: cid, id });
+  if (!res.ok) return { ok: false, error: res.json?.message || res.error || `HTTP ${res.status}` };
+  scheduleDdbReload();
+  return { ok: true };
+});
+
+/** Push HP to the matching Roll20 token's HP bar (by name). Only writes tokens you may edit;
+ *  a linked bar (driven by a sheet attribute) is reported so the UI can say so. */
+ipcMain.handle("r20-token-hp", async (_e, name: string, current: number, max: number, temp?: number) => {
+  try {
+    return await roll20View.webContents.executeJavaScript(r20TokenExpr("setHp", name, current, max, temp ?? null), true);
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+});
+
+/** The token the GM currently has selected on the Roll20 map (for binding HP to one specific NPC). */
+ipcMain.handle("r20-selected-token", async () => {
+  try {
+    return await roll20View.webContents.executeJavaScript(r20TokenExpr("selected"), true);
+  } catch (err) {
+    return { ok: false, reason: String(err) };
+  }
+});
+
+/** All object-layer tokens on the active Roll20 page, for the "bind HP to token" picker. */
+ipcMain.handle("r20-list-tokens", async () => {
+  try {
+    return await roll20View.webContents.executeJavaScript(r20TokenExpr("list"), true);
+  } catch (err) {
+    return { ok: false, tokens: [], error: String(err) };
+  }
+});
+
+/** Write HP to ONE token by id (used after the GM binds to a selected token). */
+ipcMain.handle("r20-token-hp-by-id", async (_e, id: string, current: number, max: number, temp?: number) => {
+  try {
+    return await roll20View.webContents.executeJavaScript(r20TokenExpr("setHpById", id, current, max, temp ?? null), true);
+  } catch (err) {
+    return { ok: false, reason: String(err) };
+  }
+});
+
+/** Detect whether the open Roll20 game has the D&D 5e sheet's roll-template styling loaded. If so
+ *  the app can send the prettier sheet templates (simple/atkdmg); otherwise it uses the universal
+ *  default template (which renders in ANY game, just plainer). Checks loaded CSS, so it works even
+ *  before any roll has been made. */
+ipcMain.handle("roll20-sheet-style", async () => {
+  try {
+    const has5e = await roll20View.webContents.executeJavaScript(
+      `(function(){try{for(const ss of document.styleSheets){let rules;try{rules=ss.cssRules;}catch(e){continue;}if(!rules)continue;for(const r of rules){if(r.selectorText&&/sheet-rolltemplate-(simple|atkdmg|atk|dmg|spell)/.test(r.selectorText))return true;}}}catch(e){}return !!document.querySelector('[class*=sheet-rolltemplate-]');})()`,
+      true,
+    );
+    return { style: has5e ? "sheet" : "default" };
+  } catch {
+    return { style: "default" };
+  }
+});
+
+/** Post a plain message to the Roll20 chat as the given character (e.g. a condition announcement).
+ *  Reuses the same chat injector rolls use. Fails softly if no game is open. */
+ipcMain.handle("roll20-say", async (_e, message: string, speakingAs?: string) => {
+  try {
+    return await roll20View.webContents.executeJavaScript(buildSendExpression(String(message), speakingAs), true);
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+});
+
+/** Scrape the Roll20 chat and return the roll records (no persist) — used to read a roll's
+ *  RESULT back into the app right after sending it. */
+ipcMain.handle("roll20-scrape", async () => {
+  try {
+    return await roll20View.webContents.executeJavaScript(roll20LogExpr(), true);
+  } catch {
+    return [];
+  }
+});
+
+/** The token id whose turn it is (top of the Roll20 turn order), for "your turn" alerts. */
+ipcMain.handle("r20-turn-top", async () => {
+  try {
+    return await roll20View.webContents.executeJavaScript(r20TokenExpr("turnTop"), true);
+  } catch {
+    return null;
+  }
+});
+
+/** Show an OS notification (e.g. "your turn"). */
+ipcMain.handle("notify", (_e, title: string, body: string) => {
+  try {
+    if (Notification.isSupported()) new Notification({ title, body }).show();
+  } catch { /* ignore */ }
+  return { ok: true };
+});
+
+/** Read the computed Armor Class straight off the D&D Beyond sheet (it's already correct there —
+ *  computing AC from scratch, with armor/dex-cap/shield/magic/feats, is error-prone). */
+ipcMain.handle("ddb-read-ac", async () => {
+  try {
+    const ac = await ddbView.webContents.executeJavaScript(
+      `(function(){var e=document.querySelector('.ddbc-armor-class-box__value');if(!e)return null;var n=parseInt((e.textContent||'').trim(),10);return isNaN(n)?null:n;})()`,
+      true,
+    );
+    return { ac: typeof ac === "number" ? ac : null };
+  } catch {
+    return { ac: null };
+  }
+});
+
+/** Look up the matching Roll20 token(s) for a character name (for load-time reconciliation). */
+ipcMain.handle("r20-token-find", async (_e, name: string, max: number) => {
+  try {
+    const tokens = await roll20View.webContents.executeJavaScript(r20TokenExpr("find", name, max), true);
+    return { ok: true, tokens };
+  } catch (err) {
+    return { ok: false, tokens: [], error: String(err) };
+  }
+});
+
+/** Raise the D&D Beyond pane on the Inventory tab so the user can search/add items natively. */
+ipcMain.handle("ddb-open-inventory", async () => {
+  rightMode = "ddb";
+  layout();
+  raiseRightPane();
+  const res = await ddbView.webContents
+    .executeJavaScript(ddbInventoryExpr("openInventory"), true)
+    .catch((err) => ({ ok: false, error: String(err) }));
+  return res;
+});
+
+// ---- IPC: session log & statistics (scraped from the connected Roll20 game) --------------
+
+/** Scrape the Roll20 chat, merge new rolls into the session log, return log + stats + actions. */
+ipcMain.handle("session-sync", async () => {
+  try {
+    const records: RollRecord[] = await roll20View.webContents.executeJavaScript(roll20LogExpr(), true);
+    mergeRecords(records); // dedup + persist
+  } catch {
+    /* chat not available (no game open) — return what we have */
+  }
+  return sessionPayload(await currentCampaignId());
+});
+
+/** Current campaign id, also recording its name for the dropdown. */
+async function currentCampaignId(): Promise<string | null> {
+  const c = await readCampaign();
+  if (c.id) { if (c.name) campaignNames.set(c.id, c.name); saveStoreSoon(); }
+  return c.id;
+}
+
+function sessionPayload(currentCampaign: string | null) {
+  const all = [...sessionLog.values()];
+  return {
+    records: all,
+    stats: aggregate(all),
+    actions: actionLog,
+    currentCampaign,
+    campaigns: Object.fromEntries(campaignNames),
+  };
+}
+
+/** Deep sync: scroll the Roll20 chat up to lazy-load the MAX history Roll20 will serve, then scrape. */
+ipcMain.handle("session-deep-sync", async () => {
+  try {
+    await roll20View.webContents.executeJavaScript(
+      `(async function(){
+        var c = document.querySelector('#textchat .content') || document.querySelector('#textchat');
+        if(!c) return;
+        var last = -1, stable = 0;
+        for (var i=0;i<60;i++){
+          var n = document.querySelectorAll('#textchat .content .message').length;
+          if (n === last) { stable++; if (stable >= 3) break; }  // 3 stable checks = Roll20 has no more
+          else { stable = 0; last = n; }
+          c.scrollTop = 0;                 // jump to top to trigger lazy-load of older messages
+          await new Promise(function(r){ setTimeout(r, 500); });
+        }
+        c.scrollTop = c.scrollHeight;      // restore the view to the newest messages
+      })()`,
+      true,
+    );
+  } catch {
+    /* no game / transient */
+  }
+  await captureLoop(); // scrape everything that loaded (deduped by id)
+  return sessionPayload(await currentCampaignId());
+});
+
+ipcMain.handle("copy-text", (_e, text: string) => {
+  clipboard.writeText(String(text ?? ""));
+  return { ok: true };
+});
+
+ipcMain.handle("session-clear", () => {
+  sessionLog.clear();
+  actionLog.length = 0;
+  saveStoreSoon(); // persist the empty store so the clear survives a restart
+  return { ok: true };
+});
+
+/** Export the session as a file. kind: 'json' (full bundle) | 'csv-log' | 'csv-stats'. */
+ipcMain.handle("session-export", async (_e, kind: "json" | "csv-log" | "csv-stats") => {
+  const all = [...sessionLog.values()];
+  const stats = aggregate(all);
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+  const char = current?.name ? current.name.replace(/[^\w]+/g, "_") : "session";
+  let ext = "json";
+  let content = "";
+  if (kind === "csv-log") { ext = "csv"; content = recordsToCSV(all); }
+  else if (kind === "csv-stats") { ext = "csv"; content = statsToCSV(stats); }
+  else { content = JSON.stringify({ exportedAt: new Date().toISOString(), character: current?.name, records: all, stats, actions: actionLog }, null, 2); }
+
+  const { canceled, filePath } = await dialog.showSaveDialog(win, {
+    title: "Export session",
+    defaultPath: `${char}-${kind}-${stamp}.${ext}`,
+    filters: ext === "csv" ? [{ name: "CSV", extensions: ["csv"] }] : [{ name: "JSON", extensions: ["json"] }],
+  });
+  if (canceled || !filePath) return { ok: false, canceled: true };
+  await writeFile(filePath, content, "utf8");
+  return { ok: true, path: filePath };
+});
+
+/** Process-wide security backstops, applied once at startup and independent of the per-view
+ *  hardening in createWindow(). Defense-in-depth: (1) refuse to attach a <webview> anywhere —
+ *  nothing in this app uses one, so any attempt is hostile; (2) deny high-risk device/permission
+ *  requests that neither the local sheet nor the Roll20 / D&D Beyond panes need. Media,
+ *  notifications, clipboard, fullscreen and screen-capture are intentionally left allowed so the
+ *  VTT's audio/video and screen-share keep working. */
+const DENIED_PERMISSIONS = new Set<string>([
+  "geolocation", "hid", "serial", "usb", "midi", "midiSysex", "idle-detection", "bluetooth",
+]);
+function installGlobalHardening() {
+  app.on("web-contents-created", (_e, contents) => {
+    contents.on("will-attach-webview", (e) => e.preventDefault());
+  });
+  const applyPermissions = (s: Electron.Session) => {
+    s.setPermissionRequestHandler((_wc, permission, cb) => cb(!DENIED_PERMISSIONS.has(permission)));
+    s.setPermissionCheckHandler((_wc, permission) => !DENIED_PERMISSIONS.has(permission));
+  };
+  applyPermissions(session.defaultSession); // local sheet + splash views
+  applyPermissions(session.fromPartition("persist:main")); // Roll20 + D&D Beyond remote panes
+}
+
+app.whenReady().then(async () => {
+  installGlobalHardening();
+  await loadStore(); // restore accumulated roll history from previous sessions
+  createWindow();
+});
+app.on("window-all-closed", () => app.quit());

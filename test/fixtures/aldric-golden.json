@@ -1,0 +1,56 @@
+{
+  "_meta": {
+    "character": "Aldric",
+    "characterId": 144074405,
+    "class": "Artificer 8",
+    "species": "Vedalken",
+    "source": "D&D Beyond computed character sheet (live, logged-in) as displayed 2026-08-17",
+    "note": "Ground-truth golden values read directly from DDB's rendered sheet. Sleight of Hand anchor confirmed at +10 (DEX +2 + prof +3 + item +5)."
+  },
+  "abilities": {
+    "STR": { "score": 8, "mod": -1 },
+    "DEX": { "score": 14, "mod": 2 },
+    "CON": { "score": 14, "mod": 2 },
+    "INT": { "score": 18, "mod": 4 },
+    "WIS": { "score": 14, "mod": 2 },
+    "CHA": { "score": 8, "mod": -1 }
+  },
+  "saves": {
+    "STR": { "mod": -1, "proficient": false },
+    "DEX": { "mod": 2, "proficient": false },
+    "CON": { "mod": 5, "proficient": true },
+    "INT": { "mod": 7, "proficient": true },
+    "WIS": { "mod": 2, "proficient": false },
+    "CHA": { "mod": -1, "proficient": false }
+  },
+  "skills": {
+    "acrobatics": { "mod": 2, "proficient": false, "expertise": false },
+    "animal-handling": { "mod": 2, "proficient": false, "expertise": false },
+    "arcana": { "mod": 4, "proficient": false, "expertise": false },
+    "athletics": { "mod": -1, "proficient": false, "expertise": false },
+    "deception": { "mod": -1, "proficient": false, "expertise": false },
+    "history": { "mod": 4, "proficient": false, "expertise": false },
+    "insight": { "mod": 5, "proficient": true, "expertise": false },
+    "intimidation": { "mod": -1, "proficient": false, "expertise": false },
+    "investigation": { "mod": 7, "proficient": true, "expertise": false },
+    "medicine": { "mod": 2, "proficient": false, "expertise": false },
+    "nature": { "mod": 4, "proficient": false, "expertise": false },
+    "perception": { "mod": 5, "proficient": true, "expertise": false },
+    "performance": { "mod": -1, "proficient": false, "expertise": false },
+    "persuasion": { "mod": -1, "proficient": false, "expertise": false },
+    "religion": { "mod": 4, "proficient": false, "expertise": false },
+    "sleight-of-hand": { "mod": 10, "proficient": true, "expertise": false },
+    "stealth": { "mod": 5, "proficient": true, "expertise": false },
+    "survival": { "mod": 2, "proficient": false, "expertise": false }
+  },
+  "passives": {
+    "perception": 15,
+    "investigation": 17,
+    "insight": 15
+  },
+  "initiative": 2,
+  "ac": 18,
+  "spellSaveDc": 15,
+  "spellAttack": 7,
+  "profBonus": 3
+}

@@ -1,0 +1,82 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self';" />
+    <link rel="stylesheet" href="splash.css" />
+    <title>Set up your table</title>
+  </head>
+  <body>
+    <main class="splash">
+      <header class="splash-head">
+        <h1>Ready your table</h1>
+        <p>Pick where your character comes from and where you're playing. You can change this later.</p>
+      </header>
+
+      <div class="columns">
+        <!-- Character source -->
+        <section class="col" aria-label="Character source">
+          <div class="col-head"><span class="col-kicker">Character sheet</span><span class="col-hint">where your hero lives</span></div>
+          <div class="cards" id="sources">
+            <button class="pick" data-kind="source" data-id="ddb" type="button">
+              <span class="pick-icon icon-d20" aria-hidden="true">
+                <svg viewBox="0 0 100 100"><polygon points="50,6 89,28 89,72 50,94 11,72 11,28" /><polygon points="50,6 89,28 50,50 11,28" class="face-a" /><polygon points="89,28 89,72 50,50" class="face-b" /><polygon points="11,28 11,72 50,50" class="face-c" /><polygon points="50,94 11,72 50,50 89,72" class="face-d" /><text x="50" y="44" text-anchor="middle">20</text></svg>
+              </span>
+              <span class="pick-body"><span class="pick-name">D&amp;D Beyond</span><span class="pick-desc">Your official 5e sheet. Live HP, spell slots &amp; inventory sync.</span></span>
+              <span class="pick-check" aria-hidden="true"></span>
+            </button>
+
+            <button class="pick" data-kind="source" data-id="poke5e" type="button">
+              <span class="pick-icon icon-ball" aria-hidden="true">
+                <svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="44" class="ball-top" /><path d="M6 50a44 44 0 0 0 88 0Z" class="ball-bottom" /><rect x="6" y="46" width="88" height="8" class="ball-band" /><circle cx="50" cy="50" r="15" class="ball-btn-o" /><circle cx="50" cy="50" r="7" class="ball-btn-i" /></svg>
+              </span>
+              <span class="pick-body"><span class="pick-name">poke5e</span><span class="pick-desc">Pokémon 5e trainer &amp; team. Paste your share link — no login.</span></span>
+              <span class="pick-check" aria-hidden="true"></span>
+            </button>
+
+            <button class="pick" data-kind="source" data-id="monster" type="button">
+              <span class="pick-icon icon-monster" aria-hidden="true">
+                <svg viewBox="0 0 100 100"><path d="M50 12c-18 0-32 13-32 32v20c0 6 5 10 10 8l6-3 6 4c2 1 4 1 6 0l6-4 6 4c2 1 4 1 6 0l6-4 6 3c5 2 10-2 10-8V44c0-19-14-32-32-32Z" class="mon-body" /><circle cx="39" cy="42" r="5" class="mon-eye" /><circle cx="61" cy="42" r="5" class="mon-eye" /><path d="M36 62l6-5 8 5 8-5 6 5" class="mon-mouth" /></svg>
+              </span>
+              <span class="pick-body"><span class="pick-name">Monster / NPC</span><span class="pick-desc">Search a creature (Open5e). Roll its attacks &amp; saves as the GM.</span></span>
+              <span class="pick-check" aria-hidden="true"></span>
+            </button>
+          </div>
+        </section>
+
+        <span class="divider" aria-hidden="true"></span>
+
+        <!-- Virtual tabletop -->
+        <section class="col" aria-label="Virtual tabletop">
+          <div class="col-head"><span class="col-kicker">Virtual tabletop</span><span class="col-hint">where you roll</span></div>
+          <div class="cards" id="vtts">
+            <button class="pick" data-kind="vtt" data-id="roll20" type="button">
+              <span class="pick-icon icon-table" aria-hidden="true">
+                <svg viewBox="0 0 100 100"><rect x="14" y="18" width="72" height="52" rx="8" class="tbl" /><circle cx="36" cy="40" r="7" /><rect x="52" y="34" width="20" height="20" rx="4" transform="rotate(12 62 44)" /><rect x="30" y="78" width="40" height="6" rx="3" class="tbl-leg" /></svg>
+              </span>
+              <span class="pick-body"><span class="pick-name">Roll20</span><span class="pick-desc">Send formatted rolls straight into your game's chat.</span></span>
+              <span class="pick-check" aria-hidden="true"></span>
+            </button>
+
+            <button class="pick" data-kind="vtt" data-id="foundry" type="button" disabled>
+              <span class="pick-icon icon-soon" aria-hidden="true">
+                <svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="40" class="soon-ring" /><path d="M50 28v24l16 10" class="soon-hand" /></svg>
+              </span>
+              <span class="pick-body"><span class="pick-name">Foundry VTT</span><span class="pick-desc">Coming soon.</span></span>
+              <span class="pick-check" aria-hidden="true"></span>
+            </button>
+          </div>
+        </section>
+      </div>
+
+      <footer class="splash-foot">
+        <div class="foot-left">
+          <span id="summary" class="summary">Choose a character source and a tabletop.</span>
+          <button id="resetSession" class="splash-reset" type="button" title="Sign out of D&amp;D Beyond and Roll20 and clear saved logins (fresh-install state)">Sign out / reset saved logins</button>
+        </div>
+        <button id="launch" type="button" disabled>Enter the table →</button>
+      </footer>
+    </main>
+    <script src="splash.js"></script>
+  </body>
+</html>

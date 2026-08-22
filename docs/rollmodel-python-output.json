@@ -1,0 +1,130 @@
+{
+  "name": "Aldric - OG",
+  "prof": 3,
+  "abilities": {
+    "STR": {
+      "score": 8,
+      "mod": -1
+    },
+    "DEX": {
+      "score": 14,
+      "mod": 2
+    },
+    "CON": {
+      "score": 14,
+      "mod": 2
+    },
+    "INT": {
+      "score": 18,
+      "mod": 4
+    },
+    "WIS": {
+      "score": 14,
+      "mod": 2
+    },
+    "CHA": {
+      "score": 8,
+      "mod": -1
+    }
+  },
+  "saves": {
+    "STR": -1,
+    "DEX": 2,
+    "CON": 5,
+    "INT": 7,
+    "WIS": 2,
+    "CHA": -1
+  },
+  "skills": {
+    "acrobatics": {
+      "mod": 2,
+      "ability": "DEX",
+      "prof": false
+    },
+    "animal-handling": {
+      "mod": 2,
+      "ability": "WIS",
+      "prof": false
+    },
+    "arcana": {
+      "mod": 4,
+      "ability": "INT",
+      "prof": false
+    },
+    "athletics": {
+      "mod": -1,
+      "ability": "STR",
+      "prof": false
+    },
+    "deception": {
+      "mod": -1,
+      "ability": "CHA",
+      "prof": false
+    },
+    "history": {
+      "mod": 4,
+      "ability": "INT",
+      "prof": false
+    },
+    "insight": {
+      "mod": 5,
+      "ability": "WIS",
+      "prof": true
+    },
+    "intimidation": {
+      "mod": -1,
+      "ability": "CHA",
+      "prof": false
+    },
+    "investigation": {
+      "mod": 7,
+      "ability": "INT",
+      "prof": true
+    },
+    "medicine": {
+      "mod": 2,
+      "ability": "WIS",
+      "prof": false
+    },
+    "nature": {
+      "mod": 4,
+      "ability": "INT",
+      "prof": false
+    },
+    "perception": {
+      "mod": 5,
+      "ability": "WIS",
+      "prof": true
+    },
+    "performance": {
+      "mod": -1,
+      "ability": "CHA",
+      "prof": false
+    },
+    "persuasion": {
+      "mod": -1,
+      "ability": "CHA",
+      "prof": false
+    },
+    "religion": {
+      "mod": 4,
+      "ability": "INT",
+      "prof": false
+    },
+    "sleight-of-hand": {
+      "mod": 5,
+      "ability": "DEX",
+      "prof": true
+    },
+    "stealth": {
+      "mod": 5,
+      "ability": "DEX",
+      "prof": true
+    },
+    "survival": {
+      "mod": 2,
+      "ability": "WIS",
+      "prof": false
+    }
+  }
+}

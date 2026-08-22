@@ -1,0 +1,28 @@
+# dependencies
+node_modules/
+
+# build output (generated)
+dist/
+dist-electron/
+release/
+*.tsbuildinfo
+
+# electron / app runtime data (NEVER commit — contains logged-in sessions, cookies, keys)
+browser-data/
+**/Partitions/
+**/Local Storage/
+
+# secrets / local config
+.env
+.env.*
+!.env.example
+
+# python / misc tooling that isn't part of the app
+.venv/
+__pycache__/
+
+# editor / OS
+.DS_Store
+*.log
+.vscode/
+.idea/

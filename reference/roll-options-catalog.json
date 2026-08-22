@@ -1,0 +1,749 @@
+[
+  {
+    "id": "halfling-lucky",
+    "name": "Halfling: Lucky",
+    "kind": "reroll",
+    "effect": "Append 'ro<=1' to the d20 (reroll natural 1s, keep new roll) on skill/ability/save/death-save/initiative/attack/spell-attack.",
+    "toggle": true,
+    "condition": "Character has racial trait 'Lucky' or 'Luck'",
+    "notes": "character.js:8-12. Default on. Reroll modeled as reroll (not reroll-once) by the JS engine."
+  },
+  {
+    "id": "great-weapon-master",
+    "name": "Feat: Great Weapon Master (2014)",
+    "kind": "attack-mod",
+    "effect": "-5 to attack roll and +10 to damage.",
+    "toggle": true,
+    "condition": "hasFeat('Great Weapon Master')",
+    "notes": "character.js:643-654. Apply-to-next-roll-only unless great-weapon-master-lock. Adds '-5' to-hit and pushes '+10' damage."
+  },
+  {
+    "id": "great-weapon-master-2024",
+    "name": "Feat: Great Weapon Master (2024, Heavy Weapon Mastery)",
+    "kind": "damage-mod",
+    "effect": "Add extra damage equal to proficiency bonus (no attack penalty).",
+    "toggle": true,
+    "condition": "hasFeat('Great Weapon Master 2024')",
+    "notes": "character.js:655-663, 733-739. Default on. Lock: great-weapon-master-2024-lock."
+  },
+  {
+    "id": "sharpshooter",
+    "name": "Feat: Sharpshooter",
+    "kind": "attack-mod",
+    "effect": "-5 to attack roll and +10 to damage (ranged).",
+    "toggle": true,
+    "condition": "hasFeat('Sharpshooter')",
+    "notes": "character.js:720-732. Apply-to-next-roll unless sharpshooter-lock."
+  },
+  {
+    "id": "great-weapon-fighting-2014",
+    "name": "Fighting Style: Great Weapon Fighting (2014)",
+    "kind": "reroll",
+    "effect": "Reroll 1s and 2s on each weapon damage die: append 'ro<=2' to each die.",
+    "toggle": false,
+    "condition": "hasGreatWeaponFighting(2014) AND melee two-handed/versatile-2H weapon (or Polearm Master strike)",
+    "notes": "utils.js:516-532, character.js:528-544. Automatic when style present."
+  },
+  {
+    "id": "great-weapon-fighting-2024",
+    "name": "Fighting Style: Great Weapon Fighting (2024)",
+    "kind": "reroll",
+    "effect": "Each weapon damage die has a minimum of 3: split 'NdX' into N copies of '1dX min3'.",
+    "toggle": false,
+    "condition": "hasGreatWeaponFighting(2024) AND melee two-handed/versatile-2H weapon (or Polearm Master strike)",
+    "notes": "utils.js:516-532. Automatic."
+  },
+  {
+    "id": "tavern-brawler-2024",
+    "name": "Feat: Tavern Brawler (2024)",
+    "kind": "reroll",
+    "effect": "Reroll 1s on unarmed strike / flurry of blows damage die: append 'ro<=1'.",
+    "toggle": false,
+    "condition": "hasFeat('Tavern Brawler 2024') AND action is enhanced/unarmed strike or flurry of blows",
+    "notes": "character.js:667-673. Automatic; adds 'Tavern Brawler' effect tag."
+  },
+  {
+    "id": "flames-of-phlegethos",
+    "name": "Feat: Flames of Phlegethos",
+    "kind": "reroll",
+    "effect": "Reroll 1s on Fire damage dice: append 'ro<=1' to Fire-typed damage.",
+    "toggle": false,
+    "condition": "hasFeat('Flames of Phlegethos') AND damage type is Fire",
+    "notes": "character.js:1790-1797. Automatic."
+  },
+  {
+    "id": "healer-rerolls-feat-2024",
+    "name": "Feat: Healer - Healing Rerolls",
+    "kind": "reroll",
+    "effect": "Reroll a 1 on any healing die (spell or Battle Medic).",
+    "toggle": true,
+    "condition": "hasFeat('Healer 2024')",
+    "notes": "character.js:1804-1805. Default true."
+  },
+  {
+    "id": "charger-feat",
+    "name": "Feat: Charger",
+    "kind": "damage-mod",
+    "effect": "2014: +5 flat damage. 2024: +1d8 damage (GWF-adjusted if applicable).",
+    "toggle": true,
+    "condition": "hasFeat('Charger') or hasFeat('Charger 2024')",
+    "notes": "character.js:676-701. Apply-to-next-roll unless charger-feat-lock."
+  },
+  {
+    "id": "piercer",
+    "name": "Feat: Piercer",
+    "kind": "add-dice",
+    "effect": "On a crit with piercing damage, add one extra weapon damage die (1dX) to critical damage.",
+    "toggle": false,
+    "condition": "hasFeat('Piercer') AND critical hit AND damage type includes Piercing",
+    "notes": "utils.js:432-446. Automatic on crit."
+  },
+  {
+    "id": "brutal-critical",
+    "name": "Brutal Critical / Savage Attacks (extra crit die)",
+    "kind": "add-dice",
+    "effect": "On a crit, roll additional weapon dice (brutal count x highest die faces) added to critical damage.",
+    "toggle": true,
+    "condition": "hasClassFeature('Brutal Critical') or hasRacialTrait('Savage Attacks') (2014)",
+    "notes": "utils.js:457-483, character.js:1287-1293. Default on. Combines Brutal + Savage counts."
+  },
+  {
+    "id": "brutal-strike",
+    "name": "Barbarian: Brutal Strike (2024)",
+    "kind": "add-dice",
+    "effect": "Add 1d10 (2d10 with Improved Brutal Strike at Barbarian 17+) extra damage, GWF-adjusted.",
+    "toggle": true,
+    "condition": "hasClassFeature('Brutal Strike')",
+    "notes": "character.js:1196-1203, 1502-1507."
+  },
+  {
+    "id": "barbarian-rage",
+    "name": "Barbarian: Rage",
+    "kind": "damage-mod",
+    "effect": "Advantage on STR checks/saves; add Rage damage (2/3/4 by level) to melee attacks.",
+    "toggle": true,
+    "condition": "hasClassFeature('Rage')",
+    "notes": "character.js:97-103, 588-593; extras.js:328-332,556-563. Sets OVERRIDE_ADVANTAGE for STR; 'Rage' effect tag."
+  },
+  {
+    "id": "barbarian-divine-fury",
+    "name": "Barbarian: Path of the Zealot: Divine Fury",
+    "kind": "add-dice",
+    "effect": "Add Divine Fury damage (1d6 + half barbarian level) to the first hit each turn while raging.",
+    "toggle": true,
+    "condition": "hasClassFeature('Divine Fury') AND raging",
+    "notes": "character.js:906-909. Default on."
+  },
+  {
+    "id": "barbarian-reckless",
+    "name": "Barbarian: Reckless Attack",
+    "kind": "advantage",
+    "effect": "Grant advantage on attack rolls (OVERRIDE_ADVANTAGE).",
+    "toggle": true,
+    "condition": "Barbarian",
+    "notes": "character.js:594-598. Apply-to-next-roll unless barbarian-reckless-lock. Enables Frenzy 2024 interaction."
+  },
+  {
+    "id": "artificer-alchemical-savant",
+    "name": "Artificer: Alchemist: Alchemical Savant",
+    "kind": "damage-mod",
+    "effect": "Add extra damage or healing equal to Intelligence modifier (min 1) to a matching spell.",
+    "toggle": true,
+    "condition": "hasClassFeature('Alchemical Savant')",
+    "notes": "character.js:1739-1746, 1812-1817. Default on."
+  },
+  {
+    "id": "artificer-arcane-firearm",
+    "name": "Artificer: Artillerist: Arcane Firearm",
+    "kind": "add-dice",
+    "effect": "Add 1d8 damage to Artificer spells.",
+    "toggle": true,
+    "condition": "hasClassFeature('Arcane Firearm')",
+    "notes": "character.js:1671-1674."
+  },
+  {
+    "id": "artificer-arcane-jolt",
+    "name": "Artificer: Battle Smith: Arcane Jolt",
+    "kind": "add-dice",
+    "effect": "Add 2d6 (4d6 at Artificer 15+) force/healing to weapon attacks.",
+    "toggle": true,
+    "condition": "hasClassFeature('Arcane Jolt')",
+    "notes": "character.js:896-897."
+  },
+  {
+    "id": "bard-joat",
+    "name": "Bard: Jack of All Trades",
+    "kind": "flat",
+    "effect": "Add half proficiency bonus to raw (non-proficient) ability checks.",
+    "toggle": true,
+    "condition": "hasClassFeature('Jack of All Trades')",
+    "notes": "character.js:236-240. Default on; 'Jack of All Trades' effect tag."
+  },
+  {
+    "id": "bard-psychic-blades",
+    "name": "Bard: College of Whispers: Psychic Blades",
+    "kind": "add-dice",
+    "effect": "Spend Bardic Inspiration to add psychic damage dice.",
+    "toggle": true,
+    "condition": "hasClassFeature('Psychic Blades')",
+    "notes": "character.js:918-932. Apply-to-next-roll unless bard-psychic-blades-lock."
+  },
+  {
+    "id": "bard-spiritual-focus",
+    "name": "Bard: College of Spirits: Spiritual Focus",
+    "kind": "add-dice",
+    "effect": "Add 1d6 psychic damage or extra healing.",
+    "toggle": true,
+    "condition": "hasClassFeature('Spiritual Focus')",
+    "notes": "character.js:1683-1687, 1829-1833. Default on."
+  },
+  {
+    "id": "cleric-blessed-strikes",
+    "name": "Cleric: Blessed Strikes 2024: Divine Strike",
+    "kind": "add-dice",
+    "effect": "Add 1d8 (2d8 with Improved Blessed Strikes) Necrotic or Radiant damage to a weapon hit.",
+    "toggle": true,
+    "condition": "hasClassFeature('Blessed Strikes 2024: Divine Strike')",
+    "notes": "character.js:795-802. Lock: cleric-blessed-strikes-lock."
+  },
+  {
+    "id": "cleric-blessed-strikes-tasha",
+    "name": "Cleric: Blessed Strikes 2014 (Tasha optional)",
+    "kind": "add-dice",
+    "effect": "Add 1d8 (2d8 with Improved Blessed Strikes) radiant damage to a cantrip or weapon attack.",
+    "toggle": true,
+    "condition": "hasClassFeature('Blessed Strikes')",
+    "notes": "character.js:808-814. Lock: cleric-blessed-strikes-tasha-lock."
+  },
+  {
+    "id": "cleric-circle-of-mortality",
+    "name": "Cleric: Grave Domain: Circle of Mortality",
+    "kind": "damage-mod",
+    "effect": "Maximize healing on a creature at 0 HP.",
+    "toggle": true,
+    "condition": "hasClassFeature('Circle of Mortality')",
+    "notes": "character.js:1854-1863."
+  },
+  {
+    "id": "cleric-divine-strike",
+    "name": "Cleric: Divine Strike",
+    "kind": "add-dice",
+    "effect": "Add 1d8 (2d8 at level 14) damage to weapon attacks.",
+    "toggle": true,
+    "condition": "hasClassFeature('Divine Strike')",
+    "notes": "character.js:962-968. Default on. Lock: cleric-divine-strike-lock."
+  },
+  {
+    "id": "druid-symbiotic-entity",
+    "name": "Druid: Circle of Spores: Symbiotic Entity",
+    "kind": "add-dice",
+    "effect": "Add 1d6 necrotic damage to melee weapon strikes; also boosts Halo of Spores.",
+    "toggle": true,
+    "condition": "hasClassFeature('Symbiotic Entity')",
+    "notes": "character.js:609-610, 1575-1576."
+  },
+  {
+    "id": "wildfire-spirit-enhanced-bond",
+    "name": "Druid: Circle of Wildfire: Enhanced Bond",
+    "kind": "add-dice",
+    "effect": "Add 1d8 to fire/healing spell damage.",
+    "toggle": true,
+    "condition": "hasClassFeature('Enhanced Bond')",
+    "notes": "character.js:1695-1700, 1840-1844."
+  },
+  {
+    "id": "druid-improved-lunar-radiance",
+    "name": "Druid: Improved Lunar Radiance",
+    "kind": "add-dice",
+    "effect": "Add 2d10 radiant damage to a Wild Shape form attack.",
+    "toggle": true,
+    "condition": "hasClassFeature('Improved Lunar Radiance') AND Wild Shape attack",
+    "notes": "extras.js:567-571."
+  },
+  {
+    "id": "druid-circle-of-mutation-circle-forms",
+    "name": "Druid: Circle of Mutation: Circle Forms (Predator's Strike)",
+    "kind": "flat",
+    "effect": "Add +2 damage to a Beast-form attack in Wild Shape.",
+    "toggle": true,
+    "condition": "hasClassFeature('Circle Forms') AND Wild Shape beast attack",
+    "notes": "extras.js:572-578."
+  },
+  {
+    "id": "champion-remarkable-athlete",
+    "name": "Fighter: Champion: Remarkable Athlete",
+    "kind": "flat",
+    "effect": "Add half proficiency (rounded up) to STR/DEX/CON ability checks.",
+    "toggle": true,
+    "condition": "hasClassFeature('Remarkable Athlete')",
+    "notes": "character.js:229-234. Default on; 'Remarkable Athlete' effect tag."
+  },
+  {
+    "id": "fighter-giant-might",
+    "name": "Fighter: Rune Knight: Giant's Might",
+    "kind": "add-dice",
+    "effect": "Advantage on STR checks/saves; add 1d6 extra damage.",
+    "toggle": true,
+    "condition": "hasClassFeature('Giant’s Might')",
+    "notes": "character.js:98, 975-976. Sets OVERRIDE_ADVANTAGE on STR."
+  },
+  {
+    "id": "monk-diamond-soul",
+    "name": "Monk: Diamond Soul",
+    "kind": "save-mod",
+    "effect": "Proficiency in all saving throws (aids death saves).",
+    "toggle": true,
+    "condition": "hasClassFeature('Diamond Soul')",
+    "notes": "character.js:2523. Default on."
+  },
+  {
+    "id": "paladin-improved-divine-smite",
+    "name": "Paladin: Improved Divine Smite",
+    "kind": "add-dice",
+    "effect": "Add 1d8 radiant damage on every melee weapon hit.",
+    "toggle": true,
+    "condition": "hasClassFeature('Improved Divine Smite')",
+    "notes": "character.js:620-621. Default on."
+  },
+  {
+    "id": "paladin-radiant-strikes",
+    "name": "Paladin: Radiant Strikes",
+    "kind": "add-dice",
+    "effect": "Add 1d8 radiant damage on melee weapon or unarmed hit.",
+    "toggle": true,
+    "condition": "hasClassFeature('Radiant Strikes')",
+    "notes": "character.js:622-623. Default on."
+  },
+  {
+    "id": "paladin-invincible-conqueror",
+    "name": "Paladin: Oath of Conquest: Invincible Conqueror",
+    "kind": "attack-mod",
+    "effect": "Crit on 19-20 (expands critical range).",
+    "toggle": true,
+    "condition": "hasClassFeature('Invincible Conqueror')",
+    "notes": "character.js:1279-1280, 1549-1552. Sets critical-limit to 19."
+  },
+  {
+    "id": "paladin-sacred-weapon",
+    "name": "Paladin: Oath of Devotion: Sacred Weapon",
+    "kind": "attack-mod",
+    "effect": "Add Charisma modifier to attack rolls.",
+    "toggle": true,
+    "condition": "hasClassFeature Sacred Weapon (paladin-sacred-weapon)",
+    "notes": "character.js:985-986."
+  },
+  {
+    "id": "ranger-favored-foe",
+    "name": "Ranger: Favored Foe",
+    "kind": "add-dice",
+    "effect": "Add extra damage die to attacks against the marked foe.",
+    "toggle": true,
+    "condition": "hasClassFeature('Favored Foe')",
+    "notes": "character.js:822-823."
+  },
+  {
+    "id": "fey-wanderer-dreadful-strikes",
+    "name": "Ranger: Fey Wanderer: Dreadful Strikes",
+    "kind": "add-dice",
+    "effect": "Add 1d4 (1d6 at level 11) psychic damage.",
+    "toggle": true,
+    "condition": "hasClassFeature('Dreadful Strikes')",
+    "notes": "character.js:1033-1036."
+  },
+  {
+    "id": "ranger-dread-ambusher",
+    "name": "Ranger: Gloom Stalker: Dread Ambusher",
+    "kind": "add-dice",
+    "effect": "Add 1d6/1d8/2d6/2d8 extra damage on the first-turn strike (varies by version/subfeature).",
+    "toggle": true,
+    "condition": "hasClassFeature('Dread Ambusher') or 'Dread Ambusher 2024'",
+    "notes": "character.js:994-1005. Apply-to-next-roll unless ranger-dread-ambusher-lock."
+  },
+  {
+    "id": "ranger-planar-warrior",
+    "name": "Ranger: Horizon Walker: Planar Warrior",
+    "kind": "add-dice",
+    "effect": "Convert weapon damage to force and add extra force damage die.",
+    "toggle": true,
+    "condition": "hasClassFeature('Planar Warrior')",
+    "notes": "character.js:1025-1026, 1137-1138."
+  },
+  {
+    "id": "ranger-colossus-slayer",
+    "name": "Ranger: Hunter's Prey: Colossus Slayer",
+    "kind": "add-dice",
+    "effect": "Add 1d8 damage to a wounded target.",
+    "toggle": true,
+    "condition": "hasClassFeature('Hunter’s Prey: Colossus Slayer')",
+    "notes": "character.js:1011-1012. Default on."
+  },
+  {
+    "id": "ranger-slayers-prey",
+    "name": "Ranger: Monster Slayer: Slayer's Prey",
+    "kind": "add-dice",
+    "effect": "Add 1d6 damage to the designated prey.",
+    "toggle": true,
+    "condition": "hasClassFeature('Slayer’s Prey')",
+    "notes": "character.js:1018-1019."
+  },
+  {
+    "id": "ranger-natural-explorer",
+    "name": "Ranger: Natural Explorer",
+    "kind": "advantage",
+    "effect": "Advantage on relevant ability checks.",
+    "toggle": true,
+    "condition": "hasClassFeature('Natural Explorer')",
+    "notes": "character.js:194."
+  },
+  {
+    "id": "ranger-gathered-swarm",
+    "name": "Ranger: Swarmkeeper: Gathered Swarm",
+    "kind": "add-dice",
+    "effect": "Add extra force damage to attacks.",
+    "toggle": true,
+    "condition": "hasClassFeature('Gathered Swarm')",
+    "notes": "character.js:831-832."
+  },
+  {
+    "id": "rogue-sneak-attack",
+    "name": "Rogue: Sneak Attack",
+    "kind": "add-dice",
+    "effect": "Add ceil(RogueLevel/2) d6 to a qualifying attack (finesse/ranged/psychic blade).",
+    "toggle": true,
+    "condition": "hasClassFeature('Sneak Attack') AND finesse/ranged weapon",
+    "notes": "character.js:1044-1055; utils.js:231-287. Default on. Lock: rogue-sneak-attack-lock; 'Sneak Attack' effect tag."
+  },
+  {
+    "id": "rogue-cunning-strike",
+    "name": "Rogue: Cunning Strike",
+    "kind": "add-dice",
+    "effect": "Spend sneak-attack dice on Cunning Strike effects (queried); reduces sneak dice.",
+    "toggle": true,
+    "condition": "hasClassFeature('Cunning Strike')",
+    "notes": "utils.js:197-266. Adds 'cunning-strike-effects' to roll info. Lock: rogue-cunning-strike-lock."
+  },
+  {
+    "id": "rogue-assassinate",
+    "name": "Rogue: Assassin: Assassinate (2014)",
+    "kind": "advantage",
+    "effect": "Advantage on the attack and auto-roll critical damage dice.",
+    "toggle": true,
+    "condition": "hasClassFeature('Assassinate')",
+    "notes": "character.js:1333-1338, 1611-1616. OVERRIDE_ADVANTAGE + forced crit. Lock: rogue-assassinate-lock."
+  },
+  {
+    "id": "rogue-assassinate-2024",
+    "name": "Rogue: Assassin: Assassinate (2024)",
+    "kind": "advantage",
+    "effect": "Advantage on the attack and add +RogueLevel to sneak-attack damage.",
+    "toggle": true,
+    "condition": "hasClassFeature('Assassinate 2024')",
+    "notes": "character.js:499-509, 1341-1349; utils.js:270-277. OVERRIDE_ADVANTAGE; 'Assassinate' effect tag."
+  },
+  {
+    "id": "sorcerer-trance-of-order",
+    "name": "Sorcerer: Clockwork Soul: Trance of Order",
+    "kind": "advantage",
+    "effect": "Treat d20 rolls of 9 or lower as 10 (modeled as favorable roll / effect tag).",
+    "toggle": true,
+    "condition": "hasClassFeature('Trance of Order')",
+    "notes": "character.js:120, 324-328, 1352, 2032. 'Trance of Order' effect."
+  },
+  {
+    "id": "eldritch-invocation-lifedrinker",
+    "name": "Warlock: Eldritch Invocation: Lifedrinker",
+    "kind": "damage-mod",
+    "effect": "Add Charisma modifier as necrotic damage to pact weapon strikes.",
+    "toggle": true,
+    "condition": "Warlock with Lifedrinker invocation",
+    "notes": "character.js:1062-1065."
+  },
+  {
+    "id": "warlock-the-celestial-radiant-soul",
+    "name": "Warlock: The Celestial: Radiant Soul",
+    "kind": "damage-mod",
+    "effect": "Add Charisma modifier to one radiant/fire spell's damage.",
+    "toggle": true,
+    "condition": "hasClassFeature('Radiant Soul')",
+    "notes": "character.js:1711-1716. Default on."
+  },
+  {
+    "id": "genies-vessel",
+    "name": "Warlock: The Genie: Genie's Wrath",
+    "kind": "add-dice",
+    "effect": "Add proficiency-bonus extra damage of the genie kind's type (Dao/Djinni/Efreeti/Marid).",
+    "toggle": true,
+    "condition": "hasClassFeature('Genie’s Vessel')",
+    "notes": "character.js:851-860. Default on."
+  },
+  {
+    "id": "warlock-hexblade-curse",
+    "name": "Warlock: The Hexblade: Hexblade's Curse",
+    "kind": "add-dice",
+    "effect": "Add proficiency-bonus damage to the cursed target AND crit on 19-20.",
+    "toggle": true,
+    "condition": "hasClassFeature('Hexblade’s Curse')",
+    "notes": "character.js:842-843, 1274-1277, 1497-1498. Also sets critical-limit to 19."
+  },
+  {
+    "id": "warlock-grave-touched",
+    "name": "Warlock: The Undead: Grave Touched",
+    "kind": "damage-mod",
+    "effect": "Change weapon damage to necrotic and add extra necrotic damage.",
+    "toggle": true,
+    "condition": "hasClassFeature('Grave Touched')",
+    "notes": "character.js:868-869."
+  },
+  {
+    "id": "wizard-bladesong",
+    "name": "Wizard: Bladesinger: Bladesong",
+    "kind": "advantage",
+    "effect": "Advantage on Acrobatics checks (and Song of Victory bonus damage when active).",
+    "toggle": true,
+    "condition": "hasClassFeature('Bladesong')",
+    "notes": "character.js:104-105, 284-303, 631-632. OVERRIDE_ADVANTAGE on Acrobatics; also warcaster/concentration interaction."
+  },
+  {
+    "id": "empowered-evocation",
+    "name": "Wizard: Evocation Wizard: Empowered Evocation",
+    "kind": "damage-mod",
+    "effect": "Add Intelligence modifier to one evocation spell's damage.",
+    "toggle": true,
+    "condition": "hasClassFeature('Empowered Evocation')",
+    "notes": "character.js:1727-1731. Default on."
+  },
+  {
+    "id": "wizard-durable-magic",
+    "name": "Wizard: War Magic: Durable Magic",
+    "kind": "save-mod",
+    "effect": "+2 to saving throws while concentrating on a spell.",
+    "toggle": true,
+    "condition": "hasClassFeature('Durable Magic')",
+    "notes": "character.js:313-319."
+  },
+  {
+    "id": "bloodhunter-crimson-rite",
+    "name": "Bloodhunter: Crimson Rite",
+    "kind": "add-dice",
+    "effect": "Add Crimson Rite elemental damage die to weapon attacks.",
+    "toggle": true,
+    "condition": "hasClassFeature('Crimson Rite')",
+    "notes": "character.js:939-940."
+  },
+  {
+    "id": "protector-aasimar-radiant-soul",
+    "name": "Aasimar: Protector: Radiant Soul",
+    "kind": "damage-mod",
+    "effect": "Add extra radiant damage equal to character level.",
+    "toggle": true,
+    "condition": "hasRacialTrait Protector Aasimar Radiant Soul",
+    "notes": "character.js:750."
+  },
+  {
+    "id": "motm-aasimar-radiant-soul",
+    "name": "Aasimar: Celestial Revelation: Radiant Soul (MotM)",
+    "kind": "damage-mod",
+    "effect": "Add extra radiant damage equal to proficiency bonus.",
+    "toggle": true,
+    "condition": "hasRacialTrait Celestial Revelation Radiant Soul",
+    "notes": "character.js:757."
+  },
+  {
+    "id": "motm-bugbear-surprise-attack",
+    "name": "Bugbear: Surprise Attack",
+    "kind": "add-dice",
+    "effect": "Add 2d6 damage if the target hasn't taken a turn yet in combat.",
+    "toggle": true,
+    "condition": "hasRacialTrait Bugbear Surprise Attack",
+    "notes": "character.js:764-767. Apply-to-next-roll unless motm-bugbear-surprise-attack-lock."
+  },
+  {
+    "id": "improved-critical",
+    "name": "Fighter: Champion: Improved / Superior Critical",
+    "kind": "attack-mod",
+    "effect": "Expand critical hit range (19-20 for Improved, 18-20 for Superior).",
+    "toggle": false,
+    "condition": "hasClassFeature('Improved Critical') or hasClassFeature('Superior Critical')",
+    "notes": "character.js:1277-1282, 1547-1552. Automatic; sets critical-limit to 19 or 18."
+  },
+  {
+    "id": "silver-tongue",
+    "name": "Bard: College of Eloquence: Silver Tongue",
+    "kind": "advantage",
+    "effect": "Treat Deception/Persuasion rolls of 9 or lower as 10 (favorable) - effect tag.",
+    "toggle": false,
+    "condition": "hasClassFeature('Silver Tongue') AND skill is Deception or Persuasion",
+    "notes": "character.js:114-116. Automatic; 'Silver Tongue' effect."
+  },
+  {
+    "id": "reliable-talent",
+    "name": "Rogue: Reliable Talent",
+    "kind": "reroll",
+    "effect": "Treat a d20 roll of 9 or lower as 10 on proficient/expertise checks (favorable min) - effect tag.",
+    "toggle": false,
+    "condition": "hasClassFeature('Reliable Talent') AND proficiency is Proficiency or Expertise",
+    "notes": "character.js:109-111, 1402. Automatic; 'Reliable Talent' effect."
+  },
+  {
+    "id": "indomitable-might",
+    "name": "Fighter: Champion: Indomitable Might",
+    "kind": "flat",
+    "effect": "Treat a STR check result lower than STR score as the STR score.",
+    "toggle": false,
+    "condition": "hasClassFeature('Indomitable Might') AND ability is STR",
+    "notes": "character.js:123, 274-277. Automatic; 'Indomitable Might' effect."
+  },
+  {
+    "id": "otherworldly-glamour",
+    "name": "Feature: Otherworldly Glamour",
+    "kind": "flat",
+    "effect": "Add Charisma modifier to Charisma-based ability checks.",
+    "toggle": false,
+    "condition": "hasClassFeature('Otherworldly Glamour')",
+    "notes": "character.js:252-256. Automatic; 'Otherworldly Glamour' effect."
+  },
+  {
+    "id": "tool-expertise-intuition-traits",
+    "name": "Racial Tool Intuition traits (Windwright/Warder/Gifted Scribe/Healing Touch/Ever Hospitable/Artisan)",
+    "kind": "flat",
+    "effect": "Add bonus to matching tool checks.",
+    "toggle": false,
+    "condition": "hasRacialTrait matching the specific tool",
+    "notes": "character.js:1408-1423. Automatic per tool."
+  },
+  {
+    "id": "vicious-weapon",
+    "name": "Magic Item: Vicious Weapon",
+    "kind": "add-dice",
+    "effect": "On a natural 20 attack, add the weapon's extra flat damage as critical damage.",
+    "toggle": false,
+    "condition": "Weapon description matches Vicious pattern AND critical hit",
+    "notes": "utils.js:449-455. Automatic from item text."
+  },
+  {
+    "id": "effects-bless",
+    "name": "Effect: Bless",
+    "kind": "add-dice",
+    "effect": "Add 1d4 to attack rolls and saving throws.",
+    "toggle": true,
+    "condition": null,
+    "notes": "settings.js:544-549. Generic effect toggle."
+  },
+  {
+    "id": "effects-bane",
+    "name": "Effect: Bane",
+    "kind": "add-dice",
+    "effect": "Subtract 1d4 from attack rolls and saving throws.",
+    "toggle": true,
+    "condition": null,
+    "notes": "settings.js:551-556."
+  },
+  {
+    "id": "effects-enlarge",
+    "name": "Effect: Enlarge",
+    "kind": "add-dice",
+    "effect": "Advantage on STR checks/saves; +1d4 weapon damage.",
+    "toggle": true,
+    "condition": "Melee / Unarmed / Shadow Blade attack",
+    "notes": "settings.js:558-563; utils.js:487-496. Pushes '+1d4' damage, 'Enlarge' effect."
+  },
+  {
+    "id": "effects-reduce",
+    "name": "Effect: Reduce",
+    "kind": "add-dice",
+    "effect": "Disadvantage on STR checks/saves; -1d4 weapon damage (min 1).",
+    "toggle": true,
+    "condition": "Melee / Unarmed / Shadow Blade attack",
+    "notes": "settings.js:565-570; utils.js:492-495. Pushes '-1d4' damage, 'Reduce' effect."
+  },
+  {
+    "id": "effects-exhaustion-2024",
+    "name": "Effect: Exhaustion (2024)",
+    "kind": "flat",
+    "effect": "Apply -2 x exhaustion level to all d20 rolls.",
+    "toggle": true,
+    "condition": null,
+    "notes": "settings.js:530-535."
+  },
+  {
+    "id": "effects-exhaustion-2014",
+    "name": "Effect: Exhaustion (2014)",
+    "kind": "advantage",
+    "effect": "Disadvantage on ability checks (level>=1) and on attacks/saves (level>=3).",
+    "toggle": true,
+    "condition": null,
+    "notes": "settings.js:537-542."
+  },
+  {
+    "id": "custom-roll-dice",
+    "name": "Custom Roll dice formula bonus (d20 rolls)",
+    "kind": "add-dice",
+    "effect": "Append a user-defined formula to all d20 rolls (catch-all for Bless, Guidance, Bane, Magic Weapon, etc.).",
+    "toggle": true,
+    "condition": null,
+    "notes": "settings.js:503-508. Free-text; injected as CUSTOM modifier."
+  },
+  {
+    "id": "custom-damage-dice",
+    "name": "Custom Damage dice formula bonus",
+    "kind": "add-dice",
+    "effect": "Add user-defined dice to damage rolls; supports 'type:formula' and comma-separated independent rolls.",
+    "toggle": true,
+    "condition": null,
+    "notes": "settings.js:509-514; utils.js:534-561 addCustomDamages."
+  },
+  {
+    "id": "custom-ability-modifier",
+    "name": "Custom magical modifier to raw ability checks",
+    "kind": "flat",
+    "effect": "Add a flat modifier (e.g. Stone of Good Luck) to raw ability checks.",
+    "toggle": true,
+    "condition": null,
+    "notes": "settings.js:515-520; character.js:243-244; extras.js:334-341."
+  },
+  {
+    "id": "custom-critical-limit",
+    "name": "Custom Critical limit",
+    "kind": "attack-mod",
+    "effect": "Override the critical-hit threshold (for homebrew items).",
+    "toggle": true,
+    "condition": null,
+    "notes": "settings.js:521-526; character.js:1325, 1603, 1994."
+  },
+  {
+    "id": "versatile-choice",
+    "name": "Versatile weapon choice",
+    "kind": "damage-mod",
+    "effect": "Roll versatile weapon damage as one-handed, two-handed, or both separately.",
+    "toggle": true,
+    "condition": null,
+    "notes": "settings.js:482-492. combobox both/one/two; affects GWF eligibility."
+  },
+  {
+    "id": "toll-choice",
+    "name": "Toll the Dead choice",
+    "kind": "damage-mod",
+    "effect": "Roll Toll the Dead as both damage dice separately or query which.",
+    "toggle": true,
+    "condition": "Spell is Toll the Dead",
+    "notes": "settings.js:493-502; character.js:2036, roll_renderer.js:390."
+  },
+  {
+    "id": "critical-homebrew",
+    "name": "Critical hit rule (global)",
+    "kind": "damage-mod",
+    "effect": "How crit damage is computed: PHB (roll dice twice), Homebrew Max (max value), Homebrew Reroll (reroll all), Homebrew Mod (double modifiers too), Homebrew Double.",
+    "toggle": true,
+    "condition": null,
+    "notes": "settings.js:22-29 CriticalRules; damagesToCrits utils.js:113-133."
+  },
+  {
+    "id": "roll-type-global",
+    "name": "Global roll mode (advantage default)",
+    "kind": "advantage",
+    "effect": "Sets default advantage handling: Normal, Query, Advantage, Disadvantage, Roll Twice, Super Advantage/Disadvantage.",
+    "toggle": true,
+    "condition": null,
+    "notes": "settings.js:108-116; RollType enum settings.js:8-20."
+  }
+]

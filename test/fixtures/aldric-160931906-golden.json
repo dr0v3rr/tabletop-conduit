@@ -1,0 +1,67 @@
+{
+  "_meta": {
+    "character": "Aldric",
+    "characterId": 160931906,
+    "class": "Artificer (Artillerist) 11",
+    "species": "Vedalken",
+    "source": "D&D Beyond computed character sheet (public + logged-in as RavenGuild) as displayed 2026-08-17",
+    "note": "Ground-truth golden values read directly from DDB's rendered React sheet. Spell attack +11 and Save DC 19 include the +3 from the equipped 'All-Purpose Tool, +3' (item modifiers artificer-spell-attacks/-save-dc). Dark Bargain feat carries ZERO mechanical modifiers on DDB (narrative-only 'At your GM's discretion'). Dagger/Longsword/Quarterstaff exist in inventory but DDB does NOT render them in the Actions attack table, so their to-hit/damage are unextractable (null)."
+  },
+  "abilities": {
+    "STR": { "score": 8, "mod": -1 },
+    "DEX": { "score": 14, "mod": 2 },
+    "CON": { "score": 14, "mod": 2 },
+    "INT": { "score": 18, "mod": 4 },
+    "WIS": { "score": 14, "mod": 2 },
+    "CHA": { "score": 8, "mod": -1 }
+  },
+  "saves": {
+    "STR": { "mod": -1, "proficient": false },
+    "DEX": { "mod": 2, "proficient": false },
+    "CON": { "mod": 6, "proficient": true },
+    "INT": { "mod": 8, "proficient": true },
+    "WIS": { "mod": 2, "proficient": false },
+    "CHA": { "mod": -1, "proficient": false }
+  },
+  "skills": {
+    "acrobatics": { "mod": 2, "proficient": false, "expertise": false },
+    "animal-handling": { "mod": 2, "proficient": false, "expertise": false },
+    "arcana": { "mod": 4, "proficient": false, "expertise": false },
+    "athletics": { "mod": -1, "proficient": false, "expertise": false },
+    "deception": { "mod": -1, "proficient": false, "expertise": false },
+    "history": { "mod": 4, "proficient": false, "expertise": false },
+    "insight": { "mod": 6, "proficient": true, "expertise": false },
+    "intimidation": { "mod": -1, "proficient": false, "expertise": false },
+    "investigation": { "mod": 8, "proficient": true, "expertise": false },
+    "medicine": { "mod": 2, "proficient": false, "expertise": false },
+    "nature": { "mod": 4, "proficient": false, "expertise": false },
+    "perception": { "mod": 6, "proficient": true, "expertise": false },
+    "performance": { "mod": -1, "proficient": false, "expertise": false },
+    "persuasion": { "mod": -1, "proficient": false, "expertise": false },
+    "religion": { "mod": 4, "proficient": false, "expertise": false },
+    "sleight-of-hand": { "mod": 6, "proficient": true, "expertise": false },
+    "stealth": { "mod": 6, "proficient": true, "expertise": false },
+    "survival": { "mod": 2, "proficient": false, "expertise": false }
+  },
+  "passives": {
+    "perception": 16,
+    "investigation": 18,
+    "insight": 16
+  },
+  "initiative": 2,
+  "ac": 18,
+  "spellSaveDc": 19,
+  "spellAttack": 11,
+  "profBonus": 4,
+  "attacks": {
+    "Fire Bolt": { "toHit": 11, "damage": "3d10" },
+    "Ray of Frost": { "toHit": 11, "damage": "3d8" },
+    "Scorching Ray": { "toHit": 11, "damage": "2d6" },
+    "Unarmed Strike": { "toHit": 3, "damage": "0" },
+    "Eldritch Cannon: Flamethrower": { "toHit": null, "damage": "3d8+4" },
+    "Detonate": { "toHit": null, "damage": "3d10" },
+    "Dagger": { "toHit": null, "damage": null },
+    "Longsword": { "toHit": null, "damage": null },
+    "Quarterstaff": { "toHit": null, "damage": null }
+  }
+}
