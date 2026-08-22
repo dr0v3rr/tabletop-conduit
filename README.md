@@ -24,6 +24,34 @@ successor to Beyond20, packaged as a standalone Electron app.
 
 ---
 
+## Screenshots
+
+**D&D Beyond tab** — the rules-engine panel on the left reads your live sheet; the right pane
+shows your D&D Beyond character. Top to bottom on the left: the character picker with
+`Load`/refresh, the `Table` / `D&D Beyond` pane toggle, a live **`DDB: synced ✓`** status badge and
+`← Menu`, the at-a-glance **stat strip** (AC · Speed · Init · Passive Perception/Investigation/
+Insight), `+ Condition`, the **roll modes** (`S·Dis` / `Dis` / `Normal` / `Adv` / `S·Adv`), a one-off
+**"This roll"** modifier with **Whisper** and **Reroll**, a **search** box, and the **HP tracker** —
+bar, damage-type selector, `– Damage` / `+ Heal`, **Undo**, **Bind Token**, and **Temp** HP — with
+**resistances** listed beneath.
+
+![Conduit — D&D Beyond tab](docs/images/01-dnd-beyond-tab.png)
+
+**Table (Roll20) tab** — the same panel with your actual Roll20 game on the right. Clicking a roll
+injects a formatted chat command (here, Ember's attack + damage cards). Scrolling the panel down
+reveals **Abilities** and **Saving Throws**. *(Account handle and other players are redacted.)*
+
+![Conduit — Table (Roll20) tab](docs/images/02-table-roll20-tab.png)
+
+**Panel — spells, items, rests, log** — further down the left panel: **Spells** (attack bonus / save
+DC + `Rest`), **Inventory** (rollable and consumable items with quantity controls + `Use`),
+**Rests** (Hit-Dice pips, `Short Rest` / `Long Rest`), **Roll Options**, and a **Session Log** with
+roll statistics and `Full Sync` / `Sync`.
+
+![Conduit — items, rests, session log](docs/images/03-panel-items-rests-log.png)
+
+---
+
 ## Requirements
 
 - **Node.js 20+** (developed on 22.x) and npm — only needed to run from source or build.
@@ -119,17 +147,34 @@ That's expected and fine for handing to a friend. Proper signing needs a paid Ap
 
 - **Character picker** (top left) — lists your D&D Beyond characters once you're signed into the
   DDB pane. It auto-loads the last one you used. If you're not signed in yet it falls back to a
-  raw character-ID box; sign in and click the **⟳** refresh button.
-- **Roll options** — advantage/disadvantage (and super-adv/dis), a one-off "this roll" modifier,
-  and a whisper-to-GM toggle apply to whatever you click next.
+  raw character-ID box; sign in and click the **⟳** refresh button. **`Load`** (re)loads the
+  selected character.
+- **Pane toggle & Menu** — `Table` / `D&D Beyond` switches what the right pane shows (your Roll20
+  game or the DDB web page); **`← Menu`** returns to the app's top-level menu.
+- **Sync status** — the **`DDB: synced ✓`** badge shows whether the panel reflects your live DDB
+  sheet; it flips while a write is in flight and settles once DDB confirms.
+- **Stat strip** — at-a-glance **AC**, **Speed**, **Initiative**, and passive **Perception /
+  Investigation / Insight**. Clicking **Init** rolls initiative into the Roll20 turn tracker.
+- **Roll options** — advantage/disadvantage (and super-adv/dis), a one-off **"This roll"** modifier,
+  a **Whisper**-to-GM toggle, and **Reroll** (re-send the last roll) apply to what you click next.
+- **Search** — filter skills, attacks, and spells by name.
 - **Rolls** — abilities, saves, skills, initiative, weapon attacks, and spells. Attack and damage
   spells render as 5e attack/damage cards; utility casts render as a simple card.
-- **HP tracker** — apply damage/heal; it writes back to D&D Beyond and (if a Roll20 token shares
-  the character's name) updates that token's HP bar.
-- **Conditions** — click to apply/clear; posts a note to Roll20 and applies the mechanical
-  advantage/disadvantage effects to affected rolls.
-- **Inventory** — use/consume items (potions, etc.) with quantity write-back to DDB.
-- **Spell slots & hit dice** — spend/restore, synced with DDB.
+- **HP tracker** — apply damage (with a **damage-type** selector) or heal; it writes back to D&D
+  Beyond and, if a Roll20 token shares the character's name, updates that token's HP bar. **Undo**
+  reverts the last change, **Bind Token** pins the sheet to a specific Roll20 token, and **Temp**
+  sets temporary HP (shown on the token's second bar). Any **resistances/immunities** are listed
+  beneath.
+- **Conditions** — click **`+ Condition`** to apply/clear; posts a note to Roll20 and applies the
+  mechanical advantage/disadvantage effects to affected rolls.
+- **Abilities & Saving Throws** — full ability-check and saving-throw rows, each click-to-roll.
+- **Spells** — shows spell attack bonus / save DC; casting spends a slot (see below).
+- **Inventory** — use/consume items (potions, etc.) with quantity write-back to DDB; rollable items
+  post their dice.
+- **Spell slots, hit dice & rests** — spend/restore slots, roll/spend Hit Dice, and take a
+  **Short** or **Long Rest** — all synced with DDB.
+- **Session Log** — running roll statistics for the table (roll count, crits ✦, fumbles ✗) with
+  **`Sync`** / **`Full Sync`** to reconcile the panel against DDB.
 - **Sign out** (top toolbar) — clears the saved D&D Beyond + Roll20 session so the app behaves
   like a fresh install. Useful for testing first-run, or switching accounts.
 
