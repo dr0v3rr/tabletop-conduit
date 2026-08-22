@@ -9,6 +9,40 @@ carries one artifact per platform/architecture plus SHA-256 checksums.
 
 ---
 
+## v0.2.3 — security update
+
+Runtime + toolchain maintenance. **Recommended for all users.**
+
+- **Electron 33 → 43.4.1** — updates the embedded Chromium that renders the live DDB/Roll20 panes.
+- **Hardened context menu** on our own UI panes; `Inspect Element` is dev-only (no DevTools on
+  packaged builds). Roll20/DDB keep their native site menus.
+- Build/test toolchain bumped (electron-builder 26, vitest 4, esbuild 0.28) — dev-only, never shipped.
+- **`npm audit`: 0 vulnerabilities** (the app has no runtime npm dependencies).
+
+### Downloads
+
+| Platform | Arch | File | Type |
+|---|---|---|---|
+| macOS | arm64 | `Conduit-0.2.3-arm64.dmg` | Disk image |
+| macOS | arm64 | `Conduit-0.2.3-arm64-mac.zip` | Zipped `.app` |
+| Windows | x64 | `Conduit Setup 0.2.3.exe` | NSIS installer |
+| Windows | x64 | `Conduit 0.2.3.exe` | Portable |
+| Linux | x64 | `Conduit-0.2.3.AppImage` | AppImage |
+| Linux | arm64 | `Conduit-0.2.3-arm64.AppImage` | AppImage |
+
+### SHA-256 checksums
+
+```
+0f1029d3b2a3026397f057c7bf7682ee73cecc239a0d977b8e1bef3667595f38  Conduit-0.2.3-arm64.dmg
+cc63c02e57a7720517b5c23502f4f74e7580d7f90a92fcfd1294eff22a9cd13c  Conduit-0.2.3-arm64-mac.zip
+8bc2f1eb6bf8434d744f9be4f54928ad1bf0f0dabab22db7a00c67f0dde79efa  Conduit Setup 0.2.3.exe
+6b29d3e6550511bee25b860794c7edc945617a707244133761447ddc20083d71  Conduit 0.2.3.exe
+6c4a45491a411a90e2d84231ec0ea0683950b46d008844f1393c070aec8c2407  Conduit-0.2.3.AppImage
+506032a5d90e4ee969ae73310930313e4d5992f7a1f739fee60853949a303999  Conduit-0.2.3-arm64.AppImage
+```
+
+---
+
 ## v0.2.2 — first Conduit release
 
 First release under the **Conduit** name (formerly the internal "DDB-Roll20 Companion"). Same

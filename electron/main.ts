@@ -1,7 +1,8 @@
 // Electron main. One window with a splash chooser + a left sheet-UI view and two right-hand panes
 // (the VTT — Roll20 — and the character source's site). Character sources: D&D Beyond, poke5e,
 // and Open5e/DDB monsters. The engine runs here in main; the renderer is a thin client over IPC.
-import { app, BaseWindow, BrowserWindow, WebContentsView, ipcMain, dialog, session, clipboard, net, Notification, shell } from "electron";
+import { app, BaseWindow, BrowserWindow, WebContentsView, ipcMain, dialog, session, clipboard, net, Notification, shell, Menu } from "electron";
+import type { MenuItemConstructorOptions } from "electron";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { writeFile, readFile } from "node:fs/promises";
@@ -308,8 +309,52 @@ function openAuthPopup(url: string, spawningView: WebContentsView) {
   popup.loadURL(url, { userAgent: ua });
 }
 
-function hardenView(view: WebContentsView, opts: { externalLinks?: boolean; lockToFile?: boolean }) {
+// A controlled, minimal context menu for OUR OWN UI panes (sheet + splash). We deliberately do
+// NOT attach this to the remote Roll20/DDB panes — those sites drive their own right-click menus
+// (e.g. Roll20's token menu), and a native popup would clash with them. "Inspect Element" is
+// exposed ONLY in development builds, so packaged apps can't open DevTools on our renderer.
+function installContextMenu(view: WebContentsView) {
   const wc = view.webContents;
+  wc.on("context-menu", (_e, params) => {
+    const items: MenuItemConstructorOptions[] = [];
+    const ef = params.editFlags;
+
+    // Spellcheck fixes first, when right-clicking a misspelled word in an editable field.
+    if (params.isEditable && params.misspelledWord && params.dictionarySuggestions.length) {
+      for (const s of params.dictionarySuggestions.slice(0, 5)) items.push({ label: s, click: () => wc.replaceMisspelling(s) });
+      items.push({ type: "separator" });
+    }
+    if (params.linkURL) {
+      items.push(
+        { label: "Copy Link", click: () => clipboard.writeText(params.linkURL) },
+        { label: "Open Link in Browser", click: () => shell.openExternal(params.linkURL).catch(() => {}) },
+        { type: "separator" },
+      );
+    }
+    if (params.isEditable) {
+      items.push(
+        { label: "Cut", role: "cut", enabled: ef.canCut },
+        { label: "Copy", role: "copy", enabled: ef.canCopy },
+        { label: "Paste", role: "paste", enabled: ef.canPaste },
+        { type: "separator" },
+        { label: "Select All", role: "selectAll" },
+      );
+    } else if (params.selectionText) {
+      items.push({ label: "Copy", role: "copy", enabled: ef.canCopy });
+    }
+    // Dev-only escape hatch — never present in a packaged/production build.
+    if (!app.isPackaged) {
+      if (items.length) items.push({ type: "separator" });
+      items.push({ label: "Inspect Element", click: () => wc.inspectElement(params.x, params.y) });
+    }
+    if (!items.length) return; // nothing actionable → show no menu at all
+    Menu.buildFromTemplate(items).popup({ window: win });
+  });
+}
+
+function hardenView(view: WebContentsView, opts: { externalLinks?: boolean; lockToFile?: boolean; ownUi?: boolean }) {
+  const wc = view.webContents;
+  if (opts.ownUi) installContextMenu(view); // controlled menu on our panes only
   wc.setWindowOpenHandler(({ url }) => {
     // Sign-in popups stay in-app (shared session); other links open in the system browser.
     if (!opts.lockToFile && isAuthPopup(url)) { openAuthPopup(url, view); return { action: "deny" }; }
@@ -343,7 +388,7 @@ function createWindow() {
   });
   hardenView(roll20View, { externalLinks: true });
   hardenView(ddbView, { externalLinks: true });
-  hardenView(sheetView, { externalLinks: true, lockToFile: true });
+  hardenView(sheetView, { externalLinks: true, lockToFile: true, ownUi: true });
 
   // The inactive pane is sized 0×0 (see layout()); Chromium would otherwise throttle its
   // timers/React re-render when hidden, making slot write-backs to the background DDB pane
@@ -355,7 +400,7 @@ function createWindow() {
   splashView = new WebContentsView({
     webPreferences: { preload: join(__dirname, "preload.cjs"), contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
-  hardenView(splashView, { externalLinks: true, lockToFile: true });
+  hardenView(splashView, { externalLinks: true, lockToFile: true, ownUi: true });
 
   win.contentView.addChildView(ddbView); // bottom of the right stack
   win.contentView.addChildView(roll20View); // active by default (rightMode = 'roll20')
