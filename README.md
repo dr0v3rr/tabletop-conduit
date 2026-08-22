@@ -18,6 +18,10 @@ successor to Beyond20, packaged as a standalone Electron app.
 
 > Licensed under **GPL-3.0-or-later**.
 
+**Downloads:** prebuilt installers (macOS / Windows / Linux) are on the
+[Releases page](https://github.com/dr0v3rr/tabletop-conduit/releases) — see
+[`docs/RELEASES.md`](docs/RELEASES.md) for artifacts, checksums, and install notes.
+
 ---
 
 ## Requirements
