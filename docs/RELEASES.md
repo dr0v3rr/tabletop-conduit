@@ -9,6 +9,40 @@ carries one artifact per platform/architecture plus SHA-256 checksums.
 
 ---
 
+## v0.2.4 — poke5e resilience
+
+- **Auto-detects the poke5e API key + endpoint** from the live site's own traffic, so a rotated
+  anon key (or an endpoint move) no longer breaks Pokémon sheets. Detected value is cached and
+  re-applied on the next launch; a baked-in default is used only until detection happens.
+- **Handles poke5e's move to `api.poke5e.app`** (from the raw Supabase host) — now the default,
+  with either endpoint auto-detected.
+- Adopts a detected key only if it's an `anon`-role Supabase JWT from a trusted host
+  (`*.poke5e.app` / `*.supabase.co`) — never a `service_role`/malformed token or a foreign server.
+
+### Downloads
+
+| Platform | Arch | File | Type |
+|---|---|---|---|
+| macOS | arm64 | `Conduit-0.2.4-arm64.dmg` | Disk image |
+| macOS | arm64 | `Conduit-0.2.4-arm64-mac.zip` | Zipped `.app` |
+| Windows | x64 | `Conduit Setup 0.2.4.exe` | NSIS installer |
+| Windows | x64 | `Conduit 0.2.4.exe` | Portable |
+| Linux | x64 | `Conduit-0.2.4.AppImage` | AppImage |
+| Linux | arm64 | `Conduit-0.2.4-arm64.AppImage` | AppImage |
+
+### SHA-256 checksums
+
+```
+6383be3ff2d148b54afc503ea812de26502d434313720577e90975eb85dc2a3b  Conduit-0.2.4-arm64.dmg
+81232f2eca2d03d66d99fd0790d082681b10513a1a16998716c9febe499a6565  Conduit-0.2.4-arm64-mac.zip
+ab92924aa29a038ce052e91740a6edbcceae341b844a39bac53d8af6af0ba60a  Conduit Setup 0.2.4.exe
+33182b7d9cc4d66104ef7a66fb1ad5ac1890ae0fe63614f098ded540ee91c887  Conduit 0.2.4.exe
+15f900b1c3d35ccc199502f36602bff586e7d8c5debbb66e79ff1781a0f3f07a  Conduit-0.2.4.AppImage
+303c47fb88c700fb0eaca260ff806d0909d8a3ae5e6100cc8c4a07e233370563  Conduit-0.2.4-arm64.AppImage
+```
+
+---
+
 ## v0.2.3 — security update
 
 Runtime + toolchain maintenance. **Recommended for all users.**

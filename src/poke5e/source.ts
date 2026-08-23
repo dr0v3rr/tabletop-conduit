@@ -8,10 +8,83 @@
 
 import type { Ability, RollModel, SkillKey, SaveValue, SkillValue } from "../engine/types";
 
-const SUPABASE_URL = "https://logncbjjfmnvbfrjdxmg.supabase.co";
-// Public anon key (shipped in poke5e's own client bundle; safe to embed).
-const ANON_KEY =
+// poke5e's API endpoint. The site moved from the raw Supabase host
+// (logncbjjfmnvbfrjdxmg.supabase.co) to the custom domain api.poke5e.app — both proxy the same
+// project and still speak the Supabase REST API (/rest/v1/rpc/...). We default to the custom
+// domain and auto-detect whatever the live site actually uses (see setPoke5eCredentials).
+const DEFAULT_SUPABASE_URL = "https://api.poke5e.app";
+// Public anon key (shipped in poke5e's own client bundle; safe to embed). This is only a FALLBACK:
+// at runtime the app auto-detects the live key from poke5e.app's own API calls (see
+// setPoke5eCredentials), so a rotated key — or even a new Supabase project — is picked up without a
+// code change. If detection hasn't happened yet (e.g. before the pane loads), we use this default.
+const DEFAULT_ANON_KEY =
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxvZ25jYmpqZm1udmJmcmpkeG1nIiwicm9sZSI6ImFub24iLCJpYXQiOjE2Njk1ODY2MzEsImV4cCI6MTk4NTE2MjYzMX0.RXw9pfN-4qOR2AbqPoM6GMzjDGRwYnClF9LEiI2VE5k";
+
+let supabaseUrl = DEFAULT_SUPABASE_URL;
+let anonKey = DEFAULT_ANON_KEY;
+
+/** Decode a JWT payload without verifying the signature (we only need the claims). Portable across
+ *  the Node main process and any browser-y context — no direct Buffer/atob typing dependency. */
+function jwtPayload(token: string): any | null {
+  const parts = token.split(".");
+  const payload = parts.length === 3 ? parts[1] : "";
+  if (!payload) return null;
+  try {
+    const b64 = payload.replace(/-/g, "+").replace(/_/g, "/");
+    const g = globalThis as any;
+    const json: string =
+      typeof g.Buffer !== "undefined" ? g.Buffer.from(b64, "base64").toString("utf8")
+      : typeof g.atob === "function" ? decodeURIComponent(escape(g.atob(b64)))
+      : "";
+    return json ? JSON.parse(json) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** A token we'll accept as the poke5e key: a Supabase JWT whose role is exactly `anon`. We refuse
+ *  anything elevated (e.g. a leaked `service_role`) so a bad detection can never escalate us. */
+function isAcceptableAnonKey(token: string): boolean {
+  const p = jwtPayload(token);
+  return !!p && p.role === "anon" && p.iss === "supabase";
+}
+
+/** A host we're willing to send the read/write keys to: HTTPS on poke5e's own domain or its
+ *  Supabase project host. Prevents a stray/hostile request from repointing us at an arbitrary
+ *  server (which would leak keys). */
+function isTrustedApiOrigin(url: string): string | null {
+  try {
+    const u = new URL(url);
+    if (u.protocol !== "https:") return null;
+    if (/(^|\.)poke5e\.app$/i.test(u.hostname) || /(^|\.)supabase\.co$/i.test(u.hostname)) return u.origin;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/** Point the RPC layer at credentials detected live from the poke5e site — handles key rotation or
+ *  an endpoint move (e.g. supabase.co → api.poke5e.app). Validates before adopting; no-ops on
+ *  empty/invalid/unchanged input. Returns true only if something actually changed. */
+export function setPoke5eCredentials(creds: { url?: string | null; anonKey?: string | null }): boolean {
+  let changed = false;
+  const origin = isTrustedApiOrigin((creds.url || "").trim());
+  const key = (creds.anonKey || "").trim();
+  if (origin && origin !== supabaseUrl) {
+    supabaseUrl = origin;
+    changed = true;
+  }
+  if (key && key !== anonKey && isAcceptableAnonKey(key)) {
+    anonKey = key;
+    changed = true;
+  }
+  return changed;
+}
+
+/** The currently active poke5e endpoint + anon key (detected, or the baked-in default). */
+export function getPoke5eCredentials(): { url: string; anonKey: string } {
+  return { url: supabaseUrl, anonKey };
+}
 
 /** Pull a read key out of whatever the user pastes: a full share URL or the bare key. */
 export function extractReadKey(input: string): string | null {
@@ -29,14 +102,17 @@ export function extractReadKey(input: string): string | null {
   return m ? m[0] : null;
 }
 
-export const POKE5E_URL = SUPABASE_URL;
-export const POKE5E_ANON = ANON_KEY;
+/** Current poke5e endpoint / anon key. These reflect live-detected credentials (see
+ *  setPoke5eCredentials); call them at use-time rather than caching the return value. */
+export const POKE5E_URL = () => supabaseUrl;
+export const POKE5E_ANON = () => anonKey;
 
-/** Call a poke5e Supabase RPC. Exported so the team/moves module can reuse it. */
+/** Call a poke5e Supabase RPC. Exported so the team/moves module can reuse it. Reads the current
+ *  (possibly auto-detected) credentials on every call so a mid-session key rotation is honored. */
 export async function poke5eRpc(fn: string, body: unknown): Promise<any> {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/${fn}`, {
+  const res = await fetch(`${supabaseUrl}/rest/v1/rpc/${fn}`, {
     method: "POST",
-    headers: { apikey: ANON_KEY, Authorization: `Bearer ${ANON_KEY}`, "Content-Type": "application/json" },
+    headers: { apikey: anonKey, Authorization: `Bearer ${anonKey}`, "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`poke5e ${fn} HTTP ${res.status}`);

@@ -11,7 +11,7 @@ import type { CharacterData, RollRequest } from "../src/pipeline.js";
 import { buildSendExpression } from "../src/roll20/inject.js";
 import { r20TokenExpr } from "../src/roll20/token.js";
 import { ddbSlotsExpr, ddbHitDiceExpr, ddbInventoryExpr, ddbFetchCharExpr } from "../src/ddb/inject.js";
-import { extractReadKey, fetchTrainer, trainerToRollModel, buildInventory, fetchTrainerFeats, updateTrainerHp, updatePokemonHp, updateMovePp } from "../src/poke5e/source.js";
+import { extractReadKey, fetchTrainer, trainerToRollModel, buildInventory, fetchTrainerFeats, updateTrainerHp, updatePokemonHp, updateMovePp, setPoke5eCredentials, getPoke5eCredentials } from "../src/poke5e/source.js";
 import { fetchPokemon, fetchMoveset, movesMap, pokemonToCharacter, resolveAbilities, fetchPokemonFeats, pokemonMeta } from "../src/poke5e/pokemon.js";
 import { abilityIds, passiveAbilityEffects } from "../src/poke5e/abilities-engine.js";
 import { searchMonsters, fetchMonster, monsterToCharacter } from "../src/monster/source.js";
@@ -28,12 +28,18 @@ const campaignNames = new Map<string, string>(); // campaign id -> display name
 
 const storePath = () => join(app.getPath("userData"), "roll-history.json");
 
+// Last poke5e Supabase credentials auto-detected from the site (persisted so they're applied on
+// the next launch, before the pane has a chance to re-emit them). null until first detection.
+let detectedPoke5e: { url: string; anonKey: string } | null = null;
+
 async function loadStore() {
   try {
     const data = JSON.parse(await readFile(storePath(), "utf8"));
     for (const r of data.records ?? []) if (r?.id) sessionLog.set(r.id, r);
     if (Array.isArray(data.actions)) actionLog.push(...data.actions);
     for (const [id, name] of Object.entries(data.campaigns ?? {})) campaignNames.set(id, String(name));
+    // Re-apply a previously detected poke5e key/endpoint so RPCs work before the pane reloads.
+    if (data.poke5e && setPoke5eCredentials(data.poke5e)) detectedPoke5e = getPoke5eCredentials();
   } catch {
     /* no store yet — first run */
   }
@@ -57,7 +63,7 @@ function saveStoreSoon() {
   saveTimer = setTimeout(async () => {
     saveTimer = null;
     try {
-      await writeFile(storePath(), JSON.stringify({ records: [...sessionLog.values()], actions: actionLog, campaigns: Object.fromEntries(campaignNames) }), "utf8");
+      await writeFile(storePath(), JSON.stringify({ records: [...sessionLog.values()], actions: actionLog, campaigns: Object.fromEntries(campaignNames), poke5e: detectedPoke5e }), "utf8");
     } catch {
       /* best-effort */
     }
@@ -177,6 +183,24 @@ function setupPersistentSession(): string {
   const fullVer = (cleanUa.match(/Chrome\/([\d.]+)/) || [])[1] || "130.0.0.0";
   const chShort = `"Chromium";v="${major}", "Google Chrome";v="${major}", "Not?A_Brand";v="99"`;
   const chFull = `"Chromium";v="${fullVer}", "Google Chrome";v="${fullVer}", "Not?A_Brand";v="99.0.0.0"`;
+  // Auto-detect poke5e's Supabase anon key + endpoint from the site's OWN API calls. poke5e.app
+  // sends the anon key as the `apikey` header on every Supabase request; we read it (observe-only)
+  // and hand it to our RPC layer, which otherwise falls back to a baked-in default. This means a
+  // rotated key — or even a moved Supabase project — is picked up automatically, no code change.
+  s.webRequest.onSendHeaders({ urls: ["*://*.poke5e.app/*", "*://*.supabase.co/*"] }, (details) => {
+    try {
+      const h = details.requestHeaders || {};
+      const apikey = (Object.entries(h).find(([k]) => k.toLowerCase() === "apikey") || [])[1] as string | undefined;
+      const url = new URL(details.url).origin;
+      if (apikey && setPoke5eCredentials({ url, anonKey: apikey })) {
+        detectedPoke5e = getPoke5eCredentials();
+        saveStoreSoon();
+      }
+    } catch {
+      /* best-effort — never let sniffing break a request */
+    }
+  });
+
   s.webRequest.onBeforeSendHeaders(
     { urls: ["*://accounts.google.com/*", "*://accounts.youtube.com/*"] },
     (details, cb) => {
