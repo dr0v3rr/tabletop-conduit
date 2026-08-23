@@ -9,6 +9,37 @@ carries one artifact per platform/architecture plus SHA-256 checksums.
 
 ---
 
+## v0.2.5 — poke5e ↔ Roll20 name sync
+
+- **Push poke5e names into Roll20.** poke5e is the source of truth for names; when you bind a
+  Pokémon to a Roll20 token whose name differs, Conduit offers to rename the token **and** the
+  character it represents to match poke5e (the character name is what drives the Roll20 chat
+  speaker). Confirms each time; only touches tokens/characters you control.
+
+### Downloads
+
+| Platform | Arch | File | Type |
+|---|---|---|---|
+| macOS | arm64 | `Conduit-0.2.5-arm64.dmg` | Disk image |
+| macOS | arm64 | `Conduit-0.2.5-arm64-mac.zip` | Zipped `.app` |
+| Windows | x64 | `Conduit Setup 0.2.5.exe` | NSIS installer |
+| Windows | x64 | `Conduit 0.2.5.exe` | Portable |
+| Linux | x64 | `Conduit-0.2.5.AppImage` | AppImage |
+| Linux | arm64 | `Conduit-0.2.5-arm64.AppImage` | AppImage |
+
+### SHA-256 checksums
+
+```
+12b919cee06375bb31988a59b92ec22a2ba80262060460727c25577dcc494f5a  Conduit-0.2.5-arm64.dmg
+f13d8416ef2eea29dc3217c68270bcd96de1a4b9a691bdc4117f400c02767638  Conduit-0.2.5-arm64-mac.zip
+1f9dffdb67fffcc55f71c21fe50c2d2973cbdb1a04aa1aec2a4a2769c09de91a  Conduit Setup 0.2.5.exe
+d821b4f8a9fba829e1ffb4cf46a4b4f7e1a651f4d4d524fb3c123750424e149a  Conduit 0.2.5.exe
+35462c42b0cc0fdf54067998c394f763da0ceb631bc99c756da1955aba5a1570  Conduit-0.2.5.AppImage
+03dd3f0e9bc19bab5b2544be46702bd1ff556be0ea05484d990cc204d52c32c2  Conduit-0.2.5-arm64.AppImage
+```
+
+---
+
 ## v0.2.4 — poke5e resilience
 
 - **Auto-detects the poke5e API key + endpoint** from the live site's own traffic, so a rotated

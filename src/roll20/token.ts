@@ -157,6 +157,39 @@ window.__r20Token = (function () {
         return { ok: true, bar: bar, name: a.name };
       } catch (e) { return { ok: false, reason: String(e) }; }
     },
+    // Rename ONE token (by id) AND the character it represents to newName. poke5e is the source of
+    // truth for names, and the logged-in trainer controls their own tokens/characters, so we may
+    // write them. Renaming the CHARACTER is what updates the Roll20 chat speaker (chat attributes to
+    // the character, not the token). Only touches objects the user controls (GM: all); no-ops when a
+    // name already matches. Returns what changed so the UI can report it.
+    renameById: function (id, newName) {
+      try {
+        var nm = String(newName == null ? '' : newName).trim();
+        if (!nm) return { ok: false, reason: 'empty-name' };
+        var page = window.Campaign && window.Campaign.activePage ? window.Campaign.activePage() : null;
+        var g = page && page.thegraphics ? page.thegraphics.get(id) : null;
+        if (!g) return { ok: false, reason: 'token-gone' };
+        var a = g.attributes;
+        if (!mayControl(a)) return { ok: false, reason: 'not-controlled' };
+        var res = { ok: true, prevToken: a.name, prevChar: null, token: false, character: false };
+        if (String(a.name || '') === nm) { res.token = 'unchanged'; }
+        else { try { g.save ? g.save({ name: nm }) : g.set({ name: nm }); res.token = true; } catch (e) { res.tokenErr = String(e); } }
+        var rep = a.represents;
+        if (rep) {
+          var coll = window.Campaign && window.Campaign.characters;
+          var ch = coll && coll.get ? coll.get(rep) : null;
+          if (ch && ch.attributes) {
+            res.prevChar = ch.attributes.name;
+            var ids = String(ch.attributes.controlledby || '').split(',').map(function (s) { return s.trim(); });
+            var canChar = isGM() || (playerId() && (ids.indexOf(playerId()) !== -1 || ids.indexOf('all') !== -1));
+            if (!canChar) res.charBlocked = true;
+            else if (String(ch.attributes.name || '') === nm) res.character = 'unchanged';
+            else { try { ch.save ? ch.save({ name: nm }) : ch.set({ name: nm }); res.character = true; } catch (e) { res.charErr = String(e); } }
+          } else { res.charNotFound = true; }
+        }
+        return res;
+      } catch (e) { return { ok: false, reason: String(e) }; }
+    },
     inGame: function () {
       return !!(window.Campaign && window.Campaign.activePage && window.Campaign.activePage());
     },
@@ -174,7 +207,7 @@ window.__r20Token = (function () {
 })();
 `;
 
-export function r20TokenExpr(method: "find" | "setHp" | "setHpById" | "selected" | "list" | "inGame" | "turnTop", ...args: (string | number | null)[]): string {
+export function r20TokenExpr(method: "find" | "setHp" | "setHpById" | "selected" | "list" | "inGame" | "turnTop" | "renameById", ...args: (string | number | null)[]): string {
   const a = args.map((x) => JSON.stringify(x)).join(", ");
   return `(function(){ ${ROLL20_TOKEN_SRC}\n return window.__r20Token.${method}(${a}); })()`;
 }

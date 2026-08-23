@@ -44,6 +44,7 @@ declare global {
       r20ListTokens(): Promise<{ ok: boolean; tokens: { id: string; name: string; bar1: string; bar1max: string; x: number; y: number }[]; error?: string }>;
       r20SetTokenHpById(id: string, current: number, max: number, temp?: number): Promise<{ ok: boolean; bar?: string; name?: string; reason?: string }>;
       r20FindToken(name: string, max: number): Promise<{ ok: boolean; tokens: { id: string; name: string; bar: string; value: string; max: string; linked: boolean }[] }>;
+      r20RenameToken(id: string, name: string): Promise<{ ok: boolean; token?: boolean | string; character?: boolean | string; prevToken?: string; prevChar?: string | null; charBlocked?: boolean; reason?: string; tokenErr?: string; charErr?: string }>;
       ddbReadAc(): Promise<{ ac: number | null }>;
       roll20Scrape(): Promise<any[]>;
       roll20Say(message: string, speakingAs?: string): Promise<{ ok: boolean; error?: string }>;
@@ -853,13 +854,14 @@ function showBindPicker(tokens: { id: string; name: string; bar1: string; bar1ma
   reposition();
   menu.hidden = false;
   menu.querySelectorAll<HTMLElement>(".bp-row").forEach((row) => {
-    row.onclick = () => {
+    row.onclick = async () => {
       boundToken = { id: row.dataset.id!, name: row.dataset.name! };
       saveBinding(); // remember this binding for the character (survives restart / rename / map change)
       cleanup();
       renderBindToken();
       setStatus(`HP bound to “${boundToken.name}” — damage/heal now drives just that token`);
       if (hp) window.api.r20SetTokenHpById(boundToken.id, hp.current, hp.max, hp.temp > 0 ? hp.temp : undefined).catch(() => {}); // push current HP (+temp only if present)
+      await maybeSyncNameToRoll20(); // poke5e is the source of truth → offer to push its name into Roll20
     };
   });
   setTimeout(() => {
@@ -874,6 +876,31 @@ function renderBindToken() {
   const b = $("bindToken") as HTMLButtonElement;
   if (boundToken) { b.textContent = `⚔ ${boundToken.name} ✕`; b.classList.add("on"); b.title = "Unbind — stop driving this token"; }
   else { b.textContent = "⚔ Bind token"; b.classList.remove("on"); b.title = "Bind HP to the token you've selected on Roll20"; }
+}
+
+// poke5e is the source of truth for character names. When a poke5e Pokémon is bound to a Roll20
+// token whose name differs, offer to push the poke5e name into Roll20 — renaming BOTH the token
+// (so HP-by-name matching stays aligned) and the character it represents (so the chat speaker shows
+// the poke5e name). Confirm each time, since it mutates the Roll20 game.
+async function maybeSyncNameToRoll20() {
+  if (activeSource !== "poke5e" || !boundToken || !model?.name) return;
+  const pokeName = String(model.name).trim();
+  if (!pokeName || pokeName === boundToken.name) return; // already matches → nothing to do
+  const ok = window.confirm(
+    `poke5e is the source of truth for names.\n\nRename this Roll20 token and its character from “${boundToken.name}” to “${pokeName}”?`,
+  );
+  if (!ok) return;
+  const res = await window.api.r20RenameToken(boundToken.id, pokeName).catch(() => null);
+  if (res?.ok) {
+    boundToken.name = pokeName; // keep the binding + HP-by-name matching aligned to the new name
+    saveBinding();
+    renderBindToken();
+    const changed = [res.token === true ? "token" : "", res.character === true ? "character" : ""].filter(Boolean);
+    setStatus(changed.length ? `Renamed Roll20 ${changed.join(" & ")} to “${pokeName}” (from poke5e)` : `Roll20 already named “${pokeName}”`);
+  } else {
+    const why = res?.charBlocked ? "you don't control that character" : res?.reason || res?.charErr || res?.tokenErr || "rename failed";
+    setStatus(`Couldn't sync name to Roll20: ${why}`, true);
+  }
 }
 
 // Write HP back to D&D Beyond (damage taken + temp), optimistic with revert on failure.

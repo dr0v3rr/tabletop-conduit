@@ -1215,6 +1215,17 @@ ipcMain.handle("r20-token-hp-by-id", async (_e, id: string, current: number, max
   }
 });
 
+/** Rename ONE Roll20 token (by id) AND the character it represents — used to push poke5e's name
+ *  (the source of truth for character info) into Roll20 so the token, its character, and the chat
+ *  speaker all match the sheet. Only affects objects the trainer controls (enforced in the page). */
+ipcMain.handle("r20-token-rename", async (_e, id: string, name: string) => {
+  try {
+    return await roll20View.webContents.executeJavaScript(r20TokenExpr("renameById", id, name), true);
+  } catch (err) {
+    return { ok: false, reason: String(err) };
+  }
+});
+
 /** Detect whether the open Roll20 game has the D&D 5e sheet's roll-template styling loaded. If so
  *  the app can send the prettier sheet templates (simple/atkdmg); otherwise it uses the universal
  *  default template (which renders in ANY game, just plainer). Checks loaded CSS, so it works even

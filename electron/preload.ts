@@ -30,6 +30,7 @@ contextBridge.exposeInMainWorld("api", {
   r20ListTokens: () => ipcRenderer.invoke("r20-list-tokens"),
   r20SetTokenHpById: (id: string, current: number, max: number, temp?: number) => ipcRenderer.invoke("r20-token-hp-by-id", id, current, max, temp),
   r20FindToken: (name: string, max: number) => ipcRenderer.invoke("r20-token-find", name, max),
+  r20RenameToken: (id: string, name: string) => ipcRenderer.invoke("r20-token-rename", id, name),
   ddbReadAc: () => ipcRenderer.invoke("ddb-read-ac"),
   roll20Scrape: () => ipcRenderer.invoke("roll20-scrape"),
   roll20Say: (message: string, speakingAs?: string) => ipcRenderer.invoke("roll20-say", message, speakingAs),
