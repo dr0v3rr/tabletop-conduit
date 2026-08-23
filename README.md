@@ -173,8 +173,17 @@ That's expected and fine for handing to a friend. Proper signing needs a paid Ap
   post their dice.
 - **Spell slots, hit dice & rests** — spend/restore slots, roll/spend Hit Dice, and take a
   **Short** or **Long Rest** — all synced with DDB.
-- **Session Log** — running roll statistics for the table (roll count, crits ✦, fumbles ✗) with
-  **`Sync`** / **`Full Sync`** to reconcile the panel against DDB.
+- **Session Log** — a per-player leaderboard for the table (roll count, avg d20, crits ✦, fumbles ✗,
+  damage) plus a live feed of the most recent rolls, filterable by campaign/player. Stats aggregate
+  over the whole campaign (see **Roll archive** below), so they survive a **Clear** and Roll20's chat
+  eviction. Export the log/stats as JSON/CSV, or **📁 Archive** to open the durable log folder.
+- **Roll archive** — Roll20 doesn't keep long-term chat history, so Conduit captures every roll it
+  sees from the moment you open a campaign into a durable, append-only, per-campaign log:
+  - **macOS / Linux:** `~/.conduit/roll-logs/<campaignId>.jsonl`
+  - **Windows:** `%APPDATA%\Conduit\roll-logs\<campaignId>.jsonl`
+
+  One JSON record per line, deduped by message id, plus an `index.json` summary. It's independent of
+  the in-app view — **Clear** never touches it — and safe to back up or sync yourself.
 - **Sign out** (top toolbar) — clears the saved D&D Beyond + Roll20 session so the app behaves
   like a fresh install. Useful for testing first-run, or switching accounts.
 

@@ -4,8 +4,9 @@
 import { app, BaseWindow, BrowserWindow, WebContentsView, ipcMain, dialog, session, clipboard, net, Notification, shell, Menu } from "electron";
 import type { MenuItemConstructorOptions } from "electron";
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
-import { writeFile, readFile } from "node:fs/promises";
+import { dirname, join, resolve, relative, isAbsolute } from "node:path";
+import { campaignLogFileName } from "./archive-path.js";
+import { writeFile, readFile, appendFile, mkdir, readdir } from "node:fs/promises";
 import { rollFrom, buildCharacter, availableToggles } from "../src/pipeline.js";
 import type { CharacterData, RollRequest } from "../src/pipeline.js";
 import { buildSendExpression } from "../src/roll20/inject.js";
@@ -70,6 +71,116 @@ function saveStoreSoon() {
   }, 1500);
 }
 
+// ---- Durable per-campaign roll archive --------------------------------------------------------
+// Roll20's chat buffer evicts old messages, so rolls scroll off and are lost forever. We keep an
+// append-only JSON-Lines archive per campaign, capturing every roll we scrape (deduped by message
+// id) from the moment you first open a campaign. This is the standardised, durable home for roll
+// history — independent of the in-app session view and of roll-history.json (clearing the session
+// view never touches the archive).
+//
+// Location — a conventional per-OS home for the durable roll archive:
+//   Windows        %APPDATA%\Conduit\roll-logs   (app.getPath("appData"), the natural spot on Win)
+//   macOS / Linux  ~/.conduit/roll-logs          (a hidden dot-dir keeps the home directory tidy)
+// On Unix we use a dot-dir under $HOME rather than the Documents folder on purpose: macOS
+// Documents/Desktop/Downloads are TCC-protected, where a sandboxed write can fail silently — a
+// home-level dot-dir is not, so the archive always just works. It's still easy to find and to back
+// up / sync yourself.
+const rollLogsDir = () =>
+  process.platform === "win32"
+    ? join(app.getPath("appData"), "Conduit", "roll-logs")
+    : join(app.getPath("home"), ".conduit", "roll-logs");
+const archivedIds = new Set<string>(); // roll ids already written to the archive (append dedupe)
+type CampaignArchive = { name: string | null; first: string | null; last: string | null; count: number; file: string };
+const campaignIndex = new Map<string, CampaignArchive>();
+
+// campaignLogFileName is a pure, unit-tested path-safety helper (electron/archive-path.ts). The
+// campaign id is UNTRUSTED (window.campaign_id from a page a hostile game/player can influence);
+// campaignLogFileName whitelists it (no separators/dots, length-capped, reserved-name-safe), and
+// withinArchive (below) is a belt-and-suspenders containment check on the final path.
+const campaignFile = (id: string) => campaignLogFileName(id);
+// Defense-in-depth containment check: confirm a target path resolves strictly INSIDE the archive dir
+// before writing — so no future change can be tricked into escaping it.
+function withinArchive(fullPath: string): boolean {
+  const rel = relative(resolve(rollLogsDir()), resolve(fullPath));
+  return rel.length > 0 && !rel.startsWith("..") && !isAbsolute(rel);
+}
+
+/** Load the existing archive at startup: rebuild the id-dedupe set + per-campaign index. */
+async function loadArchive() {
+  try {
+    await mkdir(rollLogsDir(), { recursive: true });
+    for (const f of (await readdir(rollLogsDir())).filter((n) => n.endsWith(".jsonl"))) {
+      let text = "";
+      try { text = await readFile(join(rollLogsDir(), f), "utf8"); } catch { continue; }
+      let count = 0, first: string | null = null, last: string | null = null, cid = f.replace(/\.jsonl$/, "");
+      for (const line of text.split("\n")) {
+        if (!line.trim()) continue;
+        try {
+          const r = JSON.parse(line);
+          if (r.id) {
+            archivedIds.add(r.id);
+            // Seed the session store from the durable archive so stats/leaderboards reflect the
+            // ENTIRE campaign history — not just the current view, and surviving a Clear + restart.
+            // Deduped by id; loadArchive runs after loadStore so the archive is authoritative.
+            if (!sessionLog.has(r.id)) sessionLog.set(r.id, r as RollRecord);
+          }
+          count++;
+          if (first == null && r.ts) first = r.ts;
+          if (r.ts) last = r.ts;
+          if (r.campaign) cid = r.campaign;
+        } catch { /* skip a corrupt line, keep the rest */ }
+      }
+      campaignIndex.set(cid, { name: campaignNames.get(cid) ?? null, first, last, count, file: f });
+    }
+  } catch { /* first run — no archive yet */ }
+}
+
+let archiveIndexTimer: ReturnType<typeof setTimeout> | null = null;
+function writeArchiveIndexSoon() {
+  if (archiveIndexTimer) return;
+  archiveIndexTimer = setTimeout(async () => {
+    archiveIndexTimer = null;
+    try {
+      const campaigns = [...campaignIndex.entries()].map(([id, v]) => ({ id, ...v, name: v.name ?? campaignNames.get(id) ?? null }));
+      await writeFile(join(rollLogsDir(), "index.json"), JSON.stringify({ updatedAt: Date.now(), campaigns }, null, 2), "utf8");
+    } catch { /* best-effort */ }
+  }, 1500);
+}
+
+/** Append every not-yet-archived roll to its campaign's JSONL file. Called on each scrape. */
+async function appendToArchive(records: RollRecord[]) {
+  const fresh = (records || []).filter((r) => r && r.id && !archivedIds.has(r.id));
+  if (!fresh.length) return;
+  try { await mkdir(rollLogsDir(), { recursive: true }); } catch { /* ignore */ }
+  const byCampaign = new Map<string, RollRecord[]>();
+  for (const r of fresh) {
+    archivedIds.add(r.id); // reserve now so a concurrent scrape can't double-append
+    const cid = r.campaign || "unknown";
+    const arr = byCampaign.get(cid);
+    if (arr) arr.push(r); else byCampaign.set(cid, [r]);
+  }
+  for (const [cid, recs] of byCampaign) {
+    const file = campaignFile(cid);
+    const target = join(rollLogsDir(), file);
+    if (!withinArchive(target)) { recs.forEach((r) => archivedIds.delete(r.id)); continue; } // never write outside the archive dir
+    try {
+      // JSON.stringify safely escapes every field (quotes, newlines, control chars), so untrusted
+      // scraped content can neither break the one-record-per-line JSONL framing nor inject structure.
+      await appendFile(target, recs.map((r) => JSON.stringify(r)).join("\n") + "\n", "utf8");
+    } catch {
+      recs.forEach((r) => archivedIds.delete(r.id)); // write failed → let a later scrape retry
+      continue;
+    }
+    const prev = campaignIndex.get(cid) ?? { name: null, first: null, last: null, count: 0, file };
+    for (const r of recs) { if (prev.first == null && r.ts) prev.first = r.ts; if (r.ts) prev.last = r.ts; }
+    prev.count += recs.length;
+    prev.name = prev.name ?? campaignNames.get(cid) ?? null;
+    prev.file = file;
+    campaignIndex.set(cid, prev);
+  }
+  writeArchiveIndexSoon();
+}
+
 /** Merge freshly-scraped records into the persistent store. Returns true if anything changed. */
 function mergeRecords(records: RollRecord[]): boolean {
   let changed = false;
@@ -90,6 +201,7 @@ async function captureLoop() {
     if (!roll20View) return;
     const records: RollRecord[] = await roll20View.webContents.executeJavaScript(roll20LogExpr(), true);
     mergeRecords(records);
+    void appendToArchive(records); // durable per-campaign archive (independent of the session view)
   } catch {
     /* no game open / transient */
   }
@@ -1320,11 +1432,23 @@ ipcMain.handle("ddb-open-inventory", async () => {
 ipcMain.handle("session-sync", async () => {
   try {
     const records: RollRecord[] = await roll20View.webContents.executeJavaScript(roll20LogExpr(), true);
-    mergeRecords(records); // dedup + persist
+    mergeRecords(records); // dedup + persist (session view)
+    void appendToArchive(records); // durable per-campaign archive
   } catch {
     /* chat not available (no game open) — return what we have */
   }
   return sessionPayload(await currentCampaignId());
+});
+
+/** Open the durable roll-log folder in the OS file manager. */
+ipcMain.handle("roll-logs-open", async () => {
+  try {
+    await mkdir(rollLogsDir(), { recursive: true });
+    const err = await shell.openPath(rollLogsDir());
+    return { ok: !err, dir: rollLogsDir(), error: err || undefined };
+  } catch (e) {
+    return { ok: false, dir: rollLogsDir(), error: String(e) };
+  }
 });
 
 /** Current campaign id, also recording its name for the dropdown. */
@@ -1429,6 +1553,7 @@ function installGlobalHardening() {
 app.whenReady().then(async () => {
   installGlobalHardening();
   await loadStore(); // restore accumulated roll history from previous sessions
+  await loadArchive(); // index the durable per-campaign roll archive (dedupe future appends)
   createWindow();
 });
 app.on("window-all-closed", () => app.quit());

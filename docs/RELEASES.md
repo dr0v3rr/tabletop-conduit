@@ -9,6 +9,41 @@ carries one artifact per platform/architecture plus SHA-256 checksums.
 
 ---
 
+## v0.2.6 — durable roll history + campaign-wide stats
+
+- **Roll archive** — captures every roll from first interaction into a durable, append-only,
+  per-campaign log (`~/.conduit/roll-logs/<campaignId>.jsonl` on macOS/Linux,
+  `%APPDATA%\Conduit\roll-logs\` on Windows), independent of the in-app view. **📁 Archive** button opens it.
+- **Campaign-wide stats** — the stats table / Stats CSV aggregate over the whole archived history,
+  surviving a Clear and Roll20's chat eviction.
+- **Adversarial security hardening** — archive filenames derived from the untrusted `campaign_id` are
+  whitelisted (no separators/dots, length-capped, Windows-reserved-name-safe) with a path-containment
+  guard (unit-tested); content written via `JSON.stringify` can't forge the JSONL structure.
+
+### Downloads
+
+| Platform | Arch | File | Type |
+|---|---|---|---|
+| macOS | arm64 | `Conduit-0.2.6-arm64.dmg` | Disk image |
+| macOS | arm64 | `Conduit-0.2.6-arm64-mac.zip` | Zipped `.app` |
+| Windows | x64 | `Conduit Setup 0.2.6.exe` | NSIS installer |
+| Windows | x64 | `Conduit 0.2.6.exe` | Portable |
+| Linux | x64 | `Conduit-0.2.6.AppImage` | AppImage |
+| Linux | arm64 | `Conduit-0.2.6-arm64.AppImage` | AppImage |
+
+### SHA-256 checksums
+
+```
+ae95a4873b645da768c1451006389d2ea739d8640bdd1271206f0bdc534dc4e6  Conduit-0.2.6-arm64.dmg
+c15942457861a2369a8965e65c0645c031a36891c1aeeb98d49e69feeadc2174  Conduit-0.2.6-arm64-mac.zip
+a02a3c3ee7c519058a3031a79c967dc37fc1c8b7b4b23a60d1f9c9bece559734  Conduit Setup 0.2.6.exe
+635ba55da14cf4bfd6f56aa2e8ebafbafffd399c3ec478e0d0e988fabf9dec28  Conduit 0.2.6.exe
+51ab1a8f407c4876e83507f3bdbf5eafdd5062fec2fdaaa9514469aad05be48d  Conduit-0.2.6.AppImage
+f3ec7a674073bbfb2ec295a8acb84bd990c999292c82489b1865a56313b1551d  Conduit-0.2.6-arm64.AppImage
+```
+
+---
+
 ## v0.2.5 — poke5e ↔ Roll20 name sync
 
 - **Push poke5e names into Roll20.** poke5e is the source of truth for names; when you bind a

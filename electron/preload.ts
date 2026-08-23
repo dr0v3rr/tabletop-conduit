@@ -32,6 +32,7 @@ contextBridge.exposeInMainWorld("api", {
   r20FindToken: (name: string, max: number) => ipcRenderer.invoke("r20-token-find", name, max),
   r20RenameToken: (id: string, name: string) => ipcRenderer.invoke("r20-token-rename", id, name),
   ddbReadAc: () => ipcRenderer.invoke("ddb-read-ac"),
+  openRollLogs: () => ipcRenderer.invoke("roll-logs-open"),
   roll20Scrape: () => ipcRenderer.invoke("roll20-scrape"),
   roll20Say: (message: string, speakingAs?: string) => ipcRenderer.invoke("roll20-say", message, speakingAs),
   roll20SheetStyle: () => ipcRenderer.invoke("roll20-sheet-style"),

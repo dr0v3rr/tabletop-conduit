@@ -1,6 +1,6 @@
 {
   "name": "tabletop-conduit",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "Conduit — a bridge between your character sheets (D&D Beyond, poke5e, monsters) and your virtual tabletop.",
   "license": "GPL-3.0-or-later",
   "type": "module",

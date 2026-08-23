@@ -46,6 +46,7 @@ declare global {
       r20FindToken(name: string, max: number): Promise<{ ok: boolean; tokens: { id: string; name: string; bar: string; value: string; max: string; linked: boolean }[] }>;
       r20RenameToken(id: string, name: string): Promise<{ ok: boolean; token?: boolean | string; character?: boolean | string; prevToken?: string; prevChar?: string | null; charBlocked?: boolean; reason?: string; tokenErr?: string; charErr?: string }>;
       ddbReadAc(): Promise<{ ac: number | null }>;
+      openRollLogs(): Promise<{ ok: boolean; dir: string; error?: string }>;
       roll20Scrape(): Promise<any[]>;
       roll20Say(message: string, speakingAs?: string): Promise<{ ok: boolean; error?: string }>;
       roll20SheetStyle(): Promise<{ style: "sheet" | "default" }>;
@@ -1906,6 +1907,11 @@ $("logDeepSync").onclick = async () => {
     btn.textContent = prev;
     btn.disabled = false;
   }
+};
+$("openRollLogs").onclick = async () => {
+  const res = await window.api.openRollLogs().catch(() => null);
+  if (res?.ok) setStatus(`Opened roll archive: ${res.dir}`);
+  else setStatus(`Couldn't open the roll archive${res?.error ? `: ${res.error}` : ""}`, true);
 };
 $("exportJson").onclick = () => doExport("json");
 $("exportCsvLog").onclick = () => doExport("csv-log");
