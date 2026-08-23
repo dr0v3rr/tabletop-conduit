@@ -228,6 +228,30 @@ npm run shell        # rebuild + launch to try changes
 The engine (`src/`) has no Electron dependency, so you can iterate on rules logic with just the
 tests. The UI lives in `electron/sheet.ts` and rebuilds via `npm run shell:build`.
 
+### Secret scanning (defense-in-depth)
+
+A [TruffleHog](https://github.com/trufflesecurity/trufflehog) **pre-commit hook** scans staged
+changes and blocks a commit that would introduce a secret. Enable it once per clone:
+
+```bash
+brew install trufflehog                       # (or see TruffleHog's install docs)
+git config core.hooksPath scripts/git-hooks   # activate the hook in scripts/git-hooks/pre-commit
+```
+
+- It materializes and scans exactly the **staged** content (not the working tree).
+- `test/fixtures/` is excluded via `.trufflehog-exclude` — those are D&D Beyond API dumps full of
+  hash-like IDs that trip false positives; they've been manually verified clean.
+- A false positive elsewhere? Add its path/regex to `.trufflehog-exclude`. Need to bypass one
+  commit? `git commit --no-verify` (use sparingly, and rotate anything real).
+
+Manual scans (history, not just staged):
+
+```bash
+scripts/scan-secrets.sh              # default detectors, fixtures excluded
+scripts/scan-secrets.sh --verified   # only VERIFIED live secrets (network-checked, zero noise)
+scripts/scan-secrets.sh --full       # everything incl. fixtures (expect known FPs)
+```
+
 ---
 
 ## Troubleshooting

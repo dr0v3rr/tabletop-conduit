@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Defense-in-depth: scan STAGED changes for secrets with TruffleHog before allowing a commit.
+# Enable once per clone:  git config core.hooksPath scripts/git-hooks
+# Bypass a single commit (only if you're certain):  git commit --no-verify
+set -uo pipefail
+
+root="$(git rev-parse --show-toplevel)"
+
+if ! command -v trufflehog >/dev/null 2>&1; then
+  echo "⚠️  trufflehog not found — skipping secret scan. Install it:  brew install trufflehog" >&2
+  exit 0
+fi
+
+# Staged (added/copied/modified) files, NUL-separated to tolerate spaces.
+if [ -z "$(git diff --cached --name-only --diff-filter=ACM)" ]; then
+  exit 0
+fi
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+
+# Materialize the STAGED content (":$f" = the index version), so we scan exactly what will be
+# committed — not the working tree (which may have unstaged edits).
+git diff --cached --name-only --diff-filter=ACM -z | while IFS= read -r -d '' f; do
+  mkdir -p "$tmp/$(dirname "$f")"
+  git show ":$f" > "$tmp/$f" 2>/dev/null || true
+done
+
+excl=()
+[ -f "$root/.trufflehog-exclude" ] && excl=(--exclude-paths="$root/.trufflehog-exclude")
+
+if ! trufflehog filesystem "$tmp" "${excl[@]}" --fail --no-update >/dev/null 2>&1; then
+  echo "🛑  Commit blocked — TruffleHog flagged a potential secret in your staged changes:" >&2
+  echo "" >&2
+  trufflehog filesystem "$tmp" "${excl[@]}" --no-update 2>/dev/null \
+    | grep -iE "Detector Type:|Decoder Type:|Raw result:|File:|Line:" >&2 || true
+  echo "" >&2
+  echo "   • Remove the secret (and ROTATE it if it was ever real), then re-stage; or" >&2
+  echo "   • If it's a false positive, add its path/regex to .trufflehog-exclude; or" >&2
+  echo "   • Bypass this one commit with:  git commit --no-verify" >&2
+  exit 1
+fi
+
+echo "✓ TruffleHog: no secrets in staged changes."
+exit 0
