@@ -243,3 +243,48 @@ export function defaultRoll(o: DefaultRollOptions): string {
   parts.push(`{{name=${o.name}}}`);  parts.push(`{{Roll=[[${o.formula}]]}}`);
   return parts.join(' ');
 }
+
+/** Sanitize free text (possibly HTML, from an untrusted scraped/API source) into a single Roll20
+ *  template FIELD VALUE: unwrap common block tags to spaces, strip remaining tags, decode the few
+ *  entities that matter, then — crucially — remove `{`/`}` so the text can never break out of or
+ *  forge the `{{ … }}` template structure. Collapses whitespace and caps length (a chat card is a
+ *  quick reference, and Roll20 rejects/garbles very long messages). */
+export function sanitizeCardText(raw: string, maxLen = 900): string {
+  let s = String(raw ?? '');
+  s = s.replace(/<br\s*\/?>/gi, ' ').replace(/<\/(p|div|li|tr|h[1-6])>/gi, ' ').replace(/<li[^>]*>/gi, ' • ');
+  s = s.replace(/<[^>]+>/g, '');
+  s = s.replace(/&nbsp;/gi, ' ').replace(/&(?:amp|#38);/gi, '&').replace(/&(?:lt|#60);/gi, '<')
+       .replace(/&(?:gt|#62);/gi, '>').replace(/&(?:#39|rsquo|apos);/gi, "'").replace(/&(?:quot|#34);/gi, '"')
+       .replace(/&(?:mdash|#8212);/gi, '—').replace(/&(?:ndash|#8211);/gi, '–');
+  s = s.replace(/[{}]/g, '');          // neutralize the template delimiters
+  s = s.replace(/\s+/g, ' ').trim();
+  if (s.length > maxLen) s = s.slice(0, maxLen - 1).replace(/\s+\S*$/, '').trim() + '…';
+  return s;
+}
+
+export interface DisplayCardOptions {
+  /** the thing's name — the card title. */
+  name: string;
+  /** the wording to show (a move/spell/feat/item description). */
+  body: string;
+  /** optional one-line sub-detail (e.g. "Psychic · save · 30 ft · 15 PP"). */
+  meta?: string;
+  /** the body field's bold label. Default "Effect". */
+  label?: string;
+}
+
+/** `&{template:default}` INFO card — posts the wording of a move/spell/feat/item to the table
+ *  ("Display in VTT"). Always uses the universal `default` template so every game renders it,
+ *  regardless of which character sheet the campaign uses. Returns '' when there's no body text. */
+export function displayCard(o: DisplayCardOptions): string {
+  const body = sanitizeCardText(o.body);
+  if (!body) return '';
+  const parts = ['&{template:default}', `{{name=${sanitizeCardText(o.name, 80) || '—'}}}`];
+  if (o.meta) {
+    const m = sanitizeCardText(o.meta, 160);
+    if (m) parts.push(`{{Details=${m}}}`);
+  }
+  const label = (o.label || 'Effect').replace(/[{}=]/g, '').trim() || 'Effect';
+  parts.push(`{{${label}=${body}}}`);
+  return parts.join(' ');
+}

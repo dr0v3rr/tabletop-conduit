@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { moveStat, pokemonToCharacter, statusMoveMods } from '../src/poke5e/pokemon';
+import { moveStat, pokemonToCharacter, statusMoveMods, moveWording } from '../src/poke5e/pokemon';
 
 const pk = { species: 'charmander', nickname: 'Blaze', type: ['fire'], level: 5,
   strength: 14, dexterity: 16, constitution: 12, intelligence: 10, wisdom: 10, charisma: 10,
@@ -11,7 +11,30 @@ const flamethrower = { id: 'flamethrower', name: 'Flamethrower', type: 'fire', p
 const tackle = { id: 'tackle', name: 'Tackle', type: 'normal', power: ['str', 'dex'],
   attack: { scope: 'melee' }, damage: { dice: { '1': '1d6' }, modifier: 'MOVE', type: ['normal'] } };
 
+describe('poke5e moveWording (for "Display in VTT")', () => {
+  it('returns a plain-string description unchanged', () => {
+    expect(moveWording('Puts the target to sleep.')).toBe('Puts the target to sleep.');
+  });
+  it('joins an array of prose lines', () => {
+    expect(moveWording(['First line.', 'Second line.'])).toBe('First line. Second line.');
+  });
+  it('flattens a structured table element to "cell: cell" pairs (Fling-style)', () => {
+    const desc = ['Throw your held item.', { type: 'table', headers: ['Item', 'Effect'], rows: [['Flame Orb', 'Burns'], ['Toxic Orb', 'Badly Poisons']] }];
+    expect(moveWording(desc)).toBe('Throw your held item. Flame Orb: Burns Toxic Orb: Badly Poisons');
+  });
+  it('is empty for nullish input (so no button/card is produced)', () => {
+    expect(moveWording(undefined)).toBe('');
+    expect(moveWording(null)).toBe('');
+  });
+});
+
 describe('poke5e moveStat', () => {
+  it('carries the move wording + range through for "Display in VTT"', () => {
+    const withDesc = { ...tackle, description: ['A full-body charge.'], range: '5ft' };
+    const s = moveStat(withDesc, pk);
+    expect(s.description).toBe('A full-body charge.');
+    expect(s.range).toBe('5ft');
+  });
   it('save move: DC = 8 + PB + best ability mod, level-scaled dice', () => {
     const s = moveStat(flamethrower, pk);
     expect(s.casting).toBe('save');

@@ -155,6 +155,27 @@ export interface MoveStat {
   isCantrip: boolean;
   level: number;
   stab: number; // this move's STAB value (for the abilities engine)
+  description?: string; // the move's full wording — for "Display in VTT"
+  range?: string; // the move's range text (e.g. "40ft") — for the display card's meta line
+}
+
+/** Flatten a move's `description` (string, or an array of strings and/or structured `table` objects)
+ *  into readable prose for the roll-die sniff and the "Display in VTT" card. Table rows collapse to
+ *  "cell: cell" pairs so a move like Fling still reads sensibly on the table. */
+export function moveWording(desc: any): string {
+  if (!desc) return "";
+  if (typeof desc === "string") return desc;
+  if (!Array.isArray(desc)) return String(desc);
+  const parts: string[] = [];
+  for (const el of desc) {
+    if (typeof el === "string") parts.push(el);
+    else if (el && typeof el === "object" && Array.isArray(el.rows)) {
+      for (const row of el.rows) {
+        if (Array.isArray(row)) parts.push(row.filter((c: any) => typeof c === "string").join(": "));
+      }
+    }
+  }
+  return parts.join(" ").replace(/\s+/g, " ").trim();
 }
 
 /** Compute a single move's rollable stats for a given Pokémon (mirrors poke5e's calculateMoveStats). */
@@ -202,6 +223,10 @@ export function moveStat(move: any, pk: any, learned?: any): MoveStat {
 
   const casting: MoveStat["casting"] = move.attack ? "attack" : move.save ? "save" : "utility";
   const out: MoveStat = { name: move.name || "Move", type: String(move.type || ""), casting, isCantrip: false, level: 0, stab };
+  // Carry the move's full wording (and range) through so the sheet can "Display in VTT".
+  const wording = moveWording(move.description);
+  if (wording) out.description = wording;
+  if (move.range) out.range = String(move.range);
   if (casting === "attack") out.attackBonus = pb + mod;
   if (casting === "save") {
     out.saveDc = 8 + pb + mod;
@@ -217,7 +242,7 @@ export function moveStat(move: any, pk: any, learned?: any): MoveStat {
   // OHKO / special moves whose ONLY mechanic is a die roll described in prose (Sheer Cold, Fissure,
   // Horn Drill, Guillotine, Explosion → d20; Metronome → d100; Acupressure → d6). Surface the die.
   if (casting === "utility" && !damageDice && !healDice) {
-    const desc = Array.isArray(move.description) ? move.description.join(" ") : String(move.description || "");
+    const desc = moveWording(move.description);
     const rm = /roll (?:a |1)?d(\d+)/i.exec(desc);
     if (rm) out.rollDie = `1d${rm[1]}`;
   }
@@ -289,6 +314,7 @@ export function pokemonToCharacter(
         level: 0,
         isCantrip: true, // moves are at-will (PP-limited, not slot-limited)
         casting: st.casting,
+        type: st.type, // the move's type (Fire, Psychic, …) — for tags + the Display-in-VTT meta line
         attackBonus: st.attackBonus,
         saveAbility: st.saveAbility,
         saveDc: st.saveDc,
@@ -298,6 +324,8 @@ export function pokemonToCharacter(
         autoHit: st.autoHit, // guaranteed-hit damage (no to-hit)
         rollDie: st.rollDie, // OHKO / prose "roll a dN" moves
         moveHint: st.note, // charge / recharge reminder
+        description: st.description, // full move wording — for "Display in VTT"
+        range: st.range, // move range (e.g. "40ft") — for the Display-in-VTT meta line
         pp: st.pp,
         learnedId: lm.id, // learned-move row id (for PP write-back via update_move)
         moveId: lm.move_id,

@@ -9,6 +9,45 @@ carries one artifact per platform/architecture plus SHA-256 checksums.
 
 ---
 
+## v0.2.8 — Display in VTT
+
+- **📖 Display in VTT** — a compact button next to every move, spell, weapon, feat/ability, and
+  inventory item that has descriptive text. Click it and Conduit posts that thing's full wording to
+  the Roll20 chat as a `&{template:default}` info card (name + a details sub-line + the text),
+  attributed to your active character and visible to the whole table.
+- **Move/spell/weapon wording plumbed through** — poke5e move descriptions (incl. moves whose text
+  holds structured tables like Fling/Acupressure, flattened to prose) plus DDB spell/weapon text now
+  reach the sheet.
+- **Untrusted-text hardening** — the pure, unit-tested card builder strips HTML, decodes entities,
+  removes `{`/`}` so scraped/API wording can't break out of or forge the `{{ … }}` template, and
+  caps length. Uses the universal `default` template so it renders in every game.
+
+No engine or data-format changes. Tests: 240 passing (adds card-sanitizer + move-wording suites).
+
+### Downloads
+
+| Platform | Arch | File | Type |
+|---|---|---|---|
+| macOS | arm64 | `Conduit-0.2.8-arm64.dmg` | Disk image |
+| macOS | arm64 | `Conduit-0.2.8-arm64-mac.zip` | Zipped `.app` |
+| Windows | x64 | `Conduit Setup 0.2.8.exe` | NSIS installer |
+| Windows | x64 | `Conduit 0.2.8.exe` | Portable |
+| Linux | x64 | `Conduit-0.2.8.AppImage` | AppImage |
+| Linux | arm64 | `Conduit-0.2.8-arm64.AppImage` | AppImage |
+
+### SHA-256 checksums
+
+```
+1d62a4632c20851e0ca840da2145e8985829220d78e1db1e6a6ed2415534366c  Conduit-0.2.8-arm64.dmg
+d0a709f9ac93bdaaa95e4202d143d1aec51b64d388961dd867995403f97f3b9c  Conduit-0.2.8-arm64-mac.zip
+8c05a6f409a1f85af1a3c6f8837cde55bcd7367552301cc467da3d4c5f12a3db  Conduit Setup 0.2.8.exe
+0606ee702b20090a607e86ce9db96e6801913d0452a36a6277cc1f63bac404e0  Conduit 0.2.8.exe
+a08583b9fd53c7d8f5b65ceb04d92c32d43caf8ba4cd809e6ab87aabe9e69457  Conduit-0.2.8.AppImage
+7ae1b9abc584ab7e0fa59189a6d261cea6b2bef9bb37a6d0f7729760062809ba  Conduit-0.2.8-arm64.AppImage
+```
+
+---
+
 ## v0.2.7 — native-roll capture fix + app icon
 
 - **Session Log now captures native Roll20 rolls.** The scraper only parsed *template* rolls

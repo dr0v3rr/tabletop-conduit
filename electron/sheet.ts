@@ -49,6 +49,7 @@ declare global {
       openRollLogs(): Promise<{ ok: boolean; dir: string; error?: string }>;
       roll20Scrape(): Promise<any[]>;
       roll20Say(message: string, speakingAs?: string): Promise<{ ok: boolean; error?: string }>;
+      displayInVtt(payload: { name: string; body: string; meta?: string; label?: string; speakingAs?: string }): Promise<{ ok: boolean; command?: string; error?: string }>;
       roll20SheetStyle(): Promise<{ style: "sheet" | "default" }>;
       r20TurnTop(): Promise<{ id: string; pr: any; count: number } | null>;
       notify(title: string, body: string): Promise<{ ok: boolean }>;
@@ -1161,6 +1162,39 @@ function spendHitDie(die: number) {
   sendRoll({ kind: "damage", key: "Hit Die (heal)", baseDamage: mod ? `1d${die} + ${mod}` : `1d${die}` });
 }
 
+// "Display in VTT" — post a thing's wording to the Roll20 table as an info card (formatting +
+// sanitization happen in main via the pure displayCard). Attributed to the active character.
+function doDisplay(name: string, body: string, meta?: string, label?: string) {
+  window.api.displayInVtt({ name, body, meta, label, speakingAs: model?.name })
+    .then((r) => setStatus(r?.ok ? `📖 Displayed ${name} in Roll20` : `Couldn't display ${name}${r?.error ? ": " + r.error : ""}`, !r?.ok))
+    .catch(() => setStatus(`Couldn't display ${name}`, true));
+}
+
+/** A compact 📖 button that displays a thing's wording — or null when there's no wording to show. */
+function makeDisplayBtn(thing: { name: string; description?: string; meta?: string; label?: string }): HTMLButtonElement | null {
+  const body = (thing.description || "").trim();
+  if (!body) return null;
+  const btn = document.createElement("button");
+  btn.className = "mini-btn display-btn";
+  btn.textContent = "📖";
+  btn.title = `Display “${thing.name}” wording in Roll20`;
+  btn.onclick = (e) => { e.stopPropagation(); doDisplay(thing.name, body, thing.meta, thing.label); };
+  return btn;
+}
+
+/** Wrap a primary roll-line with 0+ trailing mini buttons (2H, 📖 Display …). Returns the primary
+ *  element unchanged when there are no extras, so rows without wording keep their simple layout. */
+function rowWithActions(primary: HTMLElement, extras: (HTMLButtonElement | null)[]): HTMLElement {
+  const btns = extras.filter(Boolean) as HTMLButtonElement[];
+  if (!btns.length) return primary;
+  const wrap = document.createElement("div");
+  wrap.className = "line-actions";
+  primary.classList.add("grow");
+  wrap.appendChild(primary);
+  for (const b of btns) wrap.appendChild(b);
+  return wrap;
+}
+
 function renderAttacks() {
   const sec = sectionEl("attacks");
   const box = $("attacks");
@@ -1178,21 +1212,17 @@ function renderAttacks() {
       `<span class="atk-nums">${left}<span class="dmg">${esc(dmg)} ${esc(w.damageType || "")}${twoHint}</span></span>`;
     b.onclick = () => sendRoll(weaponReq(w));
     // Versatile weapon → a "2H" button that rolls the two-handed die (same to-hit / mod).
+    let two: HTMLButtonElement | null = null;
     if (w.versatileDamage) {
-      const wrap = document.createElement("div");
-      wrap.className = "atk-2h-row";
-      b.classList.add("grow");
-      wrap.appendChild(b);
-      const two = document.createElement("button");
+      two = document.createElement("button");
       two.className = "mini-btn two-hand";
       two.textContent = "2H";
       two.title = `Roll two-handed (${w.versatileDamage})`;
       two.onclick = () => sendRoll(weaponReq({ ...w, name: `${w.name} (2H)`, damageDice: w.versatileDamage }));
-      wrap.appendChild(two);
-      box.appendChild(wrap);
-    } else {
-      box.appendChild(b);
     }
+    const meta = [w.damageType, w.range].filter(Boolean).join(" · ");
+    const display = makeDisplayBtn({ name: w.name, description: w.description, meta, label: "Weapon" });
+    box.appendChild(rowWithActions(b, [two, display]));
   }
 }
 
@@ -1208,9 +1238,27 @@ function renderFeats() {
   const box = $("features");
   if (!feats.length) { sec.hidden = true; box.innerHTML = ""; return; }
   sec.hidden = false;
-  box.innerHTML = feats
-    .map((f) => `<div class="feat"><div class="feat-name">${esc(f.name)}</div>${f.description ? `<div class="feat-desc">${esc(f.description)}</div>` : ""}</div>`)
-    .join("");
+  box.innerHTML = "";
+  for (const f of feats) {
+    const el = document.createElement("div");
+    el.className = "feat";
+    const head = document.createElement("div");
+    head.className = "feat-head";
+    const nm = document.createElement("div");
+    nm.className = "feat-name";
+    nm.textContent = f.name;
+    head.appendChild(nm);
+    const disp = makeDisplayBtn({ name: f.name, description: f.description, label: "Ability" });
+    if (disp) head.appendChild(disp);
+    el.appendChild(head);
+    if (f.description) {
+      const d = document.createElement("div");
+      d.className = "feat-desc";
+      d.textContent = f.description;
+      el.appendChild(d);
+    }
+    box.appendChild(el);
+  }
 }
 
 function renderInventory() {
@@ -1263,6 +1311,11 @@ function renderInventory() {
       if (it.quantity <= 0) (minus as HTMLButtonElement).disabled = true;
       row.appendChild(ctl);
     }
+
+    // 📖 Display in VTT — pushes the item's wording to the table (items carry their note/description).
+    const disp = makeDisplayBtn({ name: it.name, description: it.note || it.description || it.snippet, meta: it.typeName, label: "Item" });
+    if (disp) { disp.classList.add("item-mini"); row.appendChild(disp); }
+
     box.appendChild(row);
   }
 }
@@ -1392,7 +1445,9 @@ function spellRow(sp: any): HTMLElement {
   const pp = sp.pp && sp.pp.max > 0 ? `<span class="pp">${sp.pp.current}/${sp.pp.max} PP</span>` : "";
   b.innerHTML = `<span class="label">${esc(sp.name)}<span class="stags">${spellTags(sp)}${abilityBadge(sp)}</span></span><span class="atk-nums">${right}${pp}</span>`;
   b.onclick = () => castSpell(sp);
-  return b;
+  const meta = [sp.type || sp.school, sp.casting, sp.range, sp.pp && sp.pp.max ? `${sp.pp.current}/${sp.pp.max} PP` : null].filter(Boolean).join(" · ");
+  const display = makeDisplayBtn({ name: sp.name, description: sp.description, meta, label: pokeMeta ? "Move" : "Spell" });
+  return rowWithActions(b, [display]);
 }
 
 function renderSpells() {

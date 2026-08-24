@@ -35,6 +35,8 @@ contextBridge.exposeInMainWorld("api", {
   openRollLogs: () => ipcRenderer.invoke("roll-logs-open"),
   roll20Scrape: () => ipcRenderer.invoke("roll20-scrape"),
   roll20Say: (message: string, speakingAs?: string) => ipcRenderer.invoke("roll20-say", message, speakingAs),
+  displayInVtt: (payload: { name: string; body: string; meta?: string; label?: string; speakingAs?: string }) =>
+    ipcRenderer.invoke("display-in-vtt", payload),
   roll20SheetStyle: () => ipcRenderer.invoke("roll20-sheet-style"),
   r20TurnTop: () => ipcRenderer.invoke("r20-turn-top"),
   notify: (title: string, body: string) => ipcRenderer.invoke("notify", title, body),

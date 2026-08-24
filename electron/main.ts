@@ -10,6 +10,7 @@ import { writeFile, readFile, appendFile, mkdir, readdir } from "node:fs/promise
 import { rollFrom, buildCharacter, availableToggles } from "../src/pipeline.js";
 import type { CharacterData, RollRequest } from "../src/pipeline.js";
 import { buildSendExpression } from "../src/roll20/inject.js";
+import { displayCard } from "../src/roll20/format.js";
 import { r20TokenExpr } from "../src/roll20/token.js";
 import { ddbSlotsExpr, ddbHitDiceExpr, ddbInventoryExpr, ddbFetchCharExpr } from "../src/ddb/inject.js";
 import { extractReadKey, fetchTrainer, trainerToRollModel, buildInventory, fetchTrainerFeats, updateTrainerHp, updatePokemonHp, updateMovePp, setPoke5eCredentials, getPoke5eCredentials } from "../src/poke5e/source.js";
@@ -1359,6 +1360,20 @@ ipcMain.handle("roll20-sheet-style", async () => {
 ipcMain.handle("roll20-say", async (_e, message: string, speakingAs?: string) => {
   try {
     return await roll20View.webContents.executeJavaScript(buildSendExpression(String(message), speakingAs), true);
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+});
+
+// "Display in VTT" — post the WORDING of a move/spell/feat/item to the Roll20 table as a
+// `&{template:default}` info card. Formatting (HTML-strip, template-delimiter neutralization,
+// length cap) is done by the pure, unit-tested displayCard(); the renderer only passes raw text.
+ipcMain.handle("display-in-vtt", async (_e, payload: { name?: string; body?: string; meta?: string; label?: string; speakingAs?: string }) => {
+  const command = displayCard({ name: payload?.name ?? "", body: payload?.body ?? "", meta: payload?.meta, label: payload?.label });
+  if (!command) return { ok: false, error: "nothing to display" };
+  try {
+    const injected: any = await roll20View.webContents.executeJavaScript(buildSendExpression(command, payload?.speakingAs), true);
+    return { ok: injected?.ok === true, command, injected };
   } catch (err) {
     return { ok: false, error: String(err) };
   }

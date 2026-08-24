@@ -177,6 +177,15 @@ button { cursor: pointer; font: inherit; }
 .atk-2h-row { display: flex; align-items: center; gap: 4px; }
 .atk-2h-row .grow { flex: 1; min-width: 0; }
 .two-hand { flex: none; font-size: 11px; padding: 2px 7px; }
+
+/* A roll-line with trailing action buttons (2H, 📖 Display). */
+.line-actions { display: flex; align-items: center; gap: 4px; }
+.line-actions .grow { flex: 1; min-width: 0; }
+/* 📖 "Display in VTT" — compact, emoji-friendly (no uppercase/letter-spacing). */
+.display-btn { flex: none; float: none; font-size: 12px; padding: 1px 7px; text-transform: none; letter-spacing: 0; }
+/* Feat/ability header holds the name + an optional 📖 Display button. */
+.feat-head { display: flex; align-items: center; gap: 6px; }
+.feat-head .feat-name { flex: 1; min-width: 0; }
 .two-hint { color: var(--muted); font-size: 11px; }
 .roll-line {
   display: flex; justify-content: space-between; align-items: center; width: 100%;

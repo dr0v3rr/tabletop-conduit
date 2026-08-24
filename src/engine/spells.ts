@@ -100,6 +100,8 @@ export interface Spell {
   ritual?: boolean;
   /** casting time bucket, from DDB activationType (1=action, 3=bonus, 4=reaction). */
   castingTime?: 'action' | 'bonus' | 'reaction' | 'other';
+  /** the spell's full wording (raw DDB HTML — sanitized at display time) — for "Display in VTT". */
+  description?: string;
 }
 
 export interface SpellcastingInfo {
@@ -440,6 +442,10 @@ export function computeSpells(data: CharacterData, model: RollModel): Spellcasti
     if (anyDef.ritual) spell.ritual = true;
     const at = anyDef.activation?.activationType;
     spell.castingTime = at === 3 ? 'bonus' : at === 4 ? 'reaction' : at === 1 ? 'action' : 'other';
+    // Full wording for "Display in VTT" — prefer the rich description, fall back to the snippet.
+    const textDef = def as unknown as { description?: string; snippet?: string };
+    const wording = textDef.description || textDef.snippet;
+    if (wording && String(wording).trim()) spell.description = String(wording);
 
     spells.push(spell);
   }

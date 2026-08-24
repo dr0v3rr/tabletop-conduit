@@ -31,6 +31,8 @@ export interface Weapon {
   range?: string;
   /** Two-handed damage dice for Versatile weapons, e.g. '1d10'. */
   versatileDamage?: string;
+  /** the weapon/action's wording (raw DDB HTML — sanitized at display time) — for "Display in VTT". */
+  description?: string;
   source: 'inventory' | 'action' | 'unarmed';
 }
 
@@ -310,6 +312,9 @@ function computeInventoryWeapons(data: CharacterData, model: RollModel): Weapon[
     };
     const rng = rangeString(def.range, def.longRange);
     if (rng) w.range = rng;
+    const wDef = def as unknown as { description?: string; snippet?: string };
+    const wText = wDef.description || wDef.snippet;
+    if (wText && String(wText).trim()) w.description = String(wText);
     if (hasProp(properties, 'Versatile')) {
       const vd = versatileFrom(def.properties);
       if (vd) w.versatileDamage = vd;
@@ -370,6 +375,9 @@ function computeActionWeapons(data: CharacterData, model: RollModel): Weapon[] {
       };
       const rng = rangeString(rangeObj?.range, rangeObj?.longRange);
       if (rng) w.range = rng;
+      const aText = (a as unknown as { description?: string; snippet?: string });
+      const aWording = aText.description || aText.snippet;
+      if (aWording && String(aWording).trim()) w.description = String(aWording);
       out.push(w);
     }
   }
