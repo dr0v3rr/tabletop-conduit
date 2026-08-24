@@ -20,7 +20,51 @@ window.__roll20Log = {
       if (tsAttr) curTs = tsAttr; else if (tsEl && tsEl.textContent) curTs = tsEl.textContent.trim();
 
       var rolls = m.querySelectorAll('.inlinerollresult');
-      if (!rolls.length) continue; // only messages that contain a roll
+      if (!rolls.length) {
+        // NATIVE Roll20 rolls (/roll, /gmroll, sheet macros, manual dice) are rendered as
+        // 'message rollresult' with a totally different DOM (.formula / .rolled / .dicegrouping)
+        // and NO .inlinerollresult — so the template path below would miss them entirely.
+        var isNative = /rollresult/.test(m.className || '') || m.querySelector('.dicegrouping, .rolled');
+        if (isNative) {
+          var nid = m.getAttribute('data-messageid');
+          var fEl = m.querySelector('.formula'); // raw "rolling 1d20 + 5" (or "(To GM)rolling ...")
+          var fRaw = (fEl && fEl.textContent) || '';
+          var nName = fRaw.replace(/\(to gm\)/i, '').replace(/^\s*rolling\s*/i, '').replace(/\s+/g, ' ').trim();
+          var rEl = m.querySelector('.rolled');
+          var nTotal = rEl ? parseInt((rEl.textContent || '').trim(), 10) : NaN;
+          var d20El = m.querySelector('.diceroll.d20');
+          var nD20 = !!d20El || /\bd20\b/i.test(nName);
+          var nRaw = null, nCrit = false, nFumble = false;
+          if (d20El) {
+            var didroll = d20El.querySelector('.didroll');
+            var dv = parseInt(((didroll ? didroll.textContent : d20El.textContent) || '').replace(/[^\d-]/g, ''), 10);
+            if (!isNaN(dv)) nRaw = dv;
+            var d20cls = d20El.className || '';
+            nCrit = nRaw === 20 || /critsuccess/.test(d20cls);
+            nFumble = nRaw === 1 || /critfail/.test(d20cls);
+          }
+          // Non-d20 native roll (damage/heal etc.): any single die that came up 1 counts as a fumble.
+          if (!nD20) {
+            var dds = m.querySelectorAll('.dicegrouping .didroll');
+            for (var dd = 0; dd < dds.length; dd++) { if (parseInt((dds[dd].textContent || '').replace(/[^\d-]/g, ''), 10) === 1) nFumble = true; }
+          }
+          var nGM = /\bprivate\b/.test(m.className || '') || /\(to gm\)/i.test(fRaw);
+          var ffEl = m.querySelector('.formattedformula');
+          out.push({
+            id: nid, campaign: campaignId,
+            player: (curBy || 'Unknown').replace(/\s*\(GM\)\s*$/i, ''),
+            isGM: nGM, character: null,
+            name: nName || 'Roll',
+            total: isNaN(nTotal) ? null : nTotal,
+            totals: isNaN(nTotal) ? [] : [nTotal],
+            damage: (!nD20 && !isNaN(nTotal)) ? nTotal : 0,
+            d20: nD20, rawD20: nRaw, crit: nCrit, fumble: nFumble,
+            breakdown: (ffEl ? ffEl.textContent : nName).replace(/\s+/g, ' ').trim(),
+            ts: curTs,
+          });
+        }
+        continue; // native handled (or a non-roll message) — skip the template path
+      }
 
       var id = m.getAttribute('data-messageid');
       var text = (m.innerText || '').replace(/\s+/g, ' ').trim();

@@ -9,6 +9,45 @@ carries one artifact per platform/architecture plus SHA-256 checksums.
 
 ---
 
+## v0.2.7 — native-roll capture fix + app icon
+
+- **Session Log now captures native Roll20 rolls.** The scraper only parsed *template* rolls
+  (`.inlinerollresult`). Manual/macro dice typed into Roll20 — `/roll`, `/gmroll`, and anything
+  rendered as `message rollresult` — use a different DOM (`.formula` / `.rolled` / `.dicegrouping`)
+  with no `.inlinerollresult` and were silently skipped. Conduit now parses that format too, so
+  saves, damage, GM rolls, and hand-typed `/roll`s all show up in the log and campaign-wide stats.
+  Verified live: captured rolls went **6 → 17** on a real campaign (4 previously-invisible GM rolls
+  plus several manual `/roll`s).
+- **Real app icon.** Replaces the generic default Windows *setup* icon — the app, the macOS `.icns`,
+  the Linux `.png`, the Windows `.ico`, and the NSIS Setup/uninstaller icons all now carry Conduit's
+  own icon (a conduit linking two nodes).
+
+No engine or data-format changes — existing archives and stats carry over. Tests: 226 passing.
+
+### Downloads
+
+| Platform | Arch | File | Type |
+|---|---|---|---|
+| macOS | arm64 | `Conduit-0.2.7-arm64.dmg` | Disk image |
+| macOS | arm64 | `Conduit-0.2.7-arm64-mac.zip` | Zipped `.app` |
+| Windows | x64 | `Conduit Setup 0.2.7.exe` | NSIS installer |
+| Windows | x64 | `Conduit 0.2.7.exe` | Portable |
+| Linux | x64 | `Conduit-0.2.7.AppImage` | AppImage |
+| Linux | arm64 | `Conduit-0.2.7-arm64.AppImage` | AppImage |
+
+### SHA-256 checksums
+
+```
+b8db870ae479d41493ea9581f949012cf68c278a9962b0f92b17ba7b3c0fafbe  Conduit-0.2.7-arm64.dmg
+6a907a16e72fb8ad130763e94495191aa9496d6f8d607f9e011036d498295559  Conduit-0.2.7-arm64-mac.zip
+9000f74b15a31dc2725537ee632e42ada00f9119a8c221204a1a5d5a9c2d6b34  Conduit Setup 0.2.7.exe
+1caee4574f1ee2dc907de44e2f5d35a398184132a7c9c5f752f019c05e39a294  Conduit 0.2.7.exe
+5a4ea76b5b1a48914aedd8a48e83f3e0cae942b5c506c95635abf0e96bd1a64b  Conduit-0.2.7.AppImage
+6c914adb07b36d9b37a283f4d673569adb1a96c452e1647789a8574e38cb9a2f  Conduit-0.2.7-arm64.AppImage
+```
+
+---
+
 ## v0.2.6 — durable roll history + campaign-wide stats
 
 - **Roll archive** — captures every roll from first interaction into a durable, append-only,
