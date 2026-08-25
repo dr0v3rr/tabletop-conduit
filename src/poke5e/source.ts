@@ -167,6 +167,64 @@ export async function fetchTrainerFeats(readKey: string): Promise<{ name: string
   return (Array.isArray(rows) ? rows : []).map((f: any) => ({ name: f.feat_name || "Feat", description: f.description || "" }));
 }
 
+// A poke5e specialization is stored on the trainer row as a per-type count (`special_<type>`),
+// stackable. This maps the Pokémon type → the specialization's trainer-facing name + its personal
+// benefit (the "+1 to that type's Pokémon skill checks" rider is implicit for every one).
+const SPECIALIZATIONS: Record<string, { name: string; benefit: string }> = {
+  normal: { name: "Poké Fan", benefit: "+1 CHA" },
+  fighting: { name: "Black Belt", benefit: "Athletics proficiency (or expertise)" },
+  flying: { name: "Bird Keeper", benefit: "Perception proficiency (or expertise)" },
+  poison: { name: "Punk", benefit: "Sleight of Hand proficiency (or expertise)" },
+  ground: { name: "Camper", benefit: "Survival proficiency (or expertise)" },
+  rock: { name: "Hiker", benefit: "+1 CON" },
+  bug: { name: "Bug Maniac", benefit: "Nature proficiency (or expertise)" },
+  ghost: { name: "Mystic", benefit: "Religion proficiency (or expertise)" },
+  steel: { name: "Worker", benefit: "+1 STR" },
+  fire: { name: "Kindler", benefit: "Intimidation proficiency (or expertise)" },
+  water: { name: "Swimmer", benefit: "+1 DEX" },
+  grass: { name: "Gardener", benefit: "Medicine proficiency (or expertise)" },
+  electric: { name: "Engineer", benefit: "+1 INT" },
+  psychic: { name: "Psychic", benefit: "Arcana proficiency (or expertise)" },
+  ice: { name: "Skier", benefit: "Acrobatics proficiency (or expertise)" },
+  dragon: { name: "Dragon Tamer", benefit: "+1 WIS" },
+  dark: { name: "Delinquent", benefit: "Stealth proficiency (or expertise)" },
+  fairy: { name: "Actor", benefit: "Performance proficiency (or expertise)" },
+};
+
+const cap = (s: string) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
+
+/** Read a trainer's PATH and SPECIALIZATION(S) off the raw get_trainer row, as name+description
+ *  entries (same shape as feats) so the sheet can list them alongside feats. Path rank features
+ *  (Mind/Body/Spirit …) appear only once poke5e fills them in as they unlock. */
+export function trainerExtras(row: any): { name: string; description: string }[] {
+  const out: { name: string; description: string }[] = [];
+  const pathName = (row.path_name || "").trim();
+  if (pathName) {
+    const ranks: string[] = [];
+    for (let i = 1; i <= 4; i++) {
+      const rn = (row[`path_rank_${i}_name`] || "").trim();
+      const rd = (row[`path_rank_${i}_desc`] || "").trim();
+      if (rn || rd) ranks.push(rn && rd ? `${rn}: ${rd}` : rn || rd);
+    }
+    const resource = Number(row.path_resource) || 0;
+    const desc = ranks.length
+      ? ranks.join("  •  ")
+      : "Rank features (Mind / Body / Spirit …) unlock as you level." + (resource ? ` Path resource: ${resource}.` : "");
+    out.push({ name: `Path — ${pathName}`, description: desc });
+  }
+  for (const [type, spec] of Object.entries(SPECIALIZATIONS)) {
+    const count = Number(row[`special_${type}`]) || 0;
+    if (count > 0) {
+      const stack = count > 1 ? ` ×${count}` : "";
+      out.push({
+        name: `Specialisation — ${spec.name}${stack}`,
+        description: `${spec.benefit}. +${count} to all skill checks made by your ${cap(type)}-type Pokémon.`,
+      });
+    }
+  }
+  return out;
+}
+
 // Static poke5e items reference (id → name/type), cached — used to name inventory entries.
 let itemsCache: Record<string, { name: string; type?: string; description?: string }> | null = null;
 async function itemsMap(): Promise<Record<string, { name: string; type?: string; description?: string }>> {
@@ -271,8 +329,13 @@ export function trainerToRollModel(row: any): { model: RollModel; hp: { current:
 
   const skills = {} as Record<SkillKey, SkillValue>;
   for (const s of SKILLS) {
-    const proficient = flag(row, `prof_${s.key.replace(/-/g, "_")}`, `prof_${s.key.replace(/-/g, "")}`);
-    skills[s.key] = { mod: abilities[s.ability].mod + (proficient ? profBonus : 0), ability: s.ability, proficient, expertise: false };
+    // poke5e stores a proficiency RANK (0 none / 1 proficient / 2 expertise) alongside the prof_* bool.
+    // Prefer the rank so expertise (e.g. from a stacked/type specialization) doubles the bonus.
+    const rank = Number(row[`rank_${s.key.replace(/-/g, "_")}`]) || 0;
+    const proficient = rank >= 1 || flag(row, `prof_${s.key.replace(/-/g, "_")}`, `prof_${s.key.replace(/-/g, "")}`);
+    const expertise = rank >= 2;
+    const bonus = expertise ? profBonus * 2 : proficient ? profBonus : 0;
+    skills[s.key] = { mod: abilities[s.ability].mod + bonus, ability: s.ability, proficient, expertise };
   }
 
   const passive = (k: SkillKey) => 10 + skills[k].mod;

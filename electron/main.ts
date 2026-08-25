@@ -13,7 +13,9 @@ import { buildSendExpression } from "../src/roll20/inject.js";
 import { displayCard } from "../src/roll20/format.js";
 import { r20TokenExpr } from "../src/roll20/token.js";
 import { ddbSlotsExpr, ddbHitDiceExpr, ddbInventoryExpr, ddbFetchCharExpr } from "../src/ddb/inject.js";
-import { extractReadKey, fetchTrainer, trainerToRollModel, buildInventory, fetchTrainerFeats, updateTrainerHp, updatePokemonHp, updateMovePp, setPoke5eCredentials, getPoke5eCredentials } from "../src/poke5e/source.js";
+import { extractReadKey, fetchTrainer, trainerToRollModel, trainerExtras, buildInventory, fetchTrainerFeats, updateTrainerHp, updatePokemonHp, updateMovePp, setPoke5eCredentials, getPoke5eCredentials } from "../src/poke5e/source.js";
+import { buildPokedex } from "../src/poke5e/pokedex.js";
+import type { DexEntry } from "../src/poke5e/pokedex.js";
 import { fetchPokemon, fetchMoveset, movesMap, pokemonToCharacter, resolveAbilities, fetchPokemonFeats, pokemonMeta } from "../src/poke5e/pokemon.js";
 import { abilityIds, passiveAbilityEffects } from "../src/poke5e/abilities-engine.js";
 import { searchMonsters, fetchMonster, monsterToCharacter } from "../src/monster/source.js";
@@ -34,12 +36,18 @@ const storePath = () => join(app.getPath("userData"), "roll-history.json");
 // the next launch, before the pane has a chance to re-emit them). null until first detection.
 let detectedPoke5e: { url: string; anonKey: string } | null = null;
 
+// Pokédex "seen / caught" collection, persisted in the store. Keyed by species id.
+const pokedexCollection = new Map<string, "seen" | "caught">();
+
 async function loadStore() {
   try {
     const data = JSON.parse(await readFile(storePath(), "utf8"));
     for (const r of data.records ?? []) if (r?.id) sessionLog.set(r.id, r);
     if (Array.isArray(data.actions)) actionLog.push(...data.actions);
     for (const [id, name] of Object.entries(data.campaigns ?? {})) campaignNames.set(id, String(name));
+    for (const [id, st] of Object.entries(data.pokedex ?? {})) {
+      if (st === "seen" || st === "caught") pokedexCollection.set(id, st);
+    }
     // Re-apply a previously detected poke5e key/endpoint so RPCs work before the pane reloads.
     if (data.poke5e && setPoke5eCredentials(data.poke5e)) detectedPoke5e = getPoke5eCredentials();
   } catch {
@@ -65,7 +73,7 @@ function saveStoreSoon() {
   saveTimer = setTimeout(async () => {
     saveTimer = null;
     try {
-      await writeFile(storePath(), JSON.stringify({ records: [...sessionLog.values()], actions: actionLog, campaigns: Object.fromEntries(campaignNames), poke5e: detectedPoke5e }), "utf8");
+      await writeFile(storePath(), JSON.stringify({ records: [...sessionLog.values()], actions: actionLog, campaigns: Object.fromEntries(campaignNames), poke5e: detectedPoke5e, pokedex: Object.fromEntries(pokedexCollection) }), "utf8");
     } catch {
       /* best-effort */
     }
@@ -217,6 +225,7 @@ let roll20View: WebContentsView;
 let ddbView: WebContentsView;
 let splashView: WebContentsView;
 let rightMode: "roll20" | "ddb" = "roll20";
+let pokedexOpen = false; // Pokédex tab active → sheet pane covers the whole window
 let launched = false; // false until the user picks a source + VTT on the splash screen
 let activeSource: "ddb" | "poke5e" | "monster" = "ddb";
 let activeVtt: "roll20" = "roll20";
@@ -250,7 +259,10 @@ function layout() {
     ddbView.setBounds({ x: 0, y: 0, width: 0, height: 0 });
     return;
   }
-  sheetView.setBounds({ x: 0, y: 0, width: SHEET_W, height: h });
+  // Pokédex tab: the sheet pane covers the FULL window (its list+detail layout wants the room).
+  // The right panes keep their desktop-width bounds but sit BEHIND the sheet (z-order), so they're
+  // hidden without resizing to 0×0 — which would flip D&D Beyond into its broken mobile layout.
+  sheetView.setBounds(pokedexOpen ? { x: 0, y: 0, width: w, height: h } : { x: 0, y: 0, width: SHEET_W, height: h });
   // BOTH right-pane views get the full right region at all times — the inactive one sits BEHIND
   // the active one (z-order), so it's invisible but still rendered at desktop width. A 0×0 view
   // makes D&D Beyond switch to its mobile layout, which breaks the rest/hit-dice controls.
@@ -507,7 +519,7 @@ function hardenView(view: WebContentsView, opts: { externalLinks?: boolean; lock
 }
 
 function createWindow() {
-  win = new BaseWindow({ width: 1500, height: 950, title: "D&D Beyond ↔ Roll20" });
+  win = new BaseWindow({ width: 1500, height: 950, title: `Conduit v${app.getVersion()}` });
 
   const partition = setupPersistentSession();
   // Remote panes: explicit hardening (don't rely on Electron defaults) — sandboxed, isolated,
@@ -784,11 +796,13 @@ ipcMain.handle("load-poke5e", async (_e, input: string) => {
     if (!row) return { ok: false, error: "No trainer found for that link/key — check it and try again" };
     const { model, hp } = trainerToRollModel(row);
     current = { data: {} as CharacterData, name: model.name, id: key, model };
-    const [inventory, feats, team] = await Promise.all([
+    const [inventory, trainerFeats, team] = await Promise.all([
       buildInventory(key).catch(() => []),
       fetchTrainerFeats(key).catch(() => []),
       fetchPokemon((row as any).id).catch(() => []),
     ]);
+    // Surface the trainer's Path + Specialisation(s) (read off the trainer row) ahead of their feats.
+    const feats = [...trainerExtras(row), ...trainerFeats];
     // The write key poke5e stores locally ("write:<readKey>") — presence = we can save back.
     const writeKey: string = await ddbView.webContents
       .executeJavaScript(`(function(){try{return localStorage.getItem("write:"+${JSON.stringify(key)})||"";}catch(e){return "";}})()`, true)
@@ -1377,6 +1391,46 @@ ipcMain.handle("display-in-vtt", async (_e, payload: { name?: string; body?: str
   } catch (err) {
     return { ok: false, error: String(err) };
   }
+});
+
+// ---- Pokédex: species reference + seen/caught collection --------------------------------------
+let pokedexCache: DexEntry[] | null = null;
+async function ensurePokedex(): Promise<DexEntry[]> {
+  if (pokedexCache) return pokedexCache;
+  const [pj, mj] = await Promise.all([
+    fetch("https://poke5e.app/pokemon.json").then((r) => r.json()),
+    fetch("https://poke5e.app/moves.json").then((r) => r.json()),
+  ]);
+  pokedexCache = buildPokedex((pj as any).items || [], (mj as any).moves || []);
+  return pokedexCache;
+}
+ipcMain.handle("pokedex-load", async () => {
+  try {
+    return { ok: true, species: await ensurePokedex(), collection: Object.fromEntries(pokedexCollection) };
+  } catch (err) {
+    return { ok: false, error: String(err), species: [], collection: {} };
+  }
+});
+ipcMain.handle("pokedex-view", (_e, open: boolean) => {
+  pokedexOpen = !!open;
+  layout();
+  raiseRightPane(); // keeps the sheet pane on top (it now covers the whole window)
+  return { ok: true };
+});
+// "Seen" is a manual, persisted encounter flag (the player sets it when the DM confirms they've come
+// across a species in the VTT). "Caught" is NOT stored here — it's derived from the trainer's team.
+ipcMain.handle("pokedex-mark", (_e, id: string, seen: boolean) => {
+  if (!id) return { ok: false };
+  if (seen) pokedexCollection.set(id, "seen"); else pokedexCollection.delete(id);
+  saveStoreSoon();
+  return { ok: true, seen: pokedexCollection.size };
+});
+// Species the loaded trainer owns (their team) = "caught" in the dex. Derived live from poke5e.
+ipcMain.handle("pokedex-caught", () => {
+  const species = poke5eCtx?.team
+    ? [...poke5eCtx.team.values()].map((p: any) => String(p.species || "").toLowerCase()).filter(Boolean)
+    : [];
+  return { ok: true, species: [...new Set(species)] };
 });
 
 /** Scrape the Roll20 chat and return the roll records (no persist) — used to read a roll's

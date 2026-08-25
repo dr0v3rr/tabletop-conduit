@@ -9,6 +9,46 @@ carries one artifact per platform/architecture plus SHA-256 checksums.
 
 ---
 
+## v0.2.9 — in-app Pokédex + trainer path/specialisation
+
+- **📕 Pokédex (poke5e-only tab)** — browse all 1,139 official species with sprites/art: filter by
+  name, region, SR, type, and collection state (fakémon hidden behind a toggle); detail shows the
+  stat block, **abilities with text**, moves, evolution, and a **Catch card** (`DC = 10 + ⌊SR⌋ +
+  level` vs Animal Handling). Every ability/move/species has a **📖 Display in VTT** button.
+  **Seen** is a manual, persisted encounter flag; **Caught** is derived from your trainer's team.
+- **Trainer path & specialisation** — a loaded poke5e trainer now surfaces their Path (Guru, with
+  rank features) and Specialisation(s) (e.g. Dragon Tamer, with stacks + effect); skill proficiency
+  reads poke5e's rank so **expertise** doubles correctly.
+- **Initiative** relocated to a **⚡ Init** quick-roll in the Roll controls (was under Saving Throws)
+  — available on every sheet.
+- **Window title** is now `Conduit v<version>`.
+
+No data-format changes. Tests: 253 passing.
+
+### Downloads
+
+| Platform | Arch | File | Type |
+|---|---|---|---|
+| macOS | arm64 | `Conduit-0.2.9-arm64.dmg` | Disk image |
+| macOS | arm64 | `Conduit-0.2.9-arm64-mac.zip` | Zipped `.app` |
+| Windows | x64 | `Conduit Setup 0.2.9.exe` | NSIS installer |
+| Windows | x64 | `Conduit 0.2.9.exe` | Portable |
+| Linux | x64 | `Conduit-0.2.9.AppImage` | AppImage |
+| Linux | arm64 | `Conduit-0.2.9-arm64.AppImage` | AppImage |
+
+### SHA-256 checksums
+
+```
+b293f499c39b09195cc09c2f781b7cfa4e160ccacb3513c615e7cf228efc5a49  Conduit-0.2.9-arm64.dmg
+b650a59349954f7ea9c5f75a7058351d480a1389da0108a6eabc799025b1aba0  Conduit-0.2.9-arm64-mac.zip
+40b81251d69b961b4ab4e9ad3a2e7e5e0a14d30aeaf5a76e3e07a374df1114a9  Conduit Setup 0.2.9.exe
+704804339ac49318314c5c3a0abe28388dab293be4189e1cc71bb2ba0dfd039d  Conduit 0.2.9.exe
+cafd6b723695b6cf05ede97429da5369054ec9f13c31db11a12d9770a491cd11  Conduit-0.2.9.AppImage
+13942e8354925be00adbed850d408cc51d698846e52934f25ba0d674364334e1  Conduit-0.2.9-arm64.AppImage
+```
+
+---
+
 ## v0.2.8 — Display in VTT
 
 - **📖 Display in VTT** — a compact button next to every move, spell, weapon, feat/ability, and

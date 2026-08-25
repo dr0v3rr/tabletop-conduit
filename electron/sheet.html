@@ -24,6 +24,7 @@
         <div class="seg" id="paneSeg">
           <button data-pane="roll20" class="on">Table</button>
           <button data-pane="ddb">D&amp;D Beyond</button>
+          <button data-pane="pokedex" hidden title="Browse every species — stat blocks, moves, evolution, catch odds">Pokédex</button>
         </div>
         <span id="ddbStatus" class="ddb-status" title="Slot sync with D&amp;D Beyond — click to re-check">DDB: —</span>
         <button id="logoutBtn" class="mini-btn" title="Return to the setup menu — change character source or VTT">⇦ Menu</button>
@@ -71,6 +72,7 @@
           </label>
           <button id="whisperToggle" type="button" class="ex-toggle" title="Whisper rolls to the GM only">🔒 Whisper</button>
           <button id="rerollBtn" type="button" class="ex-toggle" title="Roll the last thing again" disabled>↻ Reroll</button>
+          <button type="button" class="ex-toggle init-btn" data-kind="initiative" title="Roll initiative into Roll20">⚡ Init <span class="mod" id="initMod"></span></button>
         </div>
         <input id="search" type="text" placeholder="Search skills, attacks, spells…" />
       </div>
@@ -104,7 +106,6 @@
         <div class="section-head"><span class="tw"></span><span class="section-title">Saving Throws</span></div>
         <div class="section-body">
           <div id="saves" class="rows"></div>
-          <button class="roll-line" data-kind="initiative"><span class="label">Initiative</span><span class="mod" id="initMod"></span></button>
         </div>
       </section>
 
@@ -193,6 +194,33 @@
       </section>
 
       <div id="lastRoll" class="last-roll"></div>
+    </div>
+
+    <div id="pokedex" hidden>
+      <div class="dex-head">
+        <h2 class="dex-title">Pokédex</h2>
+        <div class="dex-progress">
+          <span>Seen <b id="dexSeen">0</b></span>
+          <span>Caught <b id="dexCaught">0</b> / <b id="dexTotal">—</b></span>
+          <div class="dex-pbar"><span id="dexBar"></span></div>
+        </div>
+      </div>
+      <div class="dex-filters">
+        <div class="dex-search"><input id="dexQ" type="text" placeholder="Search species…" aria-label="Search species" /></div>
+        <select id="dexRegion" aria-label="Region"><option value="">All regions</option></select>
+        <select id="dexSR" aria-label="SR band">
+          <option value="">Any SR</option><option value="lo">SR ≤ 1</option><option value="mid">SR 2–6</option><option value="hi">SR 7+</option>
+        </select>
+        <select id="dexState" aria-label="Collection">
+          <option value="">All</option><option value="caught">Caught</option><option value="seen">Seen</option><option value="unseen">Unseen</option>
+        </select>
+        <label class="dex-chk" title="Include community-made (unofficial) species"><input type="checkbox" id="dexFakemon" /> Show fakémon</label>
+        <div class="dex-tchips" id="dexTypes"></div>
+      </div>
+      <div class="dex-body">
+        <div class="dex-list" id="dexList" role="listbox" aria-label="Species"></div>
+        <div class="dex-detail" id="dexDetail" aria-live="polite"></div>
+      </div>
     </div>
 
     <script src="sheet.js"></script>

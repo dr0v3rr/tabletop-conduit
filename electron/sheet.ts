@@ -50,6 +50,10 @@ declare global {
       roll20Scrape(): Promise<any[]>;
       roll20Say(message: string, speakingAs?: string): Promise<{ ok: boolean; error?: string }>;
       displayInVtt(payload: { name: string; body: string; meta?: string; label?: string; speakingAs?: string }): Promise<{ ok: boolean; command?: string; error?: string }>;
+      pokedexLoad(): Promise<{ ok: boolean; species: any[]; collection: Record<string, "seen" | "caught">; error?: string }>;
+      pokedexView(open: boolean): Promise<{ ok: boolean }>;
+      pokedexMark(id: string, seen: boolean): Promise<{ ok: boolean; seen?: number }>;
+      pokedexCaught(): Promise<{ ok: boolean; species: string[] }>;
       roll20SheetStyle(): Promise<{ style: "sheet" | "default" }>;
       r20TurnTop(): Promise<{ id: string; pr: any; count: number } | null>;
       notify(title: string, body: string): Promise<{ ok: boolean }>;
@@ -1903,7 +1907,11 @@ $("paneSeg").querySelectorAll("button").forEach((b) => {
   b.addEventListener("click", () => {
     $("paneSeg").querySelectorAll("button").forEach((x) => x.classList.remove("on"));
     b.classList.add("on");
-    const mode = (b.getAttribute("data-pane") as "roll20" | "ddb") || "roll20";
+    const pane = b.getAttribute("data-pane");
+    // Pokédex is a LEFT-pane view (the reference browser) — it doesn't touch the VTT/source pane.
+    if (pane === "pokedex") { setView("pokedex"); return; }
+    setView("character");
+    const mode = (pane as "roll20" | "ddb") || "roll20";
     window.api.setRightPane(mode);
     if (mode === "ddb") setTimeout(refreshDdb, 1500); // user may be signing in
     // Returning to the Table after visiting DDB (e.g. adding items) → pull the fresh inventory.
@@ -2124,6 +2132,11 @@ async function refreshPoke5eTrainers(): Promise<boolean> {
     activeSource = cfg?.source === "poke5e" ? "poke5e" : cfg?.source === "monster" ? "monster" : "ddb";
   } catch { /* default to ddb */ }
 
+  // The Pokédex is poke5e-only — reveal it for poke5e, drop it entirely for D&D Beyond / Monsters.
+  const pdxBtn = $("paneSeg").querySelector('[data-pane="pokedex"]');
+  if (activeSource === "poke5e") pdxBtn?.removeAttribute("hidden");
+  else pdxBtn?.remove();
+
   if (activeSource === "monster") {
     // Monster/NPC: a search box with a results dropdown; picking a creature loads it read-only.
     $("charPicker").hidden = true;
@@ -2219,7 +2232,7 @@ $("advSeg").querySelectorAll("button").forEach((b) => {
     adv = (b.getAttribute("data-adv") as AdvMode) || "normal";
   });
 });
-document.querySelectorAll<HTMLElement>('.roll-line[data-kind="initiative"]').forEach((b) => {
+document.querySelectorAll<HTMLElement>('[data-kind="initiative"]').forEach((b) => {
   b.onclick = () => doRoll({ kind: "initiative" });
 });
 
@@ -2335,5 +2348,241 @@ function addPoke5eKey(key: string) {
     if (!keys.includes(key)) { keys.push(key); localStorage.setItem("poke5eKeys", JSON.stringify(keys)); }
   } catch { /* ignore */ }
 }
+
+// ============================ Pokédex tab ============================
+const DEX_TYPES = ["normal","fire","water","grass","electric","ice","fighting","poison","ground","flying","psychic","bug","rock","ghost","dragon","dark","steel","fairy"];
+let dex: any[] = [];
+let dexSeen = new Set<string>();   // MANUAL encounter flags, persisted (DM confirms you've seen it)
+let dexCaught = new Set<string>(); // DERIVED from the loaded trainer's team (species they own)
+let dexLoaded = false, dexLoading = false;
+let dexOfficial = 0; // count of official (non-fakémon) species — the completion denominator
+let dexSel: string | null = null;
+const dexActiveTypes = new Set<string>();
+
+/** A species' collection state: caught (in the trainer's team) wins over a manual seen flag. */
+function dexState(id: string): "caught" | "seen" | null {
+  if (dexCaught.has(id)) return "caught";
+  if (dexSeen.has(id)) return "seen";
+  return null;
+}
+async function loadCaught() {
+  const r = await window.api.pokedexCaught().catch(() => null);
+  dexCaught = new Set((r?.species || []).map((s) => String(s).toLowerCase()));
+}
+
+function setView(v: "character" | "pokedex") {
+  const isDex = v === "pokedex";
+  document.body.classList.toggle("dex-open", isDex);
+  $("pokedex").hidden = !isDex;
+  window.api.pokedexView(isDex).catch(() => {}); // expand the sheet pane full-width for the dex
+  if (isDex) {
+    if (!dexLoaded && !dexLoading) loadDex();
+    else loadCaught().then(() => { updateDexProgress(); renderDexList(); renderDexDetail(); }); // trainer may have changed
+  }
+}
+
+async function loadDex() {
+  dexLoading = true;
+  $("dexList").innerHTML = `<div class="dex-empty">Loading the Pokédex…</div>`;
+  const res = await window.api.pokedexLoad().catch(() => null);
+  dexLoading = false;
+  if (!res?.ok || !res.species?.length) {
+    $("dexList").innerHTML = `<div class="dex-empty">Couldn't load the Pokédex.${res?.error ? " " + esc(res.error) : ""}</div>`;
+    return;
+  }
+  dex = res.species; dexLoaded = true;
+  dexSeen = new Set(Object.keys(res.collection || {})); // stored flags are seen-only now
+  await loadCaught();
+  dexOfficial = dex.filter((p) => !p.fakemon).length;
+  ($("dexTotal") as HTMLElement).textContent = String(dexOfficial);
+  // regions
+  const regions = [...new Set(dex.map((p) => p.region).filter(Boolean))].sort();
+  const rsel = $("dexRegion") as HTMLSelectElement;
+  for (const r of regions) { const o = document.createElement("option"); o.value = r; o.textContent = r; rsel.appendChild(o); }
+  // type chips
+  const tc = $("dexTypes"); tc.innerHTML = "";
+  for (const t of DEX_TYPES) {
+    const b = document.createElement("button");
+    b.className = "dex-tchip"; b.textContent = t; b.style.background = `var(--t-${t})`; b.style.color = `var(--t-${t})`;
+    b.style.setProperty("color", "#12121a");
+    b.onclick = () => { b.classList.toggle("on"); dexActiveTypes.has(t) ? dexActiveTypes.delete(t) : dexActiveTypes.add(t); renderDexList(); };
+    tc.appendChild(b);
+  }
+  renderDexList(); updateDexProgress();
+  if (dex.length) selectDex(dexSel || dex[0].id);
+}
+
+function dexPass(p: any): boolean {
+  if (p.fakemon && !($("dexFakemon") as HTMLInputElement).checked) return false; // hidden by default
+  const q = ($("dexQ") as HTMLInputElement).value.trim().toLowerCase();
+  if (q && !p.name.toLowerCase().includes(q)) return false;
+  const region = ($("dexRegion") as HTMLSelectElement).value;
+  if (region && p.region !== region) return false;
+  const sr = ($("dexSR") as HTMLSelectElement).value;
+  if (sr === "lo" && p.sr > 1) return false;
+  if (sr === "mid" && (p.sr < 2 || p.sr > 6)) return false;
+  if (sr === "hi" && p.sr < 7) return false;
+  const st = ($("dexState") as HTMLSelectElement).value;
+  const s = dexState(p.id);
+  if (st === "caught" && s !== "caught") return false;
+  if (st === "seen" && !s) return false; // seen OR caught
+  if (st === "unseen" && s) return false;
+  if (dexActiveTypes.size && !p.types.some((t: string) => dexActiveTypes.has(t))) return false;
+  return true;
+}
+
+function dexTypeChip(t: string, cls: string): string {
+  return `<span class="${cls}" style="background:var(--t-${t})">${esc(t)}</span>`;
+}
+
+function renderDexList() {
+  const L = $("dexList");
+  const rows = dex.filter(dexPass);
+  if (!rows.length) { L.innerHTML = `<div class="dex-empty">No species match those filters.</div>`; return; }
+  L.innerHTML = "";
+  for (const p of rows) {
+    const r = document.createElement("div");
+    r.className = "dex-row" + (p.id === dexSel ? " sel" : "");
+    r.onclick = () => selectDex(p.id);
+    const st = dexState(p.id);
+    const state = st === "caught" ? '<span class="caught" title="Caught (in your team)">●</span>' : st === "seen" ? '<span class="seen" title="Seen">○</span>' : "";
+    r.innerHTML =
+      `<div class="dex-sprite${p.sprite ? "" : " noimg"}" data-ini="${esc((p.name || "?").charAt(0))}">${p.sprite ? `<img loading="lazy" alt="${esc(p.name)}" src="${esc(p.sprite)}">` : ""}</div>` +
+      `<div><div class="dex-rname">${esc(p.name)}</div>` +
+      `<div class="dex-rmeta"><span class="dex-rnum">#${String(p.num).padStart(3, "0")}</span>${p.types.map((t: string) => dexTypeChip(t, "dex-mini")).join("")}</div></div>` +
+      `<div class="dex-spacer"></div><span class="dex-sr">SR ${p.sr}</span><div class="dex-state">${state}</div>`;
+    L.appendChild(r);
+  }
+}
+
+function updateDexProgress() {
+  let seen = 0, caught = 0; // official only (caught implies seen)
+  for (const p of dex) {
+    if (p.fakemon) continue;
+    const s = dexState(p.id);
+    if (s === "caught") { caught++; seen++; }
+    else if (s === "seen") seen++;
+  }
+  ($("dexSeen") as HTMLElement).textContent = String(seen);
+  ($("dexCaught") as HTMLElement).textContent = String(caught);
+  if (dexOfficial) ($("dexBar") as HTMLElement).style.width = Math.min(100, 100 * caught / dexOfficial).toFixed(1) + "%";
+}
+
+// Toggle the MANUAL "seen" flag (persisted). Caught is derived from the team and never set here.
+function markSeen(id: string, on: boolean) {
+  if (on) dexSeen.add(id); else dexSeen.delete(id);
+  window.api.pokedexMark(id, on).catch(() => {});
+  updateDexProgress(); renderDexList(); renderDexDetail();
+}
+
+function selectDex(id: string) {
+  // Selecting a species only VIEWS it — "Seen" is an encounter flag the player sets manually when
+  // the DM confirms they've come across it in the VTT (via the Seen/Caught toggle in the detail).
+  dexSel = id;
+  renderDexList();
+  renderDexDetail();
+}
+
+function renderDexDetail() {
+  const p = dex.find((x) => x.id === dexSel);
+  const D = $("dexDetail");
+  if (!p) { D.innerHTML = `<div class="dex-empty">Select a species.</div>`; return; }
+  const caught = dexCaught.has(p.id), seen = dexSeen.has(p.id);
+  const ahMod = model?.skills?.["animal-handling"]?.mod;
+  const lvl = Number((document.getElementById("dexLvl") as HTMLInputElement)?.value) || 5;
+  const dc = 10 + Math.floor(p.sr) + lvl;
+  const mod = (s: number) => Math.floor((s - 10) / 2), sg = (n: number) => (n >= 0 ? "+" + n : "" + n);
+
+  let h = `<div class="dd-top">
+    <div class="dd-art${p.art ? "" : " noimg"}" data-ini="${esc((p.name || "?").charAt(0))}">${p.art ? `<img alt="${esc(p.name)}" src="${esc(p.art)}">` : ""}</div>
+    <div class="dd-title"><span class="num">#${String(p.num).padStart(3, "0")}</span><h2>${esc(p.name)}</h2>
+      <div class="dd-types">${p.types.map((t: string) => dexTypeChip(t, "dd-type")).join("")}</div></div>
+    <div class="dd-actions">
+      <div class="dd-sr">Species Rating <b>${p.sr}</b></div>
+      <div class="dd-toggle">
+        ${caught
+          ? `<span class="dd-caught-badge" title="On your trainer's team">● Caught</span>`
+          : `<button class="seen ${seen ? "on" : ""}" id="dexSeenBtn">👁 ${seen ? "Seen" : "Mark seen"}</button>`}
+      </div>
+    </div></div>`;
+
+  h += `<h3 class="dd-sec">Stat block</h3><div class="dd-stats">
+    <div class="dd-stat"><div class="k">AC</div><div class="v">${p.ac}</div></div>
+    <div class="dd-stat"><div class="k">HP</div><div class="v">${p.hp}</div></div>
+    <div class="dd-stat"><div class="k">Hit Die</div><div class="v">${esc(p.hitDice)}</div></div>
+    <div class="dd-stat"><div class="k">Size</div><div class="v" style="font-size:12px">${esc(p.size)}</div></div></div>
+    <div class="dd-abils">${(["STR","DEX","CON","INT","WIS","CHA"] as const).map((k) => `<div class="dd-ab"><div class="k">${k}</div><div class="v">${p.stats[k]}</div><div class="m">${sg(mod(p.stats[k]))}</div></div>`).join("")}</div>
+    <div class="dd-kv"><b>Speed:</b> ${esc(p.speed || "—")} &nbsp;·&nbsp; <b>Saves:</b> ${p.saves.join(", ") || "—"} &nbsp;·&nbsp; <b>Skills:</b> ${p.skills.join(", ") || "—"}<br>
+    <b>Region:</b> ${esc(p.region || "—")} &nbsp;·&nbsp; <b>Found:</b> ${p.biomes.join(" · ") || "—"}</div>`;
+
+  h += `<h3 class="dd-sec">Abilities</h3><div id="dexAbils"></div>`;
+
+  h += `<h3 class="dd-sec">Moves</h3><div id="dexMoves"></div>`;
+
+  h += `<h3 class="dd-sec">Evolution</h3><div class="dd-evo">` +
+    p.evolution.map((s: any) => (s.here ? `<span class="stage here">${esc(s.name)}</span>` : (s.cond ? `<span class="arr">→ ${esc(s.cond)} →</span><span class="stage">${esc(s.name)}</span>` : `<span class="stage">${esc(s.name)}</span>`))).join("") + `</div>`;
+
+  h += `<h3 class="dd-sec">Catch</h3><div class="dd-catch">
+    <div class="top"><div class="dc"><b>DC ${dc}</b></div>
+      <div class="formula">10 + ⌊SR ${p.sr}⌋ + level${ahMod != null ? ` &nbsp;·&nbsp; Animal Handling <b style="color:var(--ink)">${sg(ahMod)}</b>` : ""}</div>
+      <label class="lvl">Wild level <input id="dexLvl" type="number" value="${lvl}" min="1" max="20"></label></div>
+    <div class="roll">
+      <button class="dd-btn primary" id="dexCatch"${ahMod == null ? " disabled title='Load a trainer to roll Animal Handling'" : ""}>🎲 Roll capture</button>
+      <button class="dd-btn" id="dexDisplaySpecies">📖 Display species</button>
+    </div>
+    <div class="note">Roll <b>Animal Handling</b> vs the DC. <span class="adv">Advantage while the target is asleep</span> — land a sleep move first.</div></div>`;
+
+  D.innerHTML = h;
+
+  // wire the manual "seen" toggle (only present when the species isn't caught/owned)
+  const seenBtn = document.getElementById("dexSeenBtn");
+  if (seenBtn) seenBtn.onclick = () => {
+    const now = !dexSeen.has(p.id);
+    markSeen(p.id, now);
+    setStatus(now ? `Marked ${p.name} as seen` : `Unmarked ${p.name}`);
+  };
+  // abilities with text + 📖 Display
+  const ab = D.querySelector("#dexAbils")!;
+  for (const a of p.abilities) {
+    const el = document.createElement("div"); el.className = "dd-abil";
+    el.innerHTML = `<div class="dd-abil-head"><span class="dd-abil-name">${esc(a.name)}${a.hidden ? '<span class="h">Hidden</span>' : ""}</span>` +
+      (a.description ? `<button class="disp" title="Display in VTT">📖</button>` : "") + `</div>` +
+      (a.description ? `<div class="dd-abil-desc">${esc(a.description)}</div>` : "");
+    const db = el.querySelector<HTMLButtonElement>(".disp");
+    if (db) db.onclick = () => doDisplay(a.name, a.description, `${p.name} ability`, "Ability");
+    ab.appendChild(el);
+  }
+  // moves with 📖
+  const mv = D.querySelector("#dexMoves")!;
+  for (const m of p.moves) {
+    const el = document.createElement("div"); el.className = "dd-move";
+    el.innerHTML = `<span class="mt" style="background:var(--t-${m.type})"></span>` +
+      `<span class="mn">${esc(m.name)}</span>` +
+      `<span class="mlvl">${esc(m.level)}</span><span class="md">${esc(m.description || "")}</span>` +
+      `<span class="mrt">${esc(m.type)}</span>` + (m.description ? `<button class="disp" title="Display in VTT">📖</button>` : "");
+    const db = el.querySelector<HTMLButtonElement>(".disp");
+    if (db) db.onclick = () => doDisplay(m.name, m.description, `${cap(m.type)} · ${m.level}`, "Move");
+    mv.appendChild(el);
+  }
+  // catch actions
+  const lvlIn = document.getElementById("dexLvl") as HTMLInputElement;
+  if (lvlIn) lvlIn.oninput = () => renderDexDetail();
+  const catchBtn = document.getElementById("dexCatch");
+  if (catchBtn) catchBtn.onclick = () => {
+    if (ahMod == null) return;
+    doRoll({ kind: "check", key: "animal-handling" });
+    setStatus(`Rolled Animal Handling to catch ${p.name} (DC ${dc})`);
+  };
+  const dispSp = document.getElementById("dexDisplaySpecies");
+  if (dispSp) dispSp.onclick = () => {
+    const body = `${p.types.map(cap).join("/")} · SR ${p.sr} · AC ${p.ac} · HP ${p.hp} (${p.hitDice}). Abilities: ${p.abilities.map((a: any) => a.name).join(", ")}. ${p.region ? "Native to " + p.region + "." : ""}`;
+    doDisplay(p.name, body, `#${p.num} · ${p.size}`, "Pokémon");
+  };
+}
+
+// wiring (the Pokédex tab lives in #paneSeg — handled by that seg's click listener)
+["dexQ"].forEach((id) => { const e = document.getElementById(id); if (e) (e as HTMLInputElement).oninput = renderDexList; });
+["dexRegion", "dexSR", "dexState"].forEach((id) => { const e = document.getElementById(id); if (e) (e as HTMLSelectElement).onchange = renderDexList; });
+{ const e = document.getElementById("dexFakemon"); if (e) (e as HTMLInputElement).onchange = renderDexList; }
 
 export {};

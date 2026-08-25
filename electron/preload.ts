@@ -37,6 +37,10 @@ contextBridge.exposeInMainWorld("api", {
   roll20Say: (message: string, speakingAs?: string) => ipcRenderer.invoke("roll20-say", message, speakingAs),
   displayInVtt: (payload: { name: string; body: string; meta?: string; label?: string; speakingAs?: string }) =>
     ipcRenderer.invoke("display-in-vtt", payload),
+  pokedexLoad: () => ipcRenderer.invoke("pokedex-load"),
+  pokedexView: (open: boolean) => ipcRenderer.invoke("pokedex-view", open),
+  pokedexMark: (id: string, seen: boolean) => ipcRenderer.invoke("pokedex-mark", id, seen),
+  pokedexCaught: () => ipcRenderer.invoke("pokedex-caught"),
   roll20SheetStyle: () => ipcRenderer.invoke("roll20-sheet-style"),
   r20TurnTop: () => ipcRenderer.invoke("r20-turn-top"),
   notify: (title: string, body: string) => ipcRenderer.invoke("notify", title, body),
