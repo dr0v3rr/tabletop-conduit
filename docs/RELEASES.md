@@ -9,6 +9,46 @@ carries one artifact per platform/architecture plus SHA-256 checksums.
 
 ---
 
+## v0.2.10 — the catch loop
+
+- **Catch card** — a shared flow launchable from the **Pokédex** (species preset) or an **inventory
+  Poké Ball throw** (ball preset + target-species search). It's a **roll builder**: shows your Animal
+  Handling catch roll with modifiers — ball bonus (Great +5, Ultra +10, Safari +Nature, Master =
+  auto), an **Advantage** toggle, and an **Other** bonus. **🎲 Throw** posts the real roll to Roll20
+  and consumes a ball; the GM adjudicates (no DC/HP shown — you won't have those at the table).
+- **Caught = your poke5e roster** — **✔ Add to poke5e** creates the Pokémon on your trainer via
+  `add_pokemon` at the chosen level; it then shows **● Caught · on poke5e**. Read-only trainers get a
+  local caught tick. **Seen** stays a manual, persisted flag.
+- **Inventory write-back** — poke5e bag quantities now persist (`update_inventory_item`) when you
+  hold the write key.
+- Enforces the rule that you can't catch a Pokémon above your trainer's level.
+
+No data-format changes. Tests: 256 passing.
+
+### Downloads
+
+| Platform | Arch | File | Type |
+|---|---|---|---|
+| macOS | arm64 | `Conduit-0.2.10-arm64.dmg` | Disk image |
+| macOS | arm64 | `Conduit-0.2.10-arm64-mac.zip` | Zipped `.app` |
+| Windows | x64 | `Conduit Setup 0.2.10.exe` | NSIS installer |
+| Windows | x64 | `Conduit 0.2.10.exe` | Portable |
+| Linux | x64 | `Conduit-0.2.10.AppImage` | AppImage |
+| Linux | arm64 | `Conduit-0.2.10-arm64.AppImage` | AppImage |
+
+### SHA-256 checksums
+
+```
+65fda8a3332755216ea7e84fabf190f278feb9205723b4e40b918c03d9339068  Conduit-0.2.10-arm64.dmg
+c5690f8b24881051ed61371fd894e70e1de5c52b8bebd3c29104a3875f3e77c8  Conduit-0.2.10-arm64-mac.zip
+d98f9690c9eef52f3c2e7fbc8b1ac29e5e506c3f1f86f5bfc1ee99c1220057d2  Conduit Setup 0.2.10.exe
+35ab5f84ffff8d4f7f6291f64b431cf1b1a0d1eaa5c4755f7ab446fde2ec7873  Conduit 0.2.10.exe
+ef15c88cec0786440837a7535fcaf3928a7ef6abe0023190a2817236c51cc884  Conduit-0.2.10.AppImage
+6019e45d0ac590ee837a53ee765cd795c8c813840d0e785a7e27ee3ad61a6f12  Conduit-0.2.10-arm64.AppImage
+```
+
+---
+
 ## v0.2.9 — in-app Pokédex + trainer path/specialisation
 
 - **📕 Pokédex (poke5e-only tab)** — browse all 1,139 official species with sprites/art: filter by

@@ -39,9 +39,11 @@ export interface DexEntry {
   hitDice: string;
   speed: string; // "30 ft, swim 20 ft"
   stats: { STR: number; DEX: number; CON: number; INT: number; WIS: number; CHA: number };
+  minLevel: number;
   saves: string[]; // ["DEX"], ["STR","CON"] …
-  skills: string[];
-  abilities: { name: string; hidden: boolean; description: string }[];
+  skills: string[]; // display names ("Animal Handling")
+  skillIds: string[]; // raw ids ("animal-handling") — for add_pokemon rank_* params
+  abilities: { id: string; name: string; hidden: boolean; description: string }[];
   evolution: DexEvoStep[];
   region: string;
   biomes: string[];
@@ -137,9 +139,11 @@ export function normalizeSpecies(p: any, movesById: Record<string, any>, byId: R
     hitDice: String(p.hitDice || ""),
     speed,
     stats: { STR: a.str ?? 10, DEX: a.dex ?? 10, CON: a.con ?? 10, INT: a.int ?? 10, WIS: a.wis ?? 10, CHA: a.cha ?? 10 },
+    minLevel: Number(p.minLevel) || 1,
     saves: (p.savingThrows || []).map(up),
     skills: (p.skills || []).map((s: string) => s.split("-").map(cap).join(" ")),
-    abilities: (p.abilities || []).map((x: any) => ({ name: x.name || x.id, hidden: !!x.hidden, description: x.description || "" })),
+    skillIds: (p.skills || []).map((s: string) => String(s)),
+    abilities: (p.abilities || []).map((x: any) => ({ id: x.id || x.name, name: x.name || x.id, hidden: !!x.hidden, description: x.description || "" })),
     evolution: buildEvolution(p, byId),
     region: p.habitat?.nativeRegion || "",
     biomes: p.habitat?.biomes || [],

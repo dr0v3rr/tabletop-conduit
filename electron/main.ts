@@ -13,7 +13,7 @@ import { buildSendExpression } from "../src/roll20/inject.js";
 import { displayCard } from "../src/roll20/format.js";
 import { r20TokenExpr } from "../src/roll20/token.js";
 import { ddbSlotsExpr, ddbHitDiceExpr, ddbInventoryExpr, ddbFetchCharExpr } from "../src/ddb/inject.js";
-import { extractReadKey, fetchTrainer, trainerToRollModel, trainerExtras, buildInventory, fetchTrainerFeats, updateTrainerHp, updatePokemonHp, updateMovePp, setPoke5eCredentials, getPoke5eCredentials } from "../src/poke5e/source.js";
+import { extractReadKey, fetchTrainer, trainerToRollModel, trainerExtras, buildInventory, fetchTrainerFeats, updateTrainerHp, updatePokemonHp, updateMovePp, updateInventoryItem, addPokemonToTeam, setPoke5eCredentials, getPoke5eCredentials } from "../src/poke5e/source.js";
 import { buildPokedex } from "../src/poke5e/pokedex.js";
 import type { DexEntry } from "../src/poke5e/pokedex.js";
 import { fetchPokemon, fetchMoveset, movesMap, pokemonToCharacter, resolveAbilities, fetchPokemonFeats, pokemonMeta } from "../src/poke5e/pokemon.js";
@@ -1417,13 +1417,14 @@ ipcMain.handle("pokedex-view", (_e, open: boolean) => {
   raiseRightPane(); // keeps the sheet pane on top (it now covers the whole window)
   return { ok: true };
 });
-// "Seen" is a manual, persisted encounter flag (the player sets it when the DM confirms they've come
-// across a species in the VTT). "Caught" is NOT stored here — it's derived from the trainer's team.
-ipcMain.handle("pokedex-mark", (_e, id: string, seen: boolean) => {
+// A manual, persisted dex flag: "seen" (encounter the DM confirms) or "caught" (marked by hand,
+// e.g. after an inventory Poké Ball throw). Team membership is layered on top as caught at read time.
+ipcMain.handle("pokedex-mark", (_e, id: string, state: "seen" | "caught" | null) => {
   if (!id) return { ok: false };
-  if (seen) pokedexCollection.set(id, "seen"); else pokedexCollection.delete(id);
+  if (state === "seen" || state === "caught") pokedexCollection.set(id, state);
+  else pokedexCollection.delete(id);
   saveStoreSoon();
-  return { ok: true, seen: pokedexCollection.size };
+  return { ok: true };
 });
 // Species the loaded trainer owns (their team) = "caught" in the dex. Derived live from poke5e.
 ipcMain.handle("pokedex-caught", () => {
@@ -1431,6 +1432,34 @@ ipcMain.handle("pokedex-caught", () => {
     ? [...poke5eCtx.team.values()].map((p: any) => String(p.species || "").toLowerCase()).filter(Boolean)
     : [];
   return { ok: true, species: [...new Set(species)] };
+});
+
+// Set a bag item's quantity — writes back to poke5e when we hold the write key, else local-only.
+ipcMain.handle("poke5e-item-qty", async (_e, item: { rowId: number; itemId?: string | null; name?: string; customName?: string | null; note?: string }, quantity: number) => {
+  if (!poke5eCtx?.writeKey) return { ok: true, persisted: false }; // read-only trainer → caller decrements locally
+  try {
+    await updateInventoryItem(poke5eCtx.writeKey, item, Math.max(0, quantity));
+    return { ok: true, persisted: true };
+  } catch (err) {
+    return { ok: false, persisted: false, error: String(err) };
+  }
+});
+
+// Add a caught Pokémon (by species id, at a wild level) to the trainer's team on poke5e.
+ipcMain.handle("poke5e-add-team", async (_e, speciesId: string, level: number) => {
+  if (!poke5eCtx?.writeKey) return { ok: false, error: "This trainer is read-only (no write key) — add it on poke5e." };
+  const entry = (pokedexCache || []).find((p) => p.id === speciesId);
+  if (!entry) return { ok: false, error: "Unknown species" };
+  try {
+    await addPokemonToTeam(poke5eCtx.writeKey, entry, Math.max(1, Number(level) || entry.minLevel || 1));
+    // Refresh the cached team so the dex immediately shows it as caught.
+    const team = await fetchPokemon(poke5eCtx.trainerId).catch(() => null);
+    if (Array.isArray(team)) poke5eCtx.team = new Map(team.map((p: any) => [p.id, p]));
+    schedulePoke5ePaneRefresh();
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
 });
 
 /** Scrape the Roll20 chat and return the roll records (no persist) — used to read a roll's

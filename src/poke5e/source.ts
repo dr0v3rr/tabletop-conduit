@@ -161,6 +161,77 @@ export async function updateMovePp(writeKey: string, moveRowId: number, moveId: 
   return Number(r) > 0;
 }
 
+/** Set a bag item's quantity on poke5e (update_inventory_item). Handles standard vs custom items. */
+export async function updateInventoryItem(
+  writeKey: string,
+  item: { rowId: number; itemId?: string | null; name?: string; customName?: string | null; note?: string },
+  quantity: number,
+): Promise<boolean> {
+  const standard = !!item.itemId;
+  await poke5eRpc("update_inventory_item", {
+    _write_key: writeKey,
+    _id: item.rowId,
+    _item_id: standard ? item.itemId : null,
+    _quantity: quantity,
+    _custom_name: standard ? null : (item.customName || item.name || null),
+    _description: standard ? null : (item.note || null),
+  });
+  return true; // poke5eRpc throws on failure; reaching here = written
+}
+
+// The 18 poke5e skills, in add_pokemon's `_rank_<skill>` param spelling (underscored).
+const ADD_SKILLS = ["athletics", "acrobatics", "sleight_of_hand", "stealth", "arcana", "history", "investigation", "nature", "religion", "animal_handling", "insight", "medicine", "perception", "survival", "deception", "intimidation", "performance", "persuasion"];
+
+export interface AddPokemonSpecies {
+  id: string; name: string; types: string[]; ac: number; hp: number; hitDice: string; minLevel: number;
+  stats: { STR: number; DEX: number; CON: number; INT: number; WIS: number; CHA: number };
+  saves: string[]; skillIds: string[]; abilities: { id: string; hidden: boolean }[];
+}
+
+/** HP for a species at a given level: base (at min level) + a per-level gain (hit-die average + CON
+ *  mod), an estimate the user can adjust on poke5e. */
+export function scaledHp(e: AddPokemonSpecies, level: number): number {
+  const die = parseInt(String(e.hitDice).replace(/\D/g, ""), 10) || 6;
+  const conMod = Math.floor((e.stats.CON - 10) / 2);
+  const perLevel = Math.max(1, Math.round(die / 2 + 0.5) + conMod);
+  return e.hp + Math.max(0, level - (e.minLevel || 1)) * perLevel;
+}
+
+/** Pure builder for the add_pokemon RPC params — kept separate so the mapping is unit-testable
+ *  without a live write (which would add a real Pokémon to the trainer). */
+export function buildAddPokemonParams(writeKey: string, e: AddPokemonSpecies, level: number): Record<string, unknown> {
+  const hp = scaledHp(e, level);
+  const params: Record<string, unknown> = {
+    _write_key: writeKey,
+    _nickname: e.name,
+    _species: e.id,
+    _nature: "Hardy",
+    _type: e.types,
+    _level: level,
+    _gender: "male",
+    _strength: e.stats.STR, _dexterity: e.stats.DEX, _constitution: e.stats.CON,
+    _intelligence: e.stats.INT, _wisdom: e.stats.WIS, _charisma: e.stats.CHA,
+    _ac: e.ac, _hp_cur: hp, _hp_max: hp, _hit_dice_cur: level, _hit_dice_max: level,
+    _ability: null,
+    _abilities: (() => {
+      const a = e.abilities.find((x) => !x.hidden) || e.abilities[0];
+      return a ? [{ referenceId: a.id }] : [];
+    })(),
+  };
+  const prof = new Set(e.skillIds.map((s) => s.replace(/-/g, "_")));
+  for (const s of ADD_SKILLS) params[`_rank_${s}`] = prof.has(s) ? 1 : 0;
+  const saves = new Set(e.saves.map((s) => s.toLowerCase()));
+  for (const ab of ["str", "dex", "con", "int", "wis", "cha"]) params[`_save_${ab}`] = saves.has(ab);
+  return params;
+}
+
+/** Add a caught Pokémon (from its Pokédex entry) to the trainer's team via add_pokemon, at the given
+ *  wild level. */
+export async function addPokemonToTeam(writeKey: string, e: AddPokemonSpecies, level: number): Promise<boolean> {
+  await poke5eRpc("add_pokemon", buildAddPokemonParams(writeKey, e, level));
+  return true;
+}
+
 /** The trainer's feats/abilities (name + description). */
 export async function fetchTrainerFeats(readKey: string): Promise<{ name: string; description: string }[]> {
   const rows = await rpc("get_trainer_feats", { _read_key: readKey }).catch(() => []);
@@ -272,6 +343,10 @@ export async function buildInventory(readKey: string): Promise<any[]> {
         attuned: false,
         note: r.description ? String(r.description) : (ref?.description || ""),
         entries: [{ id: r.id, quantity }],
+        // write-back fields (update_inventory_item): the row id + whether it's a standard/custom item
+        rowId: r.id,
+        itemId: r.item_id || null,
+        customName: r.custom_name || null,
       };
     });
 }

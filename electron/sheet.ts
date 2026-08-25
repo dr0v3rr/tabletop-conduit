@@ -52,8 +52,10 @@ declare global {
       displayInVtt(payload: { name: string; body: string; meta?: string; label?: string; speakingAs?: string }): Promise<{ ok: boolean; command?: string; error?: string }>;
       pokedexLoad(): Promise<{ ok: boolean; species: any[]; collection: Record<string, "seen" | "caught">; error?: string }>;
       pokedexView(open: boolean): Promise<{ ok: boolean }>;
-      pokedexMark(id: string, seen: boolean): Promise<{ ok: boolean; seen?: number }>;
+      pokedexMark(id: string, state: "seen" | "caught" | null): Promise<{ ok: boolean }>;
       pokedexCaught(): Promise<{ ok: boolean; species: string[] }>;
+      poke5eItemQty(item: unknown, quantity: number): Promise<{ ok: boolean; persisted: boolean; error?: string }>;
+      poke5eAddTeam(speciesId: string, level: number): Promise<{ ok: boolean; error?: string }>;
       roll20SheetStyle(): Promise<{ style: "sheet" | "default" }>;
       r20TurnTop(): Promise<{ id: string; pr: any; count: number } | null>;
       notify(title: string, body: string): Promise<{ ok: boolean }>;
@@ -1306,7 +1308,13 @@ function renderInventory() {
       count.textContent = `×${it.quantity}`;
       const plus = mkMini("+", () => adjustItemQty(it, +1), "Increase quantity on D&D Beyond");
       ctl.append(minus, count, plus);
-      if (it.consumable) {
+      if (String(it.itemType || "").toLowerCase() === "pokeball") {
+        // A Poké Ball → open the Catch card with this ball preset (pick a target + roll to catch).
+        const th = mkMini("Throw", () => openCatch({ ballItemId: it.itemId }), "Throw this ball — opens the Catch card to pick a target and roll");
+        th.classList.add("use-btn");
+        if (it.quantity <= 0) (th as HTMLButtonElement).disabled = true;
+        ctl.appendChild(th);
+      } else if (it.consumable) {
         const use = mkMini("Use", () => useItem(it), "Use one — rolls dice (if any) and decrements on D&D Beyond");
         use.classList.add("use-btn");
         if (it.quantity <= 0) (use as HTMLButtonElement).disabled = true;
@@ -2352,22 +2360,24 @@ function addPoke5eKey(key: string) {
 // ============================ Pokédex tab ============================
 const DEX_TYPES = ["normal","fire","water","grass","electric","ice","fighting","poison","ground","flying","psychic","bug","rock","ghost","dragon","dark","steel","fairy"];
 let dex: any[] = [];
-let dexSeen = new Set<string>();   // MANUAL encounter flags, persisted (DM confirms you've seen it)
-let dexCaught = new Set<string>(); // DERIVED from the loaded trainer's team (species they own)
+let dexSeen = new Set<string>();        // MANUAL "seen" flags, persisted (DM confirms you've seen it)
+let dexCaughtManual = new Set<string>(); // MANUAL "caught" flags, persisted (e.g. inventory ball throw)
+let dexCaughtTeam = new Set<string>();   // DERIVED from the loaded trainer's team (species they own)
 let dexLoaded = false, dexLoading = false;
 let dexOfficial = 0; // count of official (non-fakémon) species — the completion denominator
 let dexSel: string | null = null;
 const dexActiveTypes = new Set<string>();
 
-/** A species' collection state: caught (in the trainer's team) wins over a manual seen flag. */
+/** Effective state: caught (team OR manual) outranks a manual seen flag. */
 function dexState(id: string): "caught" | "seen" | null {
-  if (dexCaught.has(id)) return "caught";
+  if (dexCaughtTeam.has(id) || dexCaughtManual.has(id)) return "caught";
   if (dexSeen.has(id)) return "seen";
   return null;
 }
+function isTeam(id: string): boolean { return dexCaughtTeam.has(id); }
 async function loadCaught() {
   const r = await window.api.pokedexCaught().catch(() => null);
-  dexCaught = new Set((r?.species || []).map((s) => String(s).toLowerCase()));
+  dexCaughtTeam = new Set((r?.species || []).map((s) => String(s).toLowerCase()));
 }
 
 function setView(v: "character" | "pokedex") {
@@ -2391,7 +2401,11 @@ async function loadDex() {
     return;
   }
   dex = res.species; dexLoaded = true;
-  dexSeen = new Set(Object.keys(res.collection || {})); // stored flags are seen-only now
+  // Split the persisted manual flags into seen / caught.
+  dexSeen = new Set(); dexCaughtManual = new Set();
+  for (const [id, st] of Object.entries(res.collection || {})) {
+    if (st === "caught") dexCaughtManual.add(id); else dexSeen.add(id);
+  }
   await loadCaught();
   dexOfficial = dex.filter((p) => !p.fakemon).length;
   ($("dexTotal") as HTMLElement).textContent = String(dexOfficial);
@@ -2468,10 +2482,13 @@ function updateDexProgress() {
   if (dexOfficial) ($("dexBar") as HTMLElement).style.width = Math.min(100, 100 * caught / dexOfficial).toFixed(1) + "%";
 }
 
-// Toggle the MANUAL "seen" flag (persisted). Caught is derived from the team and never set here.
-function markSeen(id: string, on: boolean) {
-  if (on) dexSeen.add(id); else dexSeen.delete(id);
-  window.api.pokedexMark(id, on).catch(() => {});
+// Set the MANUAL dex flag (persisted): "seen", "caught", or null to clear. Team membership is a
+// separate, derived caught source and is never changed here.
+function markState(id: string, state: "seen" | "caught" | null) {
+  dexSeen.delete(id); dexCaughtManual.delete(id);
+  if (state === "seen") dexSeen.add(id);
+  else if (state === "caught") dexCaughtManual.add(id);
+  window.api.pokedexMark(id, state).catch(() => {});
   updateDexProgress(); renderDexList(); renderDexDetail();
 }
 
@@ -2487,10 +2504,9 @@ function renderDexDetail() {
   const p = dex.find((x) => x.id === dexSel);
   const D = $("dexDetail");
   if (!p) { D.innerHTML = `<div class="dex-empty">Select a species.</div>`; return; }
-  const caught = dexCaught.has(p.id), seen = dexSeen.has(p.id);
+  const onTeam = isTeam(p.id), seen = dexSeen.has(p.id), caughtManual = dexCaughtManual.has(p.id);
+  const canWrite = activeSource === "poke5e" && writable; // can we add to the poke5e roster?
   const ahMod = model?.skills?.["animal-handling"]?.mod;
-  const lvl = Number((document.getElementById("dexLvl") as HTMLInputElement)?.value) || 5;
-  const dc = 10 + Math.floor(p.sr) + lvl;
   const mod = (s: number) => Math.floor((s - 10) / 2), sg = (n: number) => (n >= 0 ? "+" + n : "" + n);
 
   let h = `<div class="dd-top">
@@ -2500,9 +2516,10 @@ function renderDexDetail() {
     <div class="dd-actions">
       <div class="dd-sr">Species Rating <b>${p.sr}</b></div>
       <div class="dd-toggle">
-        ${caught
-          ? `<span class="dd-caught-badge" title="On your trainer's team">● Caught</span>`
-          : `<button class="seen ${seen ? "on" : ""}" id="dexSeenBtn">👁 ${seen ? "Seen" : "Mark seen"}</button>`}
+        ${onTeam
+          ? `<span class="dd-caught-badge" title="On your poke5e roster">● Caught · on poke5e</span>`
+          : `<button class="seen ${seen ? "on" : ""}" id="dexSeenBtn">👁 Seen</button>` +
+            (canWrite ? "" : `<button class="caught ${caughtManual ? "on" : ""}" id="dexCaughtBtn">● Caught</button>`)}
       </div>
     </div></div>`;
 
@@ -2523,23 +2540,26 @@ function renderDexDetail() {
     p.evolution.map((s: any) => (s.here ? `<span class="stage here">${esc(s.name)}</span>` : (s.cond ? `<span class="arr">→ ${esc(s.cond)} →</span><span class="stage">${esc(s.name)}</span>` : `<span class="stage">${esc(s.name)}</span>`))).join("") + `</div>`;
 
   h += `<h3 class="dd-sec">Catch</h3><div class="dd-catch">
-    <div class="top"><div class="dc"><b>DC ${dc}</b></div>
-      <div class="formula">10 + ⌊SR ${p.sr}⌋ + level${ahMod != null ? ` &nbsp;·&nbsp; Animal Handling <b style="color:var(--ink)">${sg(ahMod)}</b>` : ""}</div>
-      <label class="lvl">Wild level <input id="dexLvl" type="number" value="${lvl}" min="1" max="20"></label></div>
     <div class="roll">
-      <button class="dd-btn primary" id="dexCatch"${ahMod == null ? " disabled title='Load a trainer to roll Animal Handling'" : ""}>🎲 Roll capture</button>
+      <button class="dd-btn primary" id="dexCatchOpen">🎯 Catch…</button>
       <button class="dd-btn" id="dexDisplaySpecies">📖 Display species</button>
     </div>
-    <div class="note">Roll <b>Animal Handling</b> vs the DC. <span class="adv">Advantage while the target is asleep</span> — land a sleep move first.</div></div>`;
+    <div class="note">Pick a Poké Ball and throw — your Animal Handling roll (with ball &amp; advantage modifiers) posts to Roll20; the GM adjudicates.</div></div>`;
 
   D.innerHTML = h;
 
-  // wire the manual "seen" toggle (only present when the species isn't caught/owned)
+  // wire the manual Seen / Caught toggles (only present when the species isn't on the team)
   const seenBtn = document.getElementById("dexSeenBtn");
   if (seenBtn) seenBtn.onclick = () => {
     const now = !dexSeen.has(p.id);
-    markSeen(p.id, now);
+    markState(p.id, now ? "seen" : null);
     setStatus(now ? `Marked ${p.name} as seen` : `Unmarked ${p.name}`);
+  };
+  const caughtBtn = document.getElementById("dexCaughtBtn");
+  if (caughtBtn) caughtBtn.onclick = () => {
+    const now = !dexCaughtManual.has(p.id);
+    markState(p.id, now ? "caught" : null);
+    setStatus(now ? `Marked ${p.name} as caught` : `Unmarked ${p.name}`);
   };
   // abilities with text + 📖 Display
   const ab = D.querySelector("#dexAbils")!;
@@ -2565,19 +2585,217 @@ function renderDexDetail() {
     mv.appendChild(el);
   }
   // catch actions
-  const lvlIn = document.getElementById("dexLvl") as HTMLInputElement;
-  if (lvlIn) lvlIn.oninput = () => renderDexDetail();
-  const catchBtn = document.getElementById("dexCatch");
-  if (catchBtn) catchBtn.onclick = () => {
-    if (ahMod == null) return;
-    doRoll({ kind: "check", key: "animal-handling" });
-    setStatus(`Rolled Animal Handling to catch ${p.name} (DC ${dc})`);
-  };
+  const catchOpen = document.getElementById("dexCatchOpen");
+  if (catchOpen) catchOpen.onclick = () => openCatch({ species: p });
   const dispSp = document.getElementById("dexDisplaySpecies");
   if (dispSp) dispSp.onclick = () => {
     const body = `${p.types.map(cap).join("/")} · SR ${p.sr} · AC ${p.ac} · HP ${p.hp} (${p.hitDice}). Abilities: ${p.abilities.map((a: any) => a.name).join(", ")}. ${p.region ? "Native to " + p.region + "." : ""}`;
     doDisplay(p.name, body, `#${p.num} · ${p.size}`, "Pokémon");
   };
+}
+
+// ---- Ball catalogue: each Poké Ball's effect on the capture DC (from poke5e items.json) ----
+const BALL_DC: Record<string, { mod: number | "auto" | string; note?: string }> = {
+  "poke-ball": { mod: 0 },
+  "great-ball": { mod: -5 },
+  "ultra-ball": { mod: -10 },
+  "master-ball": { mod: "auto" },
+  "safari-ball": { mod: "skill:nature", note: "− your Nature modifier" },
+  "friend-ball": { mod: "skill:persuasion", note: "− your Persuasion modifier" },
+  "sport-ball": { mod: "skill:athletics", note: "− your Athletics modifier" },
+  "net-ball": { mod: "cond", note: "−10 vs Water/Bug (apply if it fits)" },
+  "dive-ball": { mod: "cond", note: "−10 underwater" },
+  "heavy-ball": { mod: "cond", note: "−10 vs a heavy Pokémon" },
+  "repeat-ball": { mod: "cond", note: "−10 vs a species you've caught before" },
+  "moon-ball": { mod: "cond", note: "−10 vs Moon-Stone evolvers" },
+  "lure-ball": { mod: "cond", note: "−10 while fishing" },
+  "level-ball": { mod: "cond", note: "−5 if your level is higher" },
+  "nest-ball": { mod: "cond", note: "−5 vs a low-level Pokémon" },
+  "quick-ball": { mod: "cond", note: "−10 on the first round" },
+  "dusk-ball": { mod: "cond", note: "−10 in the dark" },
+  "love-ball": { mod: "cond", note: "situational" },
+  "timer-ball": { mod: "cond", note: "scales with rounds elapsed" },
+  "fast-ball": { mod: 0, note: "throw as a reaction to a fleeing Pokémon" },
+};
+/** Resolve a ball's DC effect for the current trainer (skill balls read the trainer's skill mod). */
+function ballEffect(itemId: string): { flat: number; auto: boolean; note?: string } {
+  const b = BALL_DC[itemId];
+  if (!b) return { flat: 0, auto: false };
+  if (b.mod === "auto") return { flat: 0, auto: true, note: b.note };
+  if (typeof b.mod === "number") return { flat: b.mod, auto: false, note: b.note };
+  if (String(b.mod).startsWith("skill:")) return { flat: -(model?.skills?.[String(b.mod).slice(6)]?.mod || 0), auto: false, note: b.note };
+  return { flat: 0, auto: false, note: b.note }; // conditional — shown as a note, not auto-applied
+}
+
+// ---- Catch modal (shared by the Pokédex "Catch…" button and inventory Poké Ball throws) ----
+let catchCtx: { species: any | null; ballItemId: string | null; level: number; adv: boolean; other: number } = { species: null, ballItemId: null, level: 5, adv: false, other: 0 };
+const tclean = (s: any) => String(s ?? "").replace(/[{}]/g, "");
+function bagBalls(): any[] { return (inventory || []).filter((it) => String(it.itemType || "").toLowerCase() === "pokeball"); }
+function ballName(id: string | null): string { return bagBalls().find((b) => b.itemId === id)?.name || "ball"; }
+
+function ensureCatchOverlay(): HTMLElement {
+  let ov = document.getElementById("catchOverlay");
+  if (!ov) {
+    ov = document.createElement("div");
+    ov.id = "catchOverlay"; ov.className = "catch-overlay";
+    ov.innerHTML = `<div class="catch-modal" role="dialog" aria-modal="true" aria-label="Catch"><button class="cm-x" id="cmX" title="Close">✕</button><div id="cmBody"></div></div>`;
+    document.body.appendChild(ov);
+    ov.addEventListener("click", (e) => { if (e.target === ov) closeCatch(); });
+    (ov.querySelector("#cmX") as HTMLElement).onclick = closeCatch;
+    document.addEventListener("keydown", (e) => { if ((e as KeyboardEvent).key === "Escape" && ov!.classList.contains("open")) closeCatch(); });
+  }
+  return ov;
+}
+function closeCatch() {
+  document.getElementById("catchOverlay")?.classList.remove("open");
+}
+async function openCatch(opts: { species?: any; ballItemId?: string }) {
+  const sp = opts.species || null;
+  catchCtx = { species: sp, ballItemId: opts.ballItemId || bagBalls()[0]?.itemId || null, level: catchCtx.level || 5, adv: false, other: 0 };
+  ensureCatchOverlay().classList.add("open");
+  renderCatch();
+  // The target-species search needs the dex dataset — load it on demand if the Pokédex tab hasn't
+  // been opened yet (e.g. when launched from an inventory Poké Ball throw).
+  if (!sp && !dexLoaded && !dexLoading) {
+    await loadDex();
+    if (document.getElementById("catchOverlay")?.classList.contains("open")) renderCatch();
+  }
+}
+
+function renderCatch() {
+  const body = document.getElementById("cmBody"); if (!body) return;
+  const balls = bagBalls(), sp = catchCtx.species, ahMod = model?.skills?.["animal-handling"]?.mod, lvl = catchCtx.level || 5;
+  let h = "";
+  if (sp) {
+    h += `<div class="cm-head"><div class="cm-art${sp.art ? "" : " noimg"}" data-ini="${esc((sp.name || "?").charAt(0))}">${sp.art ? `<img alt="${esc(sp.name)}" src="${esc(sp.art)}">` : ""}</div>` +
+      `<div><div class="cm-name">${esc(sp.name)}</div><div class="cm-sub">#${String(sp.num).padStart(3, "0")} · ${sp.types.map((t: string) => cap(t)).join("/")} · SR ${sp.sr}</div></div></div>`;
+  } else {
+    h += `<div class="cm-head"><div class="cm-name">Throw a Poké Ball</div></div>` +
+      `<input id="cmTarget" class="cm-target" type="text" placeholder="Target species — search…" autocomplete="off" ${dexLoaded ? "" : "disabled"}><div class="cm-hits" id="cmHits"></div>` +
+      (dexLoaded ? "" : `<div class="cm-note">Loading species…</div>`);
+  }
+  if (!balls.length) { body.innerHTML = h + `<div class="cm-note">No Poké Balls in your bag.</div>`; wireTarget(); return; }
+  if (!catchCtx.ballItemId || !balls.some((b) => b.itemId === catchCtx.ballItemId)) catchCtx.ballItemId = balls[0].itemId;
+
+  h += `<div class="cm-row"><label>Ball</label><select id="cmBall">` +
+    balls.map((b) => `<option value="${esc(b.itemId)}"${b.itemId === catchCtx.ballItemId ? " selected" : ""}>${esc(b.name)} ×${b.quantity}</option>`).join("") +
+    `</select><label style="margin-left:auto" title="The caught Pokémon's level (for the poke5e roster entry)">Level</label><input id="cmLvl" type="number" min="1" max="20" value="${lvl}"></div>`;
+
+  if (sp) {
+    const eff = ballEffect(catchCtx.ballItemId || "");
+    const ballBonus = eff.auto ? 0 : -eff.flat; // a ball that lowers the DC by X = +X to the player's roll
+    const other = catchCtx.other || 0;
+    const rollMod = (ahMod ?? 0) + ballBonus + other;
+    const tooHigh = model?.level != null && lvl > model.level;
+    const canWrite = activeSource === "poke5e" && writable;
+
+    // roll summary — what modifies your Animal Handling catch roll (no DC; the GM adjudicates)
+    const mods: string[] = [];
+    if (ahMod != null) mods.push(`Animal Handling ${sgn(ahMod)}`);
+    if (ballBonus) mods.push(`${ballName(catchCtx.ballItemId)} ${sgn(ballBonus)}`);
+    if (other) mods.push(`other ${sgn(other)}`);
+    h += `<div class="cm-mods">${eff.auto
+      ? `<b>${esc(ballName(catchCtx.ballItemId))}: automatic catch</b>`
+      : (ahMod != null ? `Catch roll <b>d20 ${sgn(rollMod)}</b>${catchCtx.adv ? " (advantage)" : ""}` : `Load your trainer to roll Animal Handling`)}` +
+      (!eff.auto && mods.length ? ` <span class="cm-break">${mods.join(" · ")}</span>` : "") + `</div>`;
+
+    // modifiers the player controls: advantage (from a status) + an ad-hoc bonus
+    if (!eff.auto) {
+      h += `<div class="cm-row"><label class="cm-chk"><input type="checkbox" id="cmAdv"${catchCtx.adv ? " checked" : ""}> Advantage</label>` +
+        `<label style="margin-left:auto">Other</label><input id="cmOther" type="number" value="${other}"></div>`;
+    }
+    if (eff.note) h += `<div class="cm-note">${esc(eff.note)}</div>`;
+    if (tooHigh) h += `<div class="cm-note" style="color:#ff7a6b">Its level (${lvl}) is above your trainer level (${model.level}) — it can't be caught.</div>`;
+
+    if (isTeam(sp.id)) {
+      h += `<div class="cm-actions"><span class="dd-caught-badge" style="align-self:center">● Caught · on poke5e</span></div>`;
+    } else {
+      // Throw posts the Animal Handling roll to Roll20 (GM adjudicates vs their DC); recording the
+      // catch adds it to your poke5e roster (or a local tick on a read-only trainer).
+      h += `<div class="cm-actions"><button class="dd-btn primary" id="cmThrow"${tooHigh ? " disabled" : ""}>${eff.auto ? "🎯 Auto-catch" : "🎲 Throw"}</button>` +
+        `<button class="dd-btn good" id="cmAddNoRoll"${tooHigh ? " disabled" : ""}>${canWrite ? "✔ Add to poke5e" : "✔ Mark caught"}</button></div>`;
+    }
+  }
+  h += `<div class="result" id="cmResult"></div>`;
+  body.innerHTML = h;
+  wireTarget(); wireCatchControls();
+}
+
+function wireTarget() {
+  const t = document.getElementById("cmTarget") as HTMLInputElement | null; if (!t) return;
+  const hits = document.getElementById("cmHits")!;
+  const render = (q: string) => {
+    const ql = q.trim().toLowerCase(); hits.innerHTML = ""; if (!ql) return;
+    dex.filter((p) => !p.fakemon && p.name.toLowerCase().includes(ql)).slice(0, 12).forEach((p) => {
+      const r = document.createElement("div"); r.className = "cm-hit";
+      r.innerHTML = `<span class="pnum">#${String(p.num).padStart(3, "0")}</span><span>${esc(p.name)}</span><span class="cm-sr">SR ${p.sr}</span>`;
+      r.onclick = () => { catchCtx.species = p; renderCatch(); };
+      hits.appendChild(r);
+    });
+  };
+  t.oninput = () => render(t.value); t.focus();
+}
+
+function wireCatchControls() {
+  const bsel = document.getElementById("cmBall") as HTMLSelectElement | null;
+  if (bsel) bsel.onchange = () => { catchCtx.ballItemId = bsel.value; renderCatch(); };
+  // numeric fields commit on blur/enter (onchange) so typing doesn't lose focus to a re-render
+  const lvl = document.getElementById("cmLvl") as HTMLInputElement | null;
+  if (lvl) lvl.onchange = () => { catchCtx.level = Math.max(1, Number(lvl.value) || 5); renderCatch(); };
+  const adv = document.getElementById("cmAdv") as HTMLInputElement | null;
+  if (adv) adv.onchange = () => { catchCtx.adv = adv.checked; renderCatch(); };
+  const other = document.getElementById("cmOther") as HTMLInputElement | null;
+  if (other) other.onchange = () => { catchCtx.other = Number(other.value) || 0; renderCatch(); };
+  const th = document.getElementById("cmThrow"); if (th) th.onclick = doThrow;
+  const noRoll = document.getElementById("cmAddNoRoll"); if (noRoll) noRoll.onclick = () => { const sp = catchCtx.species; if (sp) recordCatch(sp); };
+}
+
+function consumeBall(ball: any) {
+  const q = Math.max(0, (ball.quantity || 0) - 1); ball.quantity = q;
+  if (Array.isArray(ball.entries) && ball.entries[0]) ball.entries[0].quantity = q;
+  window.api.poke5eItemQty({ rowId: ball.rowId, itemId: ball.itemId, name: ball.name, customName: ball.customName, note: ball.note }, q).catch(() => {});
+  renderInventory();
+}
+
+function doThrow() {
+  const sp = catchCtx.species; if (!sp) return;
+  const ball = bagBalls().find((b) => b.itemId === catchCtx.ballItemId);
+  if (!ball || ball.quantity <= 0) { setStatus(`No ${ballName(catchCtx.ballItemId)} left`, true); return; }
+  const eff = ballEffect(ball.itemId);
+  consumeBall(ball);
+  const res = document.getElementById("cmResult");
+  if (eff.auto) {
+    window.api.roll20Say(`&{template:default} {{name=Catch — ${tclean(sp.name)}}} {{Ball=${tclean(ball.name)}}} {{Result=Automatic catch}}`, model?.name).catch(() => {});
+    if (res) { res.className = "result show hit"; res.innerHTML = `Threw a <b>${esc(ball.name)}</b> — automatic catch. Recording…`; }
+    recordCatch(sp); return;
+  }
+  // Post the actual Animal Handling catch roll (ball bonus + advantage + other) to Roll20. We DON'T
+  // compute a DC — the GM has that; they adjudicate the result and you then record the catch.
+  const ahMod = model?.skills?.["animal-handling"]?.mod ?? 0;
+  const total = ahMod + (-eff.flat) + (catchCtx.other || 0);
+  const die = catchCtx.adv ? "2d20kh1" : "1d20";
+  const modStr = total ? (total >= 0 ? ` + ${total}` : ` - ${Math.abs(total)}`) : "";
+  const card = `&{template:default} {{name=Catch — ${tclean(sp.name)}}} {{Ball=${tclean(ball.name)}}} {{Animal Handling=[[${die}${modStr}]]}}` + (catchCtx.adv ? ` {{Advantage=yes}}` : "");
+  window.api.roll20Say(card, model?.name).catch(() => {});
+  if (res) {
+    const rec = (activeSource === "poke5e" && writable) ? "Add to poke5e" : "Mark caught";
+    res.className = "result show"; res.innerHTML = `Threw a <b>${esc(ball.name)}</b> — catch roll sent to Roll20. If the GM confirms the catch, hit <b>${rec}</b>.`;
+  }
+}
+
+/** Record a confirmed catch: write it to the poke5e roster if we can, else a local caught tick. */
+async function recordCatch(sp: any) {
+  if (activeSource === "poke5e" && writable) await addTeam();
+  else { markState(sp.id, "caught"); setStatus(`Marked ${sp.name} as caught`); renderCatch(); }
+}
+
+async function addTeam() {
+  const sp = catchCtx.species; if (!sp) return;
+  const btn = document.getElementById("cmAddNoRoll") as HTMLButtonElement | null;
+  if (btn) { btn.disabled = true; btn.textContent = "Adding…"; }
+  const r = await window.api.poke5eAddTeam(sp.id, catchCtx.level || 5).catch(() => ({ ok: false, error: "failed" }));
+  if (r?.ok) { await loadCaught(); updateDexProgress(); renderDexList(); setStatus(`Added ${sp.name} to your poke5e roster ✓`); renderCatch(); }
+  else { setStatus(`Couldn't add ${sp.name}${r?.error ? ": " + r.error : ""}`, true); if (btn) { btn.disabled = false; btn.textContent = "✔ Add to poke5e"; } }
 }
 
 // wiring (the Pokédex tab lives in #paneSeg — handled by that seg's click listener)

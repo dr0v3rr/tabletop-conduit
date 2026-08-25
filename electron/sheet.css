@@ -419,6 +419,45 @@ body.dex-open #loader, body.dex-open #sheet { display: none !important; }
 .dd-toggle button { background: var(--panel); border: 1px solid var(--line); color: var(--muted); border-radius: 7px; font: inherit; font-size: 11px; padding: 3px 9px; cursor: pointer; }
 .dd-toggle button.seen.on { color: var(--ink); border-color: var(--muted); }
 .dd-caught-badge { color: #0f2a14; background: var(--good); border: 1px solid var(--good); border-radius: 7px; font-size: 11.5px; font-weight: 700; padding: 3px 10px; }
+.dd-toggle button.caught.on { color: #0f2a14; background: var(--good); border-color: var(--good); font-weight: 700; }
+
+/* Catch modal — shared by the Pokédex "Catch…" button and inventory Poké Ball throws */
+/* Toggled via the .open class (NOT the hidden attribute — a display:flex class would override it). */
+.catch-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none; align-items: center; justify-content: center; z-index: 90; }
+.catch-overlay.open { display: flex; }
+.catch-modal { position: relative; width: 380px; max-width: calc(100vw - 32px); max-height: calc(100vh - 60px); overflow-y: auto; background: var(--bg); border: 1px solid var(--accent2); border-radius: 12px; padding: 16px; box-shadow: 0 20px 60px rgba(0,0,0,.55); }
+.cm-x { position: absolute; top: 9px; right: 10px; background: none; border: none; color: var(--muted); font-size: 15px; cursor: pointer; }
+.cm-x:hover { color: var(--ink); }
+.cm-head { display: flex; align-items: center; gap: 11px; margin-bottom: 10px; }
+.cm-art { width: 56px; height: 56px; flex: none; display: grid; place-items: center; background: var(--panel2); border-radius: 10px; box-shadow: inset 0 0 0 1px var(--line); }
+.cm-art img { width: 52px; height: 52px; object-fit: contain; }
+.cm-art.noimg::after { content: attr(data-ini); font-weight: 700; color: var(--muted); font-size: 22px; }
+.cm-name { font-weight: 700; font-size: 16px; }
+.cm-sub { color: var(--muted); font-size: 11.5px; font-family: ui-monospace, Menlo, monospace; margin-top: 2px; }
+.cm-target { width: 100%; background: var(--panel); border: 1px solid var(--line); color: var(--ink); border-radius: 8px; font: inherit; padding: 7px 10px; margin-bottom: 6px; }
+.cm-hits { display: flex; flex-direction: column; gap: 2px; max-height: 150px; overflow: auto; margin-bottom: 8px; }
+.cm-hit { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 6px; cursor: pointer; }
+.cm-hit:hover { background: var(--panel); }
+.cm-hit .pnum { font-family: ui-monospace, Menlo, monospace; font-size: 10px; color: var(--muted); }
+.cm-hit .cm-sr { margin-left: auto; font-family: ui-monospace, Menlo, monospace; font-size: 10.5px; color: var(--muted); }
+.cm-row { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-bottom: 10px; }
+.cm-row label { font-size: 11.5px; color: var(--muted); }
+.cm-row select { background: var(--panel); border: 1px solid var(--line); color: var(--ink); border-radius: 7px; font: inherit; font-size: 12.5px; padding: 5px 8px; }
+.cm-row input { width: 52px; background: var(--panel); border: 1px solid var(--line); color: var(--ink); border-radius: 7px; font: inherit; font-family: ui-monospace, Menlo, monospace; text-align: center; padding: 5px 6px; }
+.cm-mods { font-size: 13px; color: var(--ink); margin: 2px 0 8px; }
+.cm-mods b { font-family: ui-monospace, Menlo, monospace; }
+.cm-break { color: var(--muted); font-size: 11px; }
+.cm-chk { font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.cm-chk input { accent-color: var(--accent2); }
+.cm-note { margin-top: 6px; font-size: 11px; color: var(--muted); }
+.cm-actions { display: flex; gap: 7px; margin-top: 11px; flex-wrap: wrap; }
+.dd-btn.good { background: var(--good); border-color: var(--good); color: #0f2a14; font-weight: 700; }
+.cm-actions .result, #cmResult.result { }
+#cmBody .result { margin-top: 10px; padding: 9px 11px; border-radius: 8px; font-size: 12.5px; display: none; }
+#cmBody .result.show { display: block; }
+#cmBody .result.hit { background: rgba(76,175,80,.16); border: 1px solid var(--good); }
+#cmBody .result.miss { background: rgba(209,64,46,.16); border: 1px solid var(--accent); }
+#cmBody .result .r-roll { font-family: ui-monospace, Menlo, monospace; color: var(--ink); }
 .dd-sec { font-size: 10.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 16px 0 7px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
 .dd-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
 .dd-stat { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; }
