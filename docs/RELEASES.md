@@ -9,6 +9,23 @@ carries one artifact per platform/architecture plus SHA-256 checksums.
 
 ---
 
+## v0.2.11 — bag management + trainer list
+
+- **＋ Add item** — add a standard item to a poke5e bag you own (searchable catalogue, creates the
+  row via `add_inventory_item`). The Items section now stays visible for an empty bag so a fully-
+  removed item can be re-added.
+- **± quantities persist** — the inventory steppers write back through `update_inventory_item` when
+  you hold the write key (previously the ± buttons were local-only; only the catch card persisted).
+- **Remove vs. Delete a trainer** — **✕ Remove** forgets it from your list only (stays in poke5e);
+  **🗑 Delete** permanently removes it via `delete_trainer` (owner-only, confirmation dialog). Laid
+  out on a row below the trainer name.
+- **Update checker** — checks GitHub Releases for a newer version and offers to update / relaunch.
+- **Refresh reloads the poke5e pane** so the trainer list reflects out-of-band changes.
+- Roster hide/show is a **checkbox**; window title reads **Conduit v<version>**; dev builds show the
+  real icon/version.
+- **Strict release pipeline** (`scripts/release.mjs` + `verify-release.mjs`) re-hashes every artifact
+  against its manifest/`SHA256SUMS` before publishing (fail-closed).
+
 ## v0.2.10 — the catch loop
 
 - **Catch card** — a shared flow launchable from the **Pokédex** (species preset) or an **inventory
@@ -384,16 +401,17 @@ Notes:
 
 ## Publishing a release (maintainers)
 
+Releases go through a strict, fail-closed pipeline — it builds every platform, generates
+`SHA256SUMS` from the real files, then re-hashes every artifact against its update manifest and the
+checksums before anything is uploaded. Nothing publishes if a single hash doesn't match.
+
 ```bash
-VERSION=0.2.2
-cd release
-shasum -a 256 Conduit-* > SHA256SUMS
-gh release create "v$VERSION" \
-  "Conduit-$VERSION-arm64.dmg" "Conduit-$VERSION-arm64-mac.zip" \
-  "Conduit Setup $VERSION.exe" "Conduit $VERSION.exe" \
-  "Conduit-$VERSION.AppImage" "Conduit-$VERSION-arm64.AppImage" \
-  SHA256SUMS \
-  --title "Conduit v$VERSION" --notes-file ../docs/release-notes/v$VERSION.md
+# 1. Bump `version` in package.json and write docs/release-notes/v<version>.md
+# 2. Commit + push (the pipeline requires a clean tree and tags the pushed commit)
+npm run release              # build → checksum → verify  (dry run, no upload)
+npm run release -- --upload  # the above, then create the GitHub release + tag
+#   flags: --allow-dirty (skip the clean-tree guard), --force (overwrite an existing release)
 ```
 
-Bump `version` in `package.json` before building so artifact names and the tag line up.
+The release notes are taken from `docs/release-notes/v<version>.md` automatically. Uploading the
+`latest*.yml` manifests is what enables the in-app update checker to see the new version.

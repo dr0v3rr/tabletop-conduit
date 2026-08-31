@@ -13,9 +13,12 @@ import { buildSendExpression } from "../src/roll20/inject.js";
 import { displayCard } from "../src/roll20/format.js";
 import { r20TokenExpr } from "../src/roll20/token.js";
 import { ddbSlotsExpr, ddbHitDiceExpr, ddbInventoryExpr, ddbFetchCharExpr } from "../src/ddb/inject.js";
-import { extractReadKey, fetchTrainer, trainerToRollModel, trainerExtras, buildInventory, fetchTrainerFeats, updateTrainerHp, updatePokemonHp, updateMovePp, updateInventoryItem, addPokemonToTeam, setPoke5eCredentials, getPoke5eCredentials } from "../src/poke5e/source.js";
+import { extractReadKey, fetchTrainer, trainerToRollModel, trainerExtras, buildInventory, fetchTrainerFeats, updateTrainerHp, updatePokemonHp, updateMovePp, updateInventoryItem, addInventoryItem, fetchItemsCatalog, addPokemonToTeam, deleteTrainer, setPoke5eCredentials, getPoke5eCredentials } from "../src/poke5e/source.js";
 import { buildPokedex } from "../src/poke5e/pokedex.js";
 import type { DexEntry } from "../src/poke5e/pokedex.js";
+import { isNewer } from "../src/update/version.js";
+import electronUpdater from "electron-updater";
+const { autoUpdater } = electronUpdater;
 import { fetchPokemon, fetchMoveset, movesMap, pokemonToCharacter, resolveAbilities, fetchPokemonFeats, pokemonMeta } from "../src/poke5e/pokemon.js";
 import { abilityIds, passiveAbilityEffects } from "../src/poke5e/abilities-engine.js";
 import { searchMonsters, fetchMonster, monsterToCharacter } from "../src/monster/source.js";
@@ -39,6 +42,13 @@ let detectedPoke5e: { url: string; anonKey: string } | null = null;
 // Pokédex "seen / caught" collection, persisted in the store. Keyed by species id.
 const pokedexCollection = new Map<string, "seen" | "caught">();
 
+// A release version the user chose to "Skip" in the update prompt (so we don't nag for it again).
+let updateSkip: string | null = null;
+
+// poke5e Pokémon the user has hidden from the roster switcher (a local "show only my working team"
+// filter — poke5e has no team field yet). Keyed by pokemon id.
+const pokeHidden = new Set<string>();
+
 async function loadStore() {
   try {
     const data = JSON.parse(await readFile(storePath(), "utf8"));
@@ -48,6 +58,8 @@ async function loadStore() {
     for (const [id, st] of Object.entries(data.pokedex ?? {})) {
       if (st === "seen" || st === "caught") pokedexCollection.set(id, st);
     }
+    if (typeof data.updateSkip === "string") updateSkip = data.updateSkip;
+    for (const id of data.pokeHidden ?? []) pokeHidden.add(String(id));
     // Re-apply a previously detected poke5e key/endpoint so RPCs work before the pane reloads.
     if (data.poke5e && setPoke5eCredentials(data.poke5e)) detectedPoke5e = getPoke5eCredentials();
   } catch {
@@ -73,7 +85,7 @@ function saveStoreSoon() {
   saveTimer = setTimeout(async () => {
     saveTimer = null;
     try {
-      await writeFile(storePath(), JSON.stringify({ records: [...sessionLog.values()], actions: actionLog, campaigns: Object.fromEntries(campaignNames), poke5e: detectedPoke5e, pokedex: Object.fromEntries(pokedexCollection) }), "utf8");
+      await writeFile(storePath(), JSON.stringify({ records: [...sessionLog.values()], actions: actionLog, campaigns: Object.fromEntries(campaignNames), poke5e: detectedPoke5e, pokedex: Object.fromEntries(pokedexCollection), updateSkip, pokeHidden: [...pokeHidden] }), "utf8");
     } catch {
       /* best-effort */
     }
@@ -520,6 +532,11 @@ function hardenView(view: WebContentsView, opts: { externalLinks?: boolean; lock
 
 function createWindow() {
   win = new BaseWindow({ width: 1500, height: 950, title: `Conduit v${app.getVersion()}` });
+  // Packaged builds carry the Conduit icon via electron-builder; an unpackaged `electron .` run shows
+  // the default Electron icon, so set the dock icon by hand in dev (macOS) from build/icon.png.
+  if (!app.isPackaged && process.platform === "darwin") {
+    try { app.dock?.setIcon(join(__dirname, "..", "build", "icon.png")); } catch { /* dev cosmetic only */ }
+  }
 
   const partition = setupPersistentSession();
   // Remote panes: explicit hardening (don't rely on Electron defaults) — sandboxed, isolated,
@@ -658,6 +675,24 @@ ipcMain.handle("load-monster", async (_e, slug: string) => {
 /** Auto-discover the user's poke5e trainers from the poke5e pane's own localStorage (the site
  *  keeps a comma-separated list of read keys under "trainers"), so they get a picker instead of
  *  pasting a link — like the D&D Beyond character list. */
+// Reload the poke5e web pane (right side) so its own trainer list re-renders — e.g. after a trainer
+// is deleted elsewhere. Awaits the page load (with a safety timeout) so a follow-up list read is fresh.
+ipcMain.handle("poke5e-reload-pane", async () => {
+  try {
+    const wc = ddbView?.webContents;
+    if (!wc || !(wc.getURL?.() || "").includes("poke5e.app")) return { ok: false };
+    await new Promise<void>((resolve) => {
+      const done = () => { try { wc.off("did-finish-load", done); } catch { /* ignore */ } resolve(); };
+      wc.once("did-finish-load", done);
+      wc.reload();
+      setTimeout(done, 6000); // don't hang if the load stalls
+    });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+});
+
 ipcMain.handle("list-poke5e-trainers", async (_e, extraKeys: string[] = []) => {
   try {
     const raw: string = await ddbView.webContents
@@ -1426,6 +1461,15 @@ ipcMain.handle("pokedex-mark", (_e, id: string, state: "seen" | "caught" | null)
   saveStoreSoon();
   return { ok: true };
 });
+// Hidden-Pokémon filter for the roster switcher (local "working team" view; poke5e has no team yet).
+ipcMain.handle("poke5e-hidden-get", () => ({ ids: [...pokeHidden] }));
+ipcMain.handle("poke5e-hidden-set", (_e, id: string, hidden: boolean) => {
+  if (!id) return { ok: false };
+  if (hidden) pokeHidden.add(String(id)); else pokeHidden.delete(String(id));
+  saveStoreSoon();
+  return { ok: true };
+});
+
 // Species the loaded trainer owns (their team) = "caught" in the dex. Derived live from poke5e.
 ipcMain.handle("pokedex-caught", () => {
   const species = poke5eCtx?.team
@@ -1442,6 +1486,76 @@ ipcMain.handle("poke5e-item-qty", async (_e, item: { rowId: number; itemId?: str
     return { ok: true, persisted: true };
   } catch (err) {
     return { ok: false, persisted: false, error: String(err) };
+  }
+});
+
+// The poke5e standard-item catalogue (id, name, type) for the "add item" picker.
+ipcMain.handle("poke5e-items-catalog", async () => {
+  try { return { ok: true, items: await fetchItemsCatalog() }; } catch (err) { return { ok: false, items: [], error: String(err) }; }
+});
+
+// Add a standard item to the loaded trainer's bag. If it's already there, bump that row's quantity
+// (avoids a duplicate row); otherwise create a fresh row. Returns the rebuilt inventory.
+ipcMain.handle("poke5e-add-item", async (_e, itemId: string, quantity: number = 1) => {
+  if (!poke5eCtx?.writeKey) return { ok: false, error: "This trainer is read-only (no write key) — add items on poke5e." };
+  const qty = Math.max(1, Number(quantity) || 1);
+  try {
+    const before = await buildInventory(poke5eCtx.readKey).catch(() => [] as any[]);
+    const existing = before.find((it: any) => it.itemId && String(it.itemId) === String(itemId));
+    if (existing) await updateInventoryItem(poke5eCtx.writeKey, existing, (Number(existing.quantity) || 0) + qty);
+    else await addInventoryItem(poke5eCtx.writeKey, String(itemId), qty);
+    const inventory = await buildInventory(poke5eCtx.readKey).catch(() => [] as any[]);
+    schedulePoke5ePaneRefresh();
+    return { ok: true, inventory };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+});
+
+// Forget a trainer's keys in the poke5e web pane's own local list (so its page drops it too).
+async function forgetTrainerInPane(readKey: string) {
+  try {
+    await ddbView.webContents.executeJavaScript(
+      `(function(){try{var t=(localStorage.getItem("trainers")||"").split(",").filter(function(k){return k&&k!==${JSON.stringify(readKey)}});localStorage.setItem("trainers",t.join(","));localStorage.removeItem("write:"+${JSON.stringify(readKey)});localStorage.removeItem("read:"+${JSON.stringify(readKey)});}catch(e){}})()`,
+      true,
+    );
+  } catch { /* best effort */ }
+}
+
+// "Remove" — forget the loaded trainer from the local list only (poke5e's own behaviour). The trainer
+// row stays in the database and can be re-added with its read key. No confirmation (non-destructive).
+ipcMain.handle("poke5e-remove-trainer", async () => {
+  if (!poke5eCtx?.readKey) return { ok: false, error: "No trainer loaded." };
+  const readKey = poke5eCtx.readKey;
+  await forgetTrainerInPane(readKey);
+  poke5eCtx = null;
+  return { ok: true, readKey };
+});
+
+// Permanently delete the currently-loaded poke5e trainer (write-key gated), behind a confirmation
+// dialog so an accidental click can't erase a trainer.
+ipcMain.handle("poke5e-delete-trainer", async () => {
+  if (!poke5eCtx?.writeKey || !poke5eCtx.trainerId) return { ok: false, error: "This trainer is read-only (no write key) — it can't be deleted from here." };
+  const name = poke5eCtx.trainerRow?.name || "this trainer";
+  const readKey = poke5eCtx.readKey;
+  const { response } = await dialog.showMessageBox(win, {
+    type: "warning",
+    title: "Delete trainer",
+    message: `Delete “${name}” permanently?`,
+    detail: "This removes the trainer and all of its Pokémon from poke5e for anyone with the link. This cannot be undone.",
+    buttons: ["Cancel", "Delete permanently"],
+    defaultId: 0,
+    cancelId: 0,
+  });
+  if (response !== 1) return { ok: true, canceled: true };
+  try {
+    const gone = await deleteTrainer(poke5eCtx.writeKey, poke5eCtx.trainerId);
+    if (!gone) return { ok: false, error: "Delete failed — the trainer no longer exists or the write key is wrong." };
+    await forgetTrainerInPane(readKey);
+    poke5eCtx = null;
+    return { ok: true, deleted: true, readKey };
+  } catch (err) {
+    return { ok: false, error: String(err) };
   }
 });
 
@@ -1648,10 +1762,85 @@ function installGlobalHardening() {
   applyPermissions(session.fromPartition("persist:main")); // Roll20 + D&D Beyond remote panes
 }
 
+// ---- Update checker ------------------------------------------------------------------------------
+// On launch (packaged builds), ask GitHub for the latest release and, if it's newer than what's
+// running, prompt the user to Download / Later / Skip. We don't auto-install (the builds are
+// unsigned, and silent replacement would just re-trigger SmartScreen/Gatekeeper) — "Download" opens
+// the release page so the user installs deliberately.
+const GH_LATEST_RELEASE = "https://api.github.com/repos/dr0v3rr/tabletop-conduit/releases/latest";
+async function checkForUpdate(manual = false): Promise<void> {
+  try {
+    const res = await fetch(GH_LATEST_RELEASE, { headers: { "User-Agent": "Conduit-update-check", Accept: "application/vnd.github+json" } });
+    if (!res.ok) { if (manual) dialog.showMessageBox(win, { type: "warning", message: "Couldn't check for updates", detail: `GitHub returned HTTP ${res.status}.` }); return; }
+    const rel: any = await res.json();
+    const latest = String(rel.tag_name || "").replace(/^v/i, "");
+    const current = app.getVersion();
+    if (!latest) return;
+    if (!isNewer(latest, current)) {
+      if (manual) dialog.showMessageBox(win, { type: "info", message: "You're up to date", detail: `Conduit v${current} is the latest release.` });
+      return;
+    }
+    if (!manual && updateSkip === latest) return; // user asked to skip this exact version
+    const { response } = await dialog.showMessageBox(win, {
+      type: "info",
+      title: "Update available",
+      message: `Conduit v${latest} is available`,
+      detail: `You're running v${current}. Download the new version from GitHub?`,
+      buttons: ["Download", "Later", "Skip this version"],
+      defaultId: 0,
+      cancelId: 1,
+    });
+    if (response === 0) shell.openExternal(String(rel.html_url || "https://github.com/dr0v3rr/tabletop-conduit/releases/latest"));
+    else if (response === 2) { updateSkip = latest; saveStoreSoon(); }
+  } catch {
+    if (manual) dialog.showMessageBox(win, { type: "warning", message: "Couldn't check for updates", detail: "You appear to be offline." });
+    /* otherwise silent — offline / rate-limited */
+  }
+}
+// Full in-app update for Windows & Linux (electron-updater): download the new build and relaunch
+// into it. macOS is excluded — Squirrel.Mac refuses unsigned updates — and any failure falls back to
+// the notifier above (open the release page). Requires the release to carry electron-builder's
+// latest*.yml (published from v0.2.11 onward).
+let autoUpdateWired = false;
+function autoUpdate(manual = false): void {
+  // Portable Windows builds (PORTABLE_EXECUTABLE_DIR is set) and macOS can't self-replace/relaunch,
+  // so they get the version-check NOTIFIER (prompt → open the release page) instead of electron-updater.
+  const isPortable = !!process.env.PORTABLE_EXECUTABLE_DIR;
+  if (process.platform === "darwin" || isPortable) { void checkForUpdate(manual); return; }
+  autoUpdater.autoDownload = false;
+  if (!autoUpdateWired) {
+    autoUpdateWired = true;
+    autoUpdater.on("update-available", async (info) => {
+      if (!manual && updateSkip === info.version) return;
+      const { response } = await dialog.showMessageBox(win, {
+        type: "info", title: "Update available", message: `Conduit v${info.version} is available`,
+        detail: `You're running v${app.getVersion()}. Download it now? Conduit will offer to restart when it's ready.`,
+        buttons: ["Download", "Later", "Skip this version"], defaultId: 0, cancelId: 1,
+      });
+      if (response === 0) autoUpdater.downloadUpdate();
+      else if (response === 2) { updateSkip = info.version; saveStoreSoon(); }
+    });
+    autoUpdater.on("update-not-available", () => { if (manual) dialog.showMessageBox(win, { type: "info", message: "You're up to date", detail: `Conduit v${app.getVersion()} is the latest release.` }); });
+    autoUpdater.on("update-downloaded", async (info) => {
+      const { response } = await dialog.showMessageBox(win, {
+        type: "info", title: "Update ready", message: `Conduit v${info.version} downloaded`,
+        detail: "Restart now to finish installing?", buttons: ["Restart now", "Later"], defaultId: 0, cancelId: 1,
+      });
+      if (response === 0) autoUpdater.quitAndInstall();
+    });
+    autoUpdater.on("error", () => { void checkForUpdate(manual); }); // no feed yet / offline → notifier fallback
+  }
+  autoUpdater.checkForUpdates().catch(() => checkForUpdate(manual));
+}
+ipcMain.handle("check-update", () => autoUpdate(true)); // manual "Check for updates" action
+
 app.whenReady().then(async () => {
   installGlobalHardening();
   await loadStore(); // restore accumulated roll history from previous sessions
   await loadArchive(); // index the durable per-campaign roll archive (dedupe future appends)
   createWindow();
+  // Non-blocking launch check (packaged builds only — no dev noise), a few seconds after startup.
+  // Win/Linux get the full download+relaunch flow; macOS/failures fall back to the open-page notifier.
+  if (app.isPackaged) setTimeout(() => autoUpdate(false), 4000);
 });
 app.on("window-all-closed", () => app.quit());

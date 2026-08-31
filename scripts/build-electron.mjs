@@ -30,6 +30,9 @@ await build({
   platform: "node",
   format: "esm",
   external: ["electron"],
+  // The ESM bundle pulls in CommonJS deps (electron-updater → fs-extra) that call require("fs").
+  // ESM has no require, so give the bundle a real one built from the module URL.
+  banner: { js: "import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" },
 });
 
 await build({

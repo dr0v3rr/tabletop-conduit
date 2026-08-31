@@ -161,6 +161,12 @@ export async function updateMovePp(writeKey: string, moveRowId: number, moveId: 
   return Number(r) > 0;
 }
 
+/** Permanently delete a trainer from poke5e (write-key gated). Returns true if a row was removed. */
+export async function deleteTrainer(writeKey: string, id: string): Promise<boolean> {
+  const r = await poke5eRpc("delete_trainer", { _write_key: writeKey, _id: id });
+  return Number(r) > 0;
+}
+
 /** Set a bag item's quantity on poke5e (update_inventory_item). Handles standard vs custom items. */
 export async function updateInventoryItem(
   writeKey: string,
@@ -177,6 +183,27 @@ export async function updateInventoryItem(
     _description: standard ? null : (item.note || null),
   });
   return true; // poke5eRpc throws on failure; reaching here = written
+}
+
+/** Add a NEW standard item to the bag. add_inventory_item creates a fresh row (no _id), so this is
+ *  how you re-add an item that was fully removed — the ± controls can only touch rows that exist. */
+export async function addInventoryItem(writeKey: string, itemId: string, quantity = 1): Promise<boolean> {
+  await poke5eRpc("add_inventory_item", {
+    _write_key: writeKey,
+    _item_id: itemId,
+    _quantity: quantity,
+    _custom_name: null,
+    _description: null,
+  });
+  return true;
+}
+
+/** The poke5e standard-item catalogue (id, name, type), name-sorted, for the "add item" picker. */
+export async function fetchItemsCatalog(): Promise<{ id: string; name: string; type: string }[]> {
+  const map = await itemsMap();
+  return Object.entries(map)
+    .map(([id, v]) => ({ id, name: v.name, type: v.type || "" }))
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 // The 18 poke5e skills, in add_pokemon's `_rank_<skill>` param spelling (underscored).

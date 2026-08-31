@@ -1,6 +1,6 @@
 {
   "name": "tabletop-conduit",
-  "version": "0.2.10",
+  "version": "0.2.11",
   "description": "Conduit — a bridge between your character sheets (D&D Beyond, poke5e, monsters) and your virtual tabletop.",
   "license": "GPL-3.0-or-later",
   "type": "module",
@@ -15,12 +15,21 @@
     "pack": "npm run shell:build && electron-builder --dir",
     "dist": "npm run shell:build && electron-builder",
     "dist:mac": "npm run shell:build && electron-builder --mac",
-    "dist:win": "npm run shell:build && electron-builder --win"
+    "dist:win": "npm run shell:build && electron-builder --win",
+    "verify:release": "node scripts/verify-release.mjs",
+    "release": "node scripts/release.mjs"
   },
   "build": {
     "appId": "com.hwest.conduit",
     "productName": "Conduit",
     "afterPack": "scripts/afterpack-fuses.mjs",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "dr0v3rr",
+        "repo": "tabletop-conduit"
+      }
+    ],
     "files": [
       "dist-electron/**",
       "package.json"
@@ -46,7 +55,11 @@
     "nsis": {
       "installerIcon": "build/icon.ico",
       "uninstallerIcon": "build/icon.ico",
-      "installerHeaderIcon": "build/icon.ico"
+      "installerHeaderIcon": "build/icon.ico",
+      "artifactName": "${productName}-Setup-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-portable.${ext}"
     },
     "linux": {
       "target": [
@@ -63,8 +76,12 @@
     "electron": "^43.4.1",
     "electron-builder": "^26.15.3",
     "esbuild": "^0.28.2",
+    "js-yaml": "^5.4.1",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3",
     "vitest": "^4.1.11"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9"
   }
 }

@@ -40,7 +40,13 @@
           <div id="rosterMenu" class="roster-menu" role="listbox" hidden></div>
         </div>
         <span id="roMode" class="ro-badge" title="You don't own this sheet — rolls work and HP/resources track locally, but nothing writes back to the source" hidden>Read-only</span>
-        <button id="keysBtn" class="keys-btn" title="Show / copy this trainer's poke5e read + write keys so you can back them up" hidden>🔑 Keys</button>
+        <div class="trainer-actions">
+          <button id="keysBtn" class="keys-btn" title="Show / copy this trainer's poke5e read + write keys so you can back them up" hidden>🔑 Keys</button>
+          <span class="ta-right">
+            <button id="removeTrainerBtn" class="keys-btn" title="Remove this trainer from your list (stays in poke5e; re-add with its read key)" hidden>✕ Remove</button>
+            <button id="deleteTrainerBtn" class="keys-btn del-btn" title="Permanently delete this trainer from poke5e" hidden>🗑 Delete</button>
+          </span>
+        </div>
         <div id="meta" class="meta"></div>
         <div id="vitals" class="vitals"></div>
         <div id="conditions" class="conditions">
@@ -138,6 +144,7 @@
           <span class="tw"></span><span class="section-title">Items</span>
           <span id="itemMeta" class="spell-meta"></span>
           <button id="manageItems" class="mini-btn" title="Open D&amp;D Beyond's inventory to search &amp; add items, then re-sync">＋ Add / Manage</button>
+          <button id="addPokeItem" class="mini-btn" title="Add an item to this trainer's bag (saves to poke5e)" hidden>＋ Add item</button>
         </div>
         <div class="section-body"><div id="items" class="rows"></div></div>
       </section>

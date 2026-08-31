@@ -55,7 +55,14 @@ declare global {
       pokedexMark(id: string, state: "seen" | "caught" | null): Promise<{ ok: boolean }>;
       pokedexCaught(): Promise<{ ok: boolean; species: string[] }>;
       poke5eItemQty(item: unknown, quantity: number): Promise<{ ok: boolean; persisted: boolean; error?: string }>;
+      poke5eItemsCatalog(): Promise<{ ok: boolean; items: { id: string; name: string; type: string }[]; error?: string }>;
+      poke5eAddItem(itemId: string, quantity?: number): Promise<{ ok: boolean; inventory?: any[]; error?: string }>;
       poke5eAddTeam(speciesId: string, level: number): Promise<{ ok: boolean; error?: string }>;
+      poke5eRemoveTrainer(): Promise<{ ok: boolean; readKey?: string; error?: string }>;
+      poke5eDeleteTrainer(): Promise<{ ok: boolean; deleted?: boolean; canceled?: boolean; readKey?: string; error?: string }>;
+      poke5eReloadPane(): Promise<{ ok: boolean }>;
+      poke5eHiddenGet(): Promise<{ ids: string[] }>;
+      poke5eHiddenSet(id: string, hidden: boolean): Promise<{ ok: boolean }>;
       roll20SheetStyle(): Promise<{ style: "sheet" | "default" }>;
       r20TurnTop(): Promise<{ id: string; pr: any; count: number } | null>;
       notify(title: string, body: string): Promise<{ ok: boolean }>;
@@ -65,6 +72,7 @@ declare global {
       sessionExport(kind: "json" | "csv-log" | "csv-stats"): Promise<{ ok: boolean; path?: string; canceled?: boolean }>;
       copyText(text: string): Promise<void>;
       logout(): Promise<{ ok: boolean; error?: string }>;
+      checkUpdate(): Promise<void>;
     };
   }
 }
@@ -222,6 +230,27 @@ async function augmentPoke5eGmRoster() {
   renderRoster();
 }
 
+// Local "working team" filter: poke5e Pokémon the user has hidden from the roster switcher. Keyed
+// by pokemon id (stable across the grouped/non-grouped ref schemes). Persisted in the app store.
+let pokeHidden = new Set<string>();
+const pmonId = (ref: string): string => { const m = /^pmon:([^@]+)/.exec(ref || ""); return m ? m[1] : ""; };
+async function loadHidden() {
+  const r = await window.api.poke5eHiddenGet().catch(() => null);
+  pokeHidden = new Set(r?.ids || []);
+}
+function toggleHidden(pid: string) {
+  if (!pid) return;
+  const nowHidden = !pokeHidden.has(pid);
+  if (nowHidden) pokeHidden.add(pid); else pokeHidden.delete(pid);
+  window.api.poke5eHiddenSet(pid, nowHidden).catch(() => {});
+  // Hiding the active Pokémon → fall back to the trainer (or first still-visible entry).
+  if (nowHidden && pmonId(activeRef) === pid) {
+    const fb = roster.find((r) => !r.id.startsWith("pmon:")) || roster.find((r) => !pokeHidden.has(pmonId(r.id)));
+    if (fb) { switchTo(fb.id); return; }
+  }
+  renderRoster();
+}
+
 // The roster switcher is a dropdown anchored under the character/trainer name (scales to a large
 // team without a horizontal strip). Hidden entirely for a solo character.
 function renderRoster() {
@@ -231,33 +260,52 @@ function renderRoster() {
   if (roster.length < 2) { toggle.hidden = true; menu.innerHTML = ""; closeRosterMenu(); return; }
   toggle.hidden = false;
   const grouped = roster.some((r) => r.kind); // poke5e GM view: trainer headers + team rows
-  if (grouped) {
-    const activeTrainer = activeRefTrainerKey();
-    menu.innerHTML = roster
-      .map((r) => {
-        if (r.kind === "trainer") {
-          const on = activeTrainer === r.id;
-          const badge = r.writable ? '<span class="rm-badge rm-own" title="You can edit this trainer">✎</span>' : '<span class="rm-badge" title="Read-only — loaded by read key">read-only</span>';
-          return `<button class="rm-row rm-trainer${on ? " active" : ""}" role="option" data-id="${esc(r.id)}"><span class="rc-name">${esc(r.name)}</span>${badge}</button>`;
-        }
-        const active = r.id === activeRef;
-        return `<button class="rm-row rm-mon${active ? " active" : ""}" role="option" aria-selected="${active}" data-id="${esc(r.id)}"><span class="rc-name">${esc(r.name)}</span>${active ? '<span class="rm-check">✓</span>' : ""}</button>`;
-      })
-      .join("");
-  } else {
-    menu.innerHTML = roster
-      .map((r) => {
-        const active = r.id === activeRef;
-        const av = r.avatar
-          ? `<img class="rc-av" src="${esc(r.avatar)}" alt="" />`
-          : `<span class="rc-av rc-av-ph" style="background:${badgeColor(r.name)}">${esc((r.name || "?").charAt(0).toUpperCase())}</span>`;
-        return `<button class="rm-row${active ? " active" : ""}" role="option" aria-selected="${active}" data-id="${esc(r.id)}">${av}<span class="rc-name">${esc(r.name)}</span>${r.mine ? '<span class="rc-star" title="Your character">★</span>' : ""}${active ? '<span class="rm-check">✓</span>' : ""}</button>`;
-      })
-      .join("");
+  const isMon = (r: any) => r.id.startsWith("pmon:");
+  const isHidden = (r: any) => isMon(r) && pokeHidden.has(pmonId(r.id));
+  const activeTrainer = activeRefTrainerKey();
+
+  // A "show in list" checkbox (checked = visible). Toggling it hides/shows without switching character.
+  const showChk = (r: any) =>
+    `<input type="checkbox" class="rm-chk" data-hide="${esc(pmonId(r.id))}" ${isHidden(r) ? "" : "checked"} title="Show in list" aria-label="Show ${esc(r.name)} in list">`;
+
+  const rowHtml = (r: any): string => {
+    if (r.kind === "trainer") {
+      const on = activeTrainer === r.id;
+      const badge = r.writable ? '<span class="rm-badge rm-own" title="You can edit this trainer">✎</span>' : '<span class="rm-badge" title="Read-only — loaded by read key">read-only</span>';
+      return `<button class="rm-row rm-trainer${on ? " active" : ""}" role="option" data-id="${esc(r.id)}"><span class="rc-name">${esc(r.name)}</span>${badge}</button>`;
+    }
+    const active = r.id === activeRef;
+    const av = grouped ? "" : (r.avatar
+      ? `<img class="rc-av" src="${esc(r.avatar)}" alt="" />`
+      : `<span class="rc-av rc-av-ph" style="background:${badgeColor(r.name)}">${esc((r.name || "?").charAt(0).toUpperCase())}</span>`);
+    const star = (!grouped && r.mine) ? '<span class="rc-star" title="Your character">★</span>' : "";
+    const check = active ? '<span class="rm-check">✓</span>' : "";
+    return `<button class="rm-row${grouped ? " rm-mon" : ""}${active ? " active" : ""}" role="option" aria-selected="${active}" data-id="${esc(r.id)}">${av}<span class="rc-name">${esc(r.name)}</span>${star}${check}${isMon(r) ? showChk(r) : ""}</button>`;
+  };
+
+  const visible = roster.filter((r) => !isHidden(r));
+  const hidden = roster.filter(isHidden);
+  const monTotal = roster.filter(isMon).length;
+  const monShown = visible.filter(isMon).length;
+
+  let html = visible.map(rowHtml).join("");
+  if (monTotal) html += `<div class="rm-count">${monShown} of ${monTotal} Pokémon shown</div>`;
+  if (hidden.length) {
+    html += `<button class="rm-hidden-head" id="rmHiddenHead">Hidden (${hidden.length}) ▾</button>` +
+      `<div class="rm-hidden" id="rmHiddenList" hidden>${hidden.map(rowHtml).join("")}</div>`;
   }
+  menu.innerHTML = html;
+
   menu.querySelectorAll<HTMLButtonElement>(".rm-row").forEach((b) => {
     b.onclick = () => { closeRosterMenu(); const id = b.dataset.id!; if (id !== activeRef) switchTo(id); };
   });
+  menu.querySelectorAll<HTMLInputElement>(".rm-chk").forEach((c) => {
+    c.onclick = (ev) => ev.stopPropagation(); // don't switch character when ticking the box
+    c.onchange = () => toggleHidden(c.dataset.hide!);
+  });
+  const hh = document.getElementById("rmHiddenHead");
+  if (hh) hh.onclick = (ev) => { ev.stopPropagation(); const l = document.getElementById("rmHiddenList"); if (l) l.hidden = !l.hidden; };
+
   if (!wasOpen) closeRosterMenu(); // stay closed unless the menu was already open (async re-render)
 }
 
@@ -616,6 +664,8 @@ function render() {
   $("charName").textContent = model.name;
   ($("roMode") as HTMLElement).hidden = writable; // badge only when read-only
   ($("keysBtn") as HTMLElement).hidden = activeSource !== "poke5e"; // key backup is poke5e-only
+  ($("removeTrainerBtn") as HTMLElement).hidden = activeSource !== "poke5e"; // remove-from-list = any loaded trainer
+  ($("deleteTrainerBtn") as HTMLElement).hidden = !(activeSource === "poke5e" && writable); // delete = owned trainers only
   ($("reloadChar") as HTMLElement).hidden = activeSource === "monster"; // monsters reload via search, not here
   if (!writable) ($("ddbStatus") as HTMLElement).hidden = true; // no source sync to show
   if (pokeMeta) renderPokeChips();
@@ -1271,8 +1321,19 @@ function renderInventory() {
   const sec = sectionEl("items");
   const box = $("items");
   box.innerHTML = "";
-  if (!inventory.length) { sec.hidden = true; return; }
+  // The DDB inventory manager is DDB-only; the poke5e "Add item" picker shows for owned trainers.
+  const canAddPoke = activeSource === "poke5e" && writable;
+  ($("manageItems") as HTMLElement).hidden = activeSource !== "ddb";
+  ($("addPokeItem") as HTMLElement).hidden = !canAddPoke;
+  // Keep the section (and its Add button) visible for owned poke5e trainers even with an empty bag —
+  // otherwise there's no way to re-add an item that was fully removed.
+  if (!inventory.length && !canAddPoke) { sec.hidden = true; return; }
   sec.hidden = false;
+  if (!inventory.length) {
+    ($("itemMeta") as HTMLElement).textContent = "";
+    box.innerHTML = `<div class="empty-note">No items in the bag yet — use ＋ Add item.</div>`;
+    return;
+  }
   const rollableCount = inventory.filter((it) => it.kind === "heal" || it.kind === "damage").length;
   ($("itemMeta") as HTMLElement).textContent = rollableCount ? `${rollableCount} rollable` : "";
   for (const it of inventory) {
@@ -1370,13 +1431,19 @@ async function adjustItemQty(it: any, delta: number, silent = false): Promise<bo
   const entries: { id: number; quantity: number }[] = it.entries ?? [];
   if (delta < 0 && it.quantity <= 0) return false;
   const target = delta < 0 ? entries.find((e) => e.quantity > 0) : entries[0];
-  // Local-only for read-only sheets AND any non-DDB source: the ddbItemSetQty endpoint only exists
-  // for D&D Beyond. poke5e/monster bags decrement locally (poke5e has no item-write RPC), so we must
-  // NOT route their "Use"/± through the DDB path (which would NaN the id and snap the count back).
+  // Non-DDB sources don't use the DDB ddbItemSetQty endpoint (it would NaN the id and snap back).
+  // poke5e persists via its own update_inventory_item when we hold the write key; monsters and
+  // read-only sheets stay local-only.
   if (!writable || activeSource !== "ddb") {
     if (target) target.quantity = Math.max(0, target.quantity + delta);
     it.quantity = entries.length ? entries.reduce((a, e) => a + e.quantity, 0) : Math.max(0, it.quantity + delta);
     renderInventory();
+    if (activeSource === "poke5e" && writable && it.rowId != null) {
+      const r = await window.api
+        .poke5eItemQty({ rowId: it.rowId, itemId: it.itemId, name: it.name, customName: it.customName, note: it.note }, it.quantity)
+        .catch(() => ({ ok: false, persisted: false }));
+      if (!r.ok && !silent) setStatus((r as any).error || "Couldn't save quantity to poke5e", true);
+    }
     return true;
   }
   if (!target) {
@@ -1935,6 +2002,8 @@ $("manageItems").onclick = async () => {
   setStatus("Search & add items on D&D Beyond, then switch back to Table to re-sync");
 };
 
+$("addPokeItem").onclick = () => openItemPicker();
+
 // Pull the latest inventory from D&D Beyond (after adding/editing items there).
 async function syncInventory() {
   const res = await window.api.inventoryRefresh();
@@ -2105,7 +2174,10 @@ $("charRefresh").onclick = () => refreshCharacterList();
 $("logoutBtn").onclick = () => window.api.showSplash();
 // Populate the shared picker from the user's poke5e trainers (read from the poke5e pane's local
 // list), so they auto-load like D&D Beyond instead of pasting a key. Returns true if any found.
-async function refreshPoke5eTrainers(): Promise<boolean> {
+async function refreshPoke5eTrainers(reloadPane = false): Promise<boolean> {
+  // A manual ⟳ reloads the poke5e web pane first so its own list re-renders (e.g. after a deletion),
+  // then rebuilds Conduit's picker (which drops trainers whose read key no longer resolves).
+  if (reloadPane) { setStatus("Reloading poke5e…"); await window.api.poke5eReloadPane().catch(() => {}); }
   const res = await window.api.listPoke5eTrainers(getPoke5eKeys()).catch(() => ({ ok: false, trainers: [] as any[] }));
   const trainers = res.trainers || [];
   if (!trainers.length) return false;
@@ -2142,7 +2214,7 @@ async function refreshPoke5eTrainers(): Promise<boolean> {
 
   // The Pokédex is poke5e-only — reveal it for poke5e, drop it entirely for D&D Beyond / Monsters.
   const pdxBtn = $("paneSeg").querySelector('[data-pane="pokedex"]');
-  if (activeSource === "poke5e") pdxBtn?.removeAttribute("hidden");
+  if (activeSource === "poke5e") { pdxBtn?.removeAttribute("hidden"); await loadHidden(); } // roster hide/show filter
   else pdxBtn?.remove();
 
   if (activeSource === "monster") {
@@ -2208,7 +2280,7 @@ async function refreshPoke5eTrainers(): Promise<boolean> {
     $("ddbStatus").hidden = true; // no spell-slot sync for poke5e
     const idBox = $("charId") as HTMLInputElement;
     idBox.placeholder = "poke5e share link or read key";
-    $("charRefresh").onclick = () => refreshPoke5eTrainers();
+    $("charRefresh").onclick = () => refreshPoke5eTrainers(true);
     // Auto-discover the trainers you've opened in poke5e (like the D&D Beyond list). The poke5e
     // pane may still be loading, so poll a few times before falling back to the paste box.
     for (let i = 0; i < 12; i++) {
@@ -2284,6 +2356,8 @@ $("keysBtn").onclick = async () => {
   await window.api.copyText(block).catch(() => {});
   setStatus(`🔑 Read ${k.readKey}${k.writeKey ? ` · Write ${k.writeKey}` : " · (read-only)"} — copied to clipboard`);
 };
+$("removeTrainerBtn").onclick = () => removeCurrentTrainer();
+$("deleteTrainerBtn").onclick = () => deleteCurrentTrainer();
 
 // ---- Hit points ----
 // Fill the damage-type dropdown once (used to apply resistances/immunities/vulnerabilities).
@@ -2355,6 +2429,37 @@ function addPoke5eKey(key: string) {
     const keys = getPoke5eKeys();
     if (!keys.includes(key)) { keys.push(key); localStorage.setItem("poke5eKeys", JSON.stringify(keys)); }
   } catch { /* ignore */ }
+}
+function forgetPoke5eKey(key: string) {
+  if (!key) return;
+  try { localStorage.setItem("poke5eKeys", JSON.stringify(getPoke5eKeys().filter((k) => k !== key))); } catch { /* ignore */ }
+}
+
+// Shared teardown after a trainer leaves the list (removed or deleted): forget its key, refresh the
+// picker (reloads the poke5e pane + drops it), and load whatever trainer remains.
+async function afterTrainerGone(readKey?: string) {
+  if (readKey) forgetPoke5eKey(readKey);
+  model = null;
+  $("sheet").hidden = true;
+  const stillHave = await refreshPoke5eTrainers(true);
+  if (stillHave && pickerCharId) { didAutoLoad = false; load(); }
+}
+
+// "Remove" — forget the loaded trainer from your list only (stays in poke5e; re-add with its read key).
+async function removeCurrentTrainer() {
+  const r = await window.api.poke5eRemoveTrainer().catch(() => null);
+  if (!r?.ok) { setStatus(r?.error || "Couldn't remove trainer", true); return; }
+  setStatus("Removed from your list (still in poke5e — re-add with its read key)");
+  await afterTrainerGone(r.readKey);
+}
+
+// Permanently delete the loaded poke5e trainer (main shows a confirm dialog first).
+async function deleteCurrentTrainer() {
+  const r = await window.api.poke5eDeleteTrainer().catch(() => null);
+  if (!r || r.canceled) return;
+  if (!r.ok) { setStatus(r.error || "Couldn't delete trainer", true); return; }
+  setStatus("Trainer deleted from poke5e ✓");
+  await afterTrainerGone(r.readKey);
 }
 
 // ============================ Pokédex tab ============================
@@ -2632,6 +2737,73 @@ let catchCtx: { species: any | null; ballItemId: string | null; level: number; a
 const tclean = (s: any) => String(s ?? "").replace(/[{}]/g, "");
 function bagBalls(): any[] { return (inventory || []).filter((it) => String(it.itemType || "").toLowerCase() === "pokeball"); }
 function ballName(id: string | null): string { return bagBalls().find((b) => b.itemId === id)?.name || "ball"; }
+
+// ── Add-item picker (poke5e) ──────────────────────────────────────────────
+// Lets an owner add a standard item to the bag via add_inventory_item — the only way back once an
+// item has been fully removed (the ± controls can only touch rows that still exist).
+let itemCatalog: { id: string; name: string; type: string }[] | null = null;
+let itemPickerBusy = false;
+
+function ensureItemPicker(): HTMLElement {
+  let ov = document.getElementById("itemPicker");
+  if (!ov) {
+    ov = document.createElement("div");
+    ov.id = "itemPicker"; ov.className = "catch-overlay";
+    ov.innerHTML = `<div class="catch-modal" role="dialog" aria-modal="true" aria-label="Add item">` +
+      `<button class="cm-x" id="ipX" title="Close">✕</button>` +
+      `<div class="cm-head"><div class="cm-name">Add an item</div></div>` +
+      `<input id="ipQ" class="cm-target" type="text" placeholder="Search items — e.g. Poké Ball…" autocomplete="off">` +
+      `<div class="cm-hits ip-list" id="ipList"></div></div>`;
+    document.body.appendChild(ov);
+    ov.addEventListener("click", (e) => { if (e.target === ov) closeItemPicker(); });
+    (ov.querySelector("#ipX") as HTMLElement).onclick = closeItemPicker;
+    (ov.querySelector("#ipQ") as HTMLInputElement).addEventListener("input", (e) => renderItemHits((e.target as HTMLInputElement).value));
+    document.addEventListener("keydown", (e) => { if ((e as KeyboardEvent).key === "Escape" && ov!.classList.contains("open")) closeItemPicker(); });
+  }
+  return ov;
+}
+function closeItemPicker() { document.getElementById("itemPicker")?.classList.remove("open"); }
+
+async function openItemPicker() {
+  const ov = ensureItemPicker();
+  ov.classList.add("open");
+  const q = ov.querySelector("#ipQ") as HTMLInputElement; q.value = ""; q.focus();
+  if (!itemCatalog) {
+    renderItemHits(""); // shows "Loading…"
+    const r = await window.api.poke5eItemsCatalog().catch(() => null);
+    itemCatalog = r?.ok ? r.items : [];
+  }
+  renderItemHits("");
+}
+
+function renderItemHits(query: string) {
+  const list = document.getElementById("ipList"); if (!list) return;
+  if (!itemCatalog) { list.innerHTML = `<div class="cm-note">Loading items…</div>`; return; }
+  const q = query.trim().toLowerCase();
+  const hits = (q ? itemCatalog.filter((it) => it.name.toLowerCase().includes(q) || (it.type || "").toLowerCase().includes(q)) : itemCatalog).slice(0, 60);
+  if (!hits.length) { list.innerHTML = `<div class="cm-note">No matching items.</div>`; return; }
+  list.innerHTML = "";
+  for (const it of hits) {
+    const b = document.createElement("button");
+    b.className = "ip-hit";
+    b.innerHTML = `<span class="label">${esc(it.name)}</span>${it.type ? `<span class="item-note">${esc(cap(it.type))}</span>` : ""}`;
+    b.onclick = () => addPokeItem(it);
+    list.appendChild(b);
+  }
+}
+
+async function addPokeItem(it: { id: string; name: string }) {
+  if (itemPickerBusy) return;
+  itemPickerBusy = true;
+  setStatus(`Adding ${it.name}…`);
+  const r = await window.api.poke5eAddItem(it.id, 1).catch(() => null);
+  itemPickerBusy = false;
+  if (!r?.ok) { setStatus(r?.error || "Couldn't add that item", true); return; }
+  if (Array.isArray(r.inventory)) inventory = r.inventory;
+  renderInventory(); applyFilter();
+  setStatus(`Added ${it.name} to the bag ✓ (saved to poke5e)`);
+  closeItemPicker();
+}
 
 function ensureCatchOverlay(): HTMLElement {
   let ov = document.getElementById("catchOverlay");
