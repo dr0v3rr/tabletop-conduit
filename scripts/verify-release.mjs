@@ -8,7 +8,7 @@
 import { readFileSync, existsSync, statSync, readdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
-import yaml from "js-yaml";
+import * as yaml from "js-yaml"; // js-yaml v4 is CJS with named exports — no ESM default export
 
 const rel = process.argv[2] || "release";
 const sha = (p, algo, enc) => createHash(algo).update(readFileSync(p)).digest(enc);
@@ -19,7 +19,7 @@ const ok = (m) => console.log(`  ✓ ${m}`);
 if (!existsSync(rel)) { console.error(`No ${rel}/ directory — build first.`); process.exit(1); }
 
 // 1) electron-updater manifests: each referenced file must exist and match sha512 (+ size).
-const ymls = ["latest.yml", "latest-mac.yml", "latest-linux.yml"].filter((f) => existsSync(join(rel, f)));
+const ymls = ["latest.yml", "latest-mac.yml", "latest-linux.yml", "latest-linux-arm64.yml"].filter((f) => existsSync(join(rel, f)));
 if (!ymls.length) console.warn("! no latest*.yml manifests found (auto-update won't work for this release)");
 for (const y of ymls) {
   console.log(`\n${y}`);
