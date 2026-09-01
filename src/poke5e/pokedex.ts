@@ -3,6 +3,7 @@
 // the fetch/cache lives in the main process; this module only shapes raw rows.
 
 import { moveWording } from "./pokemon.js";
+import { parseSpeeds, formatSpeeds, type SpeedMode } from "./speed.js";
 
 /** Moves that inflict the Asleep status — used to flag "has a sleep move" (the ranger's lens). */
 const SLEEP_MOVES = new Set(["sing", "sleep-powder", "spore", "hypnosis", "yawn", "grass-whistle", "lovely-kiss"]);
@@ -37,7 +38,8 @@ export interface DexEntry {
   ac: number;
   hp: number;
   hitDice: string;
-  speed: string; // "30 ft, swim 20 ft"
+  speed: string; // formatted, e.g. "25 ft, climbing 25 ft"
+  speedModes: SpeedMode[]; // structured modes (walking first when present) for sheets / the primary number
   stats: { STR: number; DEX: number; CON: number; INT: number; WIS: number; CHA: number };
   minLevel: number;
   saves: string[]; // ["DEX"], ["STR","CON"] …
@@ -106,9 +108,8 @@ function mediaUrl(path: string | undefined | null): string {
 /** Normalize one pokemon.json row into a DexEntry, resolving its level-up moves via the moves map. */
 export function normalizeSpecies(p: any, movesById: Record<string, any>, byId: Record<string, any>): DexEntry {
   const a = p.attributes || {};
-  const speed = (Array.isArray(p.speed) ? p.speed : [])
-    .map((s: any) => (s.type === "walking" ? `${s.value} ft` : `${s.type} ${s.value} ft`))
-    .join(", ");
+  const speedModes = parseSpeeds(p.speed);
+  const speed = formatSpeeds(speedModes);
 
   const moves: DexMove[] = [];
   const mv = p.moves || {};
@@ -138,6 +139,7 @@ export function normalizeSpecies(p: any, movesById: Record<string, any>, byId: R
     hp: Number(p.hp) || 0,
     hitDice: String(p.hitDice || ""),
     speed,
+    speedModes,
     stats: { STR: a.str ?? 10, DEX: a.dex ?? 10, CON: a.con ?? 10, INT: a.int ?? 10, WIS: a.wis ?? 10, CHA: a.cha ?? 10 },
     minLevel: Number(p.minLevel) || 1,
     saves: (p.savingThrows || []).map(up),

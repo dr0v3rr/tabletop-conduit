@@ -169,7 +169,10 @@ export interface RollModel {
   skills: Record<SkillKey, SkillValue>;
   passives: { perception: number; investigation: number; insight: number };
   initiative: number;
-  /** Walking speed in feet. */
+  /** Primary speed in feet (walking if the creature has it, else its leading movement mode). */
   speed: number;
+  /** All movement modes, when known (poke5e species can have walking/climbing/swimming/flying/
+   *  hover/burrowing). Present only when there's structured data; the sheet can offer to show them. */
+  speeds?: { type: string; value: number }[];
   conditional: ConditionalEffect[];
 }

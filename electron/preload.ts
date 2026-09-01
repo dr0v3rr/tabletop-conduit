@@ -49,6 +49,7 @@ contextBridge.exposeInMainWorld("api", {
   poke5eHiddenSet: (id: string, hidden: boolean) => ipcRenderer.invoke("poke5e-hidden-set", id, hidden),
   poke5eAddTeam: (speciesId: string, level: number) => ipcRenderer.invoke("poke5e-add-team", speciesId, level),
   poke5eRemoveTrainer: () => ipcRenderer.invoke("poke5e-remove-trainer"),
+  poke5eRemovePokemon: (pokemonId: number) => ipcRenderer.invoke("poke5e-remove-pokemon", pokemonId),
   poke5eDeleteTrainer: () => ipcRenderer.invoke("poke5e-delete-trainer"),
   roll20SheetStyle: () => ipcRenderer.invoke("roll20-sheet-style"),
   r20TurnTop: () => ipcRenderer.invoke("r20-turn-top"),

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { addInventoryItem, fetchItemsCatalog } from '../src/poke5e/source';
+import { addInventoryItem, fetchItemsCatalog, removePokemon } from '../src/poke5e/source';
 
 afterEach(() => { vi.unstubAllGlobals(); });
 
@@ -29,6 +29,19 @@ describe('poke5e addInventoryItem', () => {
     }));
     await addInventoryItem('WKEY', 'potion');
     expect(body._quantity).toBe(1);
+  });
+});
+
+describe('poke5e removePokemon', () => {
+  it('POSTs remove_pokemon with the write key and pokemon row id', async () => {
+    let url = ''; let body: any = null;
+    vi.stubGlobal('fetch', vi.fn(async (u: string, init: any) => {
+      url = u; body = JSON.parse(init.body);
+      return { ok: true, json: async () => 1 } as any;
+    }));
+    await removePokemon('WKEY', 42);
+    expect(url).toContain('/rpc/remove_pokemon');
+    expect(body).toEqual({ _write_key: 'WKEY', _id: 42 });
   });
 });
 

@@ -59,6 +59,7 @@ declare global {
       poke5eAddItem(itemId: string, quantity?: number): Promise<{ ok: boolean; inventory?: any[]; error?: string }>;
       poke5eAddTeam(speciesId: string, level: number): Promise<{ ok: boolean; error?: string }>;
       poke5eRemoveTrainer(): Promise<{ ok: boolean; readKey?: string; error?: string }>;
+      poke5eRemovePokemon(pokemonId: number): Promise<{ ok: boolean; removed?: boolean; canceled?: boolean; pokemonId?: number; error?: string }>;
       poke5eDeleteTrainer(): Promise<{ ok: boolean; deleted?: boolean; canceled?: boolean; readKey?: string; error?: string }>;
       poke5eReloadPane(): Promise<{ ok: boolean }>;
       poke5eHiddenGet(): Promise<{ ids: string[] }>;
@@ -114,6 +115,8 @@ let adhocMod = 0; // ad-hoc situational modifier on the next d20 roll(s)
 let lastRollRequest: any = null; // for the Reroll button
 let templateStyle: "sheet" | "default" = "default"; // 'sheet' → prettier D&D-5e cards when the game has that sheet
 let activeSource: "ddb" | "poke5e" | "monster" = "ddb"; // which character-sheet source the splash selected
+// Persisted preference: when a creature has multiple movement modes, show them all in the Speed vital.
+let showAllSpeeds = (() => { try { return localStorage.getItem("showAllSpeeds") === "1"; } catch { return false; } })();
 let writable = true; // false for public/others' sheets & monsters — edits stay local, no write-back
 // GM-mode roster. For DDB it's the campaign party; for poke5e it's either a single trainer's team,
 // or (GM view) every remembered trainer grouped — `kind`/`group`/`writable` drive the grouped render.
@@ -663,9 +666,18 @@ function renderPokeChips() {
 function render() {
   $("charName").textContent = model.name;
   ($("roMode") as HTMLElement).hidden = writable; // badge only when read-only
-  ($("keysBtn") as HTMLElement).hidden = activeSource !== "poke5e"; // key backup is poke5e-only
-  ($("removeTrainerBtn") as HTMLElement).hidden = activeSource !== "poke5e"; // remove-from-list = any loaded trainer
-  ($("deleteTrainerBtn") as HTMLElement).hidden = !(activeSource === "poke5e" && writable); // delete = owned trainers only
+  const isPoke = activeSource === "poke5e";
+  const isPokemon = isPoke && activeRef.startsWith("pmon:"); // a team Pokémon is selected, not the trainer
+  ($("keysBtn") as HTMLElement).hidden = !isPoke; // key backup is poke5e-only
+  // Remove: for a trainer, forgets it from your list (any trainer). For a Pokémon, permanently
+  // removes that Pokémon from the trainer — so only when you own it (write key).
+  ($("removeTrainerBtn") as HTMLElement).hidden = !(isPoke && (!isPokemon || writable));
+  // Delete (permanent delete_trainer) applies to the TRAINER only — never shown for a Pokémon.
+  ($("deleteTrainerBtn") as HTMLElement).hidden = !(isPoke && writable && !isPokemon);
+  const rmBtn = $("removeTrainerBtn") as HTMLElement;
+  rmBtn.title = isPokemon
+    ? "Permanently remove this Pokémon from the trainer on poke5e"
+    : "Remove this trainer from your list (stays in poke5e; re-add with its read key)";
   ($("reloadChar") as HTMLElement).hidden = activeSource === "monster"; // monsters reload via search, not here
   if (!writable) ($("ddbStatus") as HTMLElement).hidden = true; // no source sync to show
   if (pokeMeta) renderPokeChips();
@@ -710,19 +722,38 @@ function render() {
   applyFilter();
 }
 
+// Compact type labels for the multi-speed chip: walking is bare, others abbreviate.
+const SPEED_ABBR: Record<string, string> = { walking: "", swimming: "swim", climbing: "climb", flying: "fly", burrowing: "burrow", hover: "hover" };
+function speedModesShort(modes: { type: string; value: number }[]): string {
+  return modes.map((m) => { const a = SPEED_ABBR[m.type] ?? m.type; return a ? `${a} ${m.value}` : `${m.value}`; }).join(" · ");
+}
+
 function renderVitals() {
   if (!model) return;
-  const items: { label: string; value: string | number }[] = [
+  const modes = model.speeds || [];
+  const multiSpeed = modes.length > 1;
+  const speedVal = multiSpeed && showAllSpeeds ? speedModesShort(modes) : `${model.speed} ft`;
+  const items: { label: string; value: string | number; key?: string }[] = [
     { label: "AC", value: acValue ?? "—" },
-    { label: "Speed", value: `${model.speed} ft` },
+    { label: "Speed", value: speedVal, key: "speed" },
     { label: "Init", value: sgn(model.initiative) },
     { label: "Pass Per", value: model.passives.perception },
     { label: "Pass Inv", value: model.passives.investigation },
     { label: "Pass Ins", value: model.passives.insight },
   ];
   $("vitals").innerHTML = items
-    .map((i) => `<span class="vital"><span class="v-label">${i.label}</span><span class="v-val">${i.value}</span></span>`)
+    .map((i) => {
+      if (i.key === "speed" && multiSpeed) {
+        const title = modes.map((m) => `${cap(m.type)} ${m.value} ft`).join(" · ") + ` — click to ${showAllSpeeds ? "collapse" : "show all speeds"}`;
+        return `<span class="vital vital-btn" id="speedVital" title="${esc(title)}"><span class="v-label">Speed</span><span class="v-val">${esc(String(i.value))} <span class="v-caret">${showAllSpeeds ? "▴" : "▾"}</span></span></span>`;
+      }
+      return `<span class="vital"><span class="v-label">${i.label}</span><span class="v-val">${i.value}</span></span>`;
+    })
     .join("");
+  if (multiSpeed) {
+    const el = document.getElementById("speedVital");
+    if (el) el.onclick = () => { showAllSpeeds = !showAllSpeeds; try { localStorage.setItem("showAllSpeeds", showAllSpeeds ? "1" : "0"); } catch { /* ignore */ } renderVitals(); };
+  }
 }
 
 // Conditions: chips you tap to toggle. Active ones sync to D&D Beyond and auto-apply their roll
@@ -2356,7 +2387,7 @@ $("keysBtn").onclick = async () => {
   await window.api.copyText(block).catch(() => {});
   setStatus(`🔑 Read ${k.readKey}${k.writeKey ? ` · Write ${k.writeKey}` : " · (read-only)"} — copied to clipboard`);
 };
-$("removeTrainerBtn").onclick = () => removeCurrentTrainer();
+$("removeTrainerBtn").onclick = () => removeCurrent();
 $("deleteTrainerBtn").onclick = () => deleteCurrentTrainer();
 
 // ---- Hit points ----
@@ -2443,6 +2474,26 @@ async function afterTrainerGone(readKey?: string) {
   $("sheet").hidden = true;
   const stillHave = await refreshPoke5eTrainers(true);
   if (stillHave && pickerCharId) { didAutoLoad = false; load(); }
+}
+
+// "Remove" is context-aware: on a Pokémon it removes that Pokémon from the trainer; on the trainer
+// it forgets the trainer from your list.
+function removeCurrent(): Promise<void> {
+  return activeSource === "poke5e" && activeRef.startsWith("pmon:") ? removeCurrentPokemon() : removeCurrentTrainer();
+}
+
+// Remove the selected Pokémon from the trainer (permanent on poke5e; main shows a confirm dialog).
+async function removeCurrentPokemon() {
+  const pid = pmonId(activeRef);
+  if (!pid) return;
+  const r = await window.api.poke5eRemovePokemon(Number(pid)).catch(() => null);
+  if (!r || r.canceled) return;
+  if (!r.ok) { setStatus(r.error || "Couldn't remove the Pokémon", true); return; }
+  setStatus("Pokémon removed from the trainer ✓");
+  gmRosterCache = null; // force a team re-fetch so the roster switcher drops it
+  const trainerRef = activeRefTrainerKey() || pickerCharId; // fall back to the loaded trainer
+  if (trainerRef) await switchTo(trainerRef);
+  else { model = null; $("sheet").hidden = true; }
 }
 
 // "Remove" — forget the loaded trainer from your list only (stays in poke5e; re-add with its read key).

@@ -259,6 +259,13 @@ export async function addPokemonToTeam(writeKey: string, e: AddPokemonSpecies, l
   return true;
 }
 
+/** Permanently remove one Pokémon from a trainer (poke5e's `remove_pokemon`). Needs the trainer's
+ *  write key; `id` is the Pokémon row id. Irreversible on poke5e. */
+export async function removePokemon(writeKey: string, id: number): Promise<boolean> {
+  await poke5eRpc("remove_pokemon", { _write_key: writeKey, _id: id });
+  return true;
+}
+
 /** The trainer's feats/abilities (name + description). */
 export async function fetchTrainerFeats(readKey: string): Promise<{ name: string; description: string }[]> {
   const rows = await rpc("get_trainer_feats", { _read_key: readKey }).catch(() => []);

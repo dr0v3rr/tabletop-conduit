@@ -9,6 +9,16 @@ carries one artifact per platform/architecture plus SHA-256 checksums.
 
 ---
 
+## v0.2.12 — correct Pokémon speeds
+
+- **Speed fix** — a loaded Pokémon's speed read a nonexistent row field and always showed 30 ft.
+  It now comes from the species (validated across all 1,151; ~65% were wrong). Snivy 25, Diglett 20
+  (burrowing), Magnemite 20 (hover), Magikarp 5.
+- **Multiple speeds** — the Speed vital is clickable when a creature has more than one movement mode
+  (walking/climbing/swimming/flying/hover/burrowing); it expands to the full breakdown. Persisted.
+- **Per-Pokémon removal** — selecting a Pokémon hides **Delete** (trainer-only) and makes **Remove**
+  remove that Pokémon from the trainer (`remove_pokemon`, confirmation, owner-only).
+
 ## v0.2.11 — bag management + trainer list
 
 - **＋ Add item** — add a standard item to a poke5e bag you own (searchable catalogue, creates the

@@ -78,6 +78,11 @@ h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: v
 .vital { display: inline-flex; flex-direction: column; align-items: center; min-width: 46px; padding: 3px 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
 .vital .v-label { font-size: 9px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
 .vital .v-val { font-size: 15px; font-weight: 700; color: var(--ink); font-variant-numeric: tabular-nums; line-height: 1.1; }
+/* Speed vital is clickable when a creature has multiple movement modes (walking/swim/fly/…). */
+.vital.vital-btn { cursor: pointer; }
+.vital.vital-btn:hover { border-color: var(--accent2); }
+.vital.vital-btn .v-val { font-size: 13px; white-space: nowrap; }
+.vital.vital-btn .v-caret { font-size: 9px; font-weight: 400; opacity: .55; }
 .conditions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 2px 0 6px; }
 .cond-active { display: inline-flex; flex-wrap: wrap; gap: 4px; }
 .cond-chip { background: #b5432f; border: 1px solid #b5432f; color: #fff; border-radius: 20px; padding: 2px 8px; font-size: 11px; display: inline-flex; align-items: center; gap: 4px; }

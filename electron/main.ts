@@ -13,7 +13,7 @@ import { buildSendExpression } from "../src/roll20/inject.js";
 import { displayCard } from "../src/roll20/format.js";
 import { r20TokenExpr } from "../src/roll20/token.js";
 import { ddbSlotsExpr, ddbHitDiceExpr, ddbInventoryExpr, ddbFetchCharExpr } from "../src/ddb/inject.js";
-import { extractReadKey, fetchTrainer, trainerToRollModel, trainerExtras, buildInventory, fetchTrainerFeats, updateTrainerHp, updatePokemonHp, updateMovePp, updateInventoryItem, addInventoryItem, fetchItemsCatalog, addPokemonToTeam, deleteTrainer, setPoke5eCredentials, getPoke5eCredentials } from "../src/poke5e/source.js";
+import { extractReadKey, fetchTrainer, trainerToRollModel, trainerExtras, buildInventory, fetchTrainerFeats, updateTrainerHp, updatePokemonHp, updateMovePp, updateInventoryItem, addInventoryItem, fetchItemsCatalog, addPokemonToTeam, removePokemon, deleteTrainer, setPoke5eCredentials, getPoke5eCredentials } from "../src/poke5e/source.js";
 import { buildPokedex } from "../src/poke5e/pokedex.js";
 import type { DexEntry } from "../src/poke5e/pokedex.js";
 import { isNewer } from "../src/update/version.js";
@@ -805,7 +805,9 @@ ipcMain.handle("load-poke5e-pokemon", async (_e, pokemonId: number) => {
       fetchPokemonFeats(Number(pokemonId)),
     ]);
     const featNames = (Array.isArray(pfeats) ? pfeats : []).map((f: any) => f.name).filter(Boolean);
-    const { model, hp, spellcasting } = pokemonToCharacter(pk, moveset, moves, featNames);
+    // Speed lives on the SPECIES (pokemon.json), not the pokémon row — look it up from the dex.
+    const speciesSpeeds = (await ensurePokedex().catch(() => [] as DexEntry[])).find((e) => e.id === String(pk.species))?.speedModes ?? [];
+    const { model, hp, spellcasting } = pokemonToCharacter(pk, moveset, moves, featNames, speciesSpeeds);
     current = { data: {} as CharacterData, name: model.name, id: `pmon:${pokemonId}`, model };
     // A Pokémon's "feats" section = its passive abilities (Blaze, …) plus any Pokémon feats.
     const feats = [...abilities, ...pfeats];
@@ -1554,6 +1556,38 @@ ipcMain.handle("poke5e-delete-trainer", async () => {
     await forgetTrainerInPane(readKey);
     poke5eCtx = null;
     return { ok: true, deleted: true, readKey };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+});
+
+// Permanently remove ONE Pokémon from the loaded trainer (poke5e's `remove_pokemon`, write-key
+// gated), behind a confirmation dialog. Refetches the team so the roster drops it.
+ipcMain.handle("poke5e-remove-pokemon", async (_e, pokemonId: number) => {
+  if (!poke5eCtx?.writeKey) return { ok: false, error: "This trainer is read-only (no write key) — remove Pokémon on poke5e." };
+  const pid = Number(pokemonId);
+  const pk = poke5eCtx.team.get(pid);
+  if (!pk) return { ok: false, error: "That Pokémon isn't on this trainer." };
+  const name = (pk.nickname && String(pk.nickname).trim()) || pk.species || "this Pokémon";
+  const trainerName = poke5eCtx.trainerRow?.name || "the trainer";
+  const { response } = await dialog.showMessageBox(win, {
+    type: "warning",
+    title: "Remove Pokémon",
+    message: `Remove ${name} from ${trainerName}?`,
+    detail: "This permanently removes the Pokémon from the trainer on poke5e. This cannot be undone.",
+    buttons: ["Cancel", "Remove permanently"],
+    defaultId: 0,
+    cancelId: 0,
+  });
+  if (response !== 1) return { ok: true, canceled: true };
+  try {
+    await removePokemon(poke5eCtx.writeKey, pid);
+    // Re-pull the team so the roster reflects the removal (fall back to a local drop on failure).
+    const team = await fetchPokemon(poke5eCtx.trainerId).catch(() => null);
+    if (Array.isArray(team)) poke5eCtx.team = new Map(team.map((p: any) => [p.id, p]));
+    else poke5eCtx.team.delete(pid);
+    schedulePoke5ePaneRefresh();
+    return { ok: true, removed: true, pokemonId: pid };
   } catch (err) {
     return { ok: false, error: String(err) };
   }

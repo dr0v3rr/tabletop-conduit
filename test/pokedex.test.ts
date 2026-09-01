@@ -38,6 +38,7 @@ describe("pokedex normalizeSpecies", () => {
     expect(e.abilities.find((a) => a.name === "Synchronize")!.description).toContain("Passes status conditions");
     expect(e.abilities.find((a) => a.name === "Trace")!.description).toBe(""); // missing text → empty, not undefined
     expect(e.speed).toBe("25 ft");
+    expect(e.speedModes).toEqual([{ type: "walking", value: 25 }]);
   });
   it("resolves level-up moves with wording + level labels, and flags sleep moves", () => {
     const hyp = e.moves.find((m) => m.id === "hypnosis")!;

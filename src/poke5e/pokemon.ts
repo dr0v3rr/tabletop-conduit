@@ -9,6 +9,7 @@ import { poke5eRpc } from "./source";
 import { abilityIds, moveAbilityMods } from "./abilities-engine";
 import type { AbilityMod } from "./abilities-engine";
 import { moveFeatMods } from "./feats-engine";
+import { primarySpeed, type SpeedMode } from "./speed";
 
 // poke5e status conditions that alter the Pokémon's OWN move rolls (from /reference/status-conditions).
 // Rendered/applied via the existing ability-mod machinery (cond:{status} is evaluated live against the
@@ -260,6 +261,7 @@ export function pokemonToCharacter(
   moveset: any[],
   moves: Record<string, any>,
   featNames: string[] = [], // the Pokémon's feat names (from get_pokemon_feats) — for the feats engine
+  speciesSpeeds: SpeedMode[] = [], // movement modes from the SPECIES (pokemon.json); poke5e stores no speed on the pokémon row
 ): { model: RollModel; hp: { current: number; max: number; temp: number; removed: number }; spellcasting: any } {
   const level = Number(pk.level) || 1;
   const profBonus = profFor(level);
@@ -292,7 +294,8 @@ export function pokemonToCharacter(
     skills,
     passives: { perception: passive("perception"), investigation: passive("investigation"), insight: passive("insight") },
     initiative: abilities.DEX.mod,
-    speed: Number(pk.speed_walking) || 30,
+    speed: primarySpeed(speciesSpeeds),
+    speeds: speciesSpeeds.length ? speciesSpeeds : undefined,
     conditional: [],
   };
 
