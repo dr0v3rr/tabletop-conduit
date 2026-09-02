@@ -78,9 +78,11 @@ let abilitiesCache: Record<string, { name: string; description: string }> | null
 async function abilitiesMap(): Promise<Record<string, { name: string; description: string }>> {
   if (abilitiesCache) return abilitiesCache;
   try {
-    const r = await fetch("https://poke5e.app/abilities.json");
+    // The abilities reference lives at /data/abilities.json with an `items` array — NOT /abilities.json
+    // (404) with an `abilities` key, which is what this used to request (leaving every ability blank).
+    const r = await fetch("https://poke5e.app/data/abilities.json");
     const j: any = await r.json();
-    const arr: any[] = j.abilities || j.values || [];
+    const arr: any[] = j.items || j.abilities || j.values || [];
     const map: Record<string, { name: string; description: string }> = {};
     for (const a of arr) if (a.id) map[a.id] = { name: a.name, description: a.description || "" };
     abilitiesCache = map;
@@ -98,7 +100,13 @@ export async function resolveAbilities(pk: any): Promise<{ name: string; descrip
   return list.map((a) => {
     const id = typeof a === "string" ? a : a.referenceId || a.id;
     const r = ref[id];
-    return { name: r?.name || String(id), description: r?.description || "" };
+    // Prefer the authoritative reference (proper name + text); fall back to any name/description the
+    // row itself carries, then to the raw id — so a missing reference never blanks the ability out.
+    const inline = typeof a === "object" && a ? a : null;
+    return {
+      name: r?.name || inline?.name || String(id),
+      description: r?.description || inline?.description || "",
+    };
   });
 }
 

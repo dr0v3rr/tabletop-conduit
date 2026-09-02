@@ -9,6 +9,13 @@ carries one artifact per platform/architecture plus SHA-256 checksums.
 
 ---
 
+## v0.2.13 — ability descriptions
+
+- **Ability text fix** — a loaded Pokémon's abilities showed only a bare lowercased id (e.g.
+  `synchronize`) with no text. The reference was fetched from a 404 URL; it now loads from
+  `/data/abilities.json`, so abilities render with their proper name + description. Present since the
+  first release (the Pokédex was unaffected — it reads ability text embedded in the species data).
+
 ## v0.2.12 — correct Pokémon speeds
 
 - **Speed fix** — a loaded Pokémon's speed read a nonexistent row field and always showed 30 ft.
