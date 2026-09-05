@@ -474,6 +474,49 @@ body.dex-open #loader, body.dex-open #sheet { display: none !important; }
 .ip-hit .label { flex: 1; }
 .ip-hit .item-note { margin-left: auto; font-size: 10.5px; color: var(--muted); }
 .empty-note { font-size: 12px; color: var(--muted); padding: 6px 2px; }
+/* Evolution bar: the Evolve button + the pending-ASI reminder banner. */
+/* NB: the `hidden` attribute must win over these flex rules, or an empty bar/banner shows. */
+.evo-bar { display: none; flex-wrap: wrap; align-items: center; gap: 6px; margin: 4px 0 2px; }
+.evo-bar:not([hidden]) { display: flex; }
+.evolve-btn { font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; color: var(--ink); background: var(--panel); border: 1px solid var(--accent2); border-radius: 8px; padding: 4px 10px; }
+.evolve-btn:hover { border-color: var(--accent); background: color-mix(in srgb, var(--accent2) 14%, var(--panel)); }
+.asi-banner { display: none; align-items: center; gap: 8px; flex: 1 1 auto; min-width: 180px; font-size: 11.5px; color: var(--ink); background: color-mix(in srgb, var(--accent2) 12%, var(--panel)); border: 1px solid var(--accent2); border-radius: 8px; padding: 4px 8px; }
+.asi-banner:not([hidden]) { display: flex; }
+.asi-banner .asi-txt { flex: 1; }
+.asi-banner .asi-x { font: inherit; font-size: 10.5px; cursor: pointer; color: var(--muted); background: transparent; border: 1px solid var(--line); border-radius: 6px; padding: 2px 7px; white-space: nowrap; }
+.asi-banner .asi-x:hover { color: var(--ink); border-color: var(--accent2); }
+/* Evolve wizard (reuses the .catch-overlay / .catch-modal shell) */
+.evo-modal { width: 420px; }
+.ew-into { font-size: 13px; margin: 2px 0 8px; }
+.ew-into .ew-cond, .ew-tgt .ew-cond { color: var(--muted); font-size: 11px; }
+.ew-targets { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+.ew-tgt { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; text-align: left; font: inherit; cursor: pointer; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 9px; }
+.ew-tgt.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent2) 16%, var(--panel)); }
+.ew-stats { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 4px 0 10px; padding: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+.ew-stat { display: flex; gap: 8px; font-size: 12px; }
+.ew-stat .ew-k { color: var(--muted); }
+.ew-v.chg { color: var(--accent); font-weight: 600; }
+.ew-hp { width: 62px; background: var(--bg); border: 1px solid var(--line); color: var(--ink); border-radius: 6px; font: inherit; padding: 1px 5px; }
+.ew-hp-row .ew-v { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.ew-hpbtn { font: inherit; font-size: 11px; cursor: pointer; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 1px 7px; }
+.ew-hpbtn:hover { border-color: var(--accent2); }
+.ew-hp-note { font-size: 10.5px; color: var(--muted); margin: 2px 0 6px; }
+.ew-hp-note.err { color: var(--accent); }
+.ew-asi-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12.5px; margin-bottom: 4px; }
+.ew-feat { font-size: 11px; color: var(--muted); display: inline-flex; gap: 4px; align-items: center; cursor: pointer; }
+.ew-remaining { font-size: 11px; color: var(--muted); margin-bottom: 6px; }
+.ew-remaining.over { color: var(--accent); }
+.ew-alloc { display: flex; flex-direction: column; gap: 4px; }
+.ew-row { display: flex; align-items: center; gap: 8px; }
+.ew-row .ew-ab { width: 34px; font-size: 11px; font-weight: 600; color: var(--muted); }
+.ew-row .ew-score { min-width: 24px; text-align: center; font-variant-numeric: tabular-nums; font-weight: 700; }
+.ew-row .ew-delta { color: var(--accent); font-size: 11px; }
+.ew-step { width: 24px; height: 24px; font: inherit; cursor: pointer; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+.ew-step:disabled { opacity: .4; cursor: default; }
+.ew-note { font-size: 11.5px; color: var(--muted); }
+.ew-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+.ew-go { border-color: var(--accent2); font-weight: 600; }
+.ew-go:disabled { opacity: .5; cursor: default; }
 .cm-actions { display: flex; gap: 7px; margin-top: 11px; flex-wrap: wrap; }
 .dd-btn.good { background: var(--good); border-color: var(--good); color: #0f2a14; font-weight: 700; }
 .cm-actions .result, #cmResult.result { }

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { addInventoryItem, fetchItemsCatalog, removePokemon } from '../src/poke5e/source';
+import { addInventoryItem, fetchItemsCatalog, removePokemon, evolvePokemon } from '../src/poke5e/source';
 
 afterEach(() => { vi.unstubAllGlobals(); });
 
@@ -42,6 +42,30 @@ describe('poke5e removePokemon', () => {
     await removePokemon('WKEY', 42);
     expect(url).toContain('/rpc/remove_pokemon');
     expect(body).toEqual({ _write_key: 'WKEY', _id: 42 });
+  });
+});
+
+describe('poke5e evolvePokemon (in-place species change)', () => {
+  it('updates the SAME row: new species + types, everything else preserved from the row', async () => {
+    let url = ''; let body: any = null;
+    vi.stubGlobal('fetch', vi.fn(async (u: string, init: any) => {
+      url = u; body = JSON.parse(init.body);
+      return { ok: true, json: async () => 1 } as any;
+    }));
+    const pk = { id: 42, species: 'bulbasaur', type: ['grass', 'poison'], nickname: 'Magnum', level: 6, hp_cur: 20, hp_max: 20, strength: 12, dexterity: 12 };
+    // overrides = the re-stat the evolve wizard produces (species/type/ac/hp + post-ASI scores)
+    await evolvePokemon('WKEY', pk, { _species: 'ivysaur', _type: ['grass', 'poison'], _ac: 13, _hp_max: 27, _hp_cur: 27, _constitution: 14 });
+    expect(url).toContain('/rpc/update_pokemon');
+    expect(body._write_key).toBe('WKEY');
+    expect(body._id).toBe(42); // same row — not a new Pokémon
+    expect(body._species).toBe('ivysaur'); // evolved
+    expect(body._ac).toBe(13);
+    expect(body._hp_max).toBe(27);
+    expect(body._constitution).toBe(14); // ASI folded in
+    // fields not in overrides carry through from the row
+    expect(body._nickname).toBe('Magnum');
+    expect(body._level).toBe(6);
+    expect(body._strength).toBe(12);
   });
 });
 

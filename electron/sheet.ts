@@ -60,6 +60,8 @@ declare global {
       poke5eAddTeam(speciesId: string, level: number): Promise<{ ok: boolean; error?: string }>;
       poke5eRemoveTrainer(): Promise<{ ok: boolean; readKey?: string; error?: string }>;
       poke5eRemovePokemon(pokemonId: number): Promise<{ ok: boolean; removed?: boolean; canceled?: boolean; pokemonId?: number; error?: string }>;
+      poke5eEvolve(pokemonId: number, targetSpeciesId: string, alloc: { abilities: Record<string, number>; hpMax: number; tookFeat: boolean }): Promise<{ ok: boolean; evolved?: boolean; canceled?: boolean; toName?: string; asi?: number; tookFeat?: boolean; error?: string }>;
+      poke5eEvoDismiss(pokemonId: number): Promise<{ ok: boolean }>;
       poke5eDeleteTrainer(): Promise<{ ok: boolean; deleted?: boolean; canceled?: boolean; readKey?: string; error?: string }>;
       poke5eReloadPane(): Promise<{ ok: boolean }>;
       poke5eHiddenGet(): Promise<{ ids: string[] }>;
@@ -117,6 +119,15 @@ let templateStyle: "sheet" | "default" = "default"; // 'sheet' → prettier D&D-
 let activeSource: "ddb" | "poke5e" | "monster" = "ddb"; // which character-sheet source the splash selected
 // Persisted preference: when a creature has multiple movement modes, show them all in the Speed vital.
 let showAllSpeeds = (() => { try { return localStorage.getItem("showAllSpeeds") === "1"; } catch { return false; } })();
+// Evolution: eligible targets (with the evolved form's re-stat preview), the current form's stats,
+// any pending ASI reminder, and the in-flight evolve-wizard allocation.
+type EvoTarget = { id: string; name: string; level: number | null; items: string[]; asi: number; gender: string | null; cond: string; ac: number | null; hitDie: string | null; types: string[] };
+let evolveTargets: EvoTarget[] = [];
+let evolveFrom: { ac: number | null; hitDie: string | null; hpMax: number | null } | null = null;
+let asiPending: { toSpecies: string; asi: number; remaining: number; feat?: boolean } | null = null;
+let evoWiz: { targetId: string; deltas: Record<string, number>; hpMax: number; tookFeat: boolean } | null = null;
+let evoHpRoll: { text: string; err: boolean } | null = null; // last HP roll/avg outcome, shown in the wizard
+let pokeTrainerName = ""; // the owning trainer's name — the roll speaker when no token is bound
 let writable = true; // false for public/others' sheets & monsters — edits stay local, no write-back
 // GM-mode roster. For DDB it's the campaign party; for poke5e it's either a single trainer's team,
 // or (GM view) every remembered trainer grouped — `kind`/`group`/`writable` drive the grouped render.
@@ -430,6 +441,10 @@ function applyCharacter(res: any, ref: string) {
   feats = res.feats || [];
   passives = res.passives || [];
   pokeMeta = res.poke || null;
+  evolveTargets = res.evolveTargets || [];
+  evolveFrom = res.evolveFrom || null;
+  asiPending = res.asiPending || null;
+  pokeTrainerName = res.trainerName || "";
   activeConditions = new Map(((res.conditions as any[]) || []).map((c: any) => [c.id, c.level ?? null]));
   acValue = typeof res.ac === "number" ? res.ac : null; // non-DDB sources send AC directly
   hpUndo = null;
@@ -678,6 +693,7 @@ function render() {
   rmBtn.title = isPokemon
     ? "Permanently remove this Pokémon from the trainer on poke5e"
     : "Remove this trainer from your list (stays in poke5e; re-add with its read key)";
+  renderEvoBar(isPokemon && writable);
   ($("reloadChar") as HTMLElement).hidden = activeSource === "monster"; // monsters reload via search, not here
   if (!writable) ($("ddbStatus") as HTMLElement).hidden = true; // no source sync to show
   if (pokeMeta) renderPokeChips();
@@ -909,7 +925,7 @@ async function toggleBindToken() {
   showBindPicker(res.tokens);
 }
 
-function showBindPicker(tokens: { id: string; name: string; bar1: string; bar1max: string; x: number; y: number }[]) {
+function showBindPicker(tokens: { id: string; name: string; charName?: string | null; bar1: string; bar1max: string; x: number; y: number }[]) {
   let el = document.getElementById("bindPicker");
   if (!el) { el = document.createElement("div"); el.id = "bindPicker"; el.className = "bind-picker"; el.hidden = true; document.body.appendChild(el); }
   const myName = (model?.name || "").toLowerCase();
@@ -919,7 +935,7 @@ function showBindPicker(tokens: { id: string; name: string; bar1: string; bar1ma
   el.innerHTML = sorted
     .map((tk) => {
       const hpStr = tk.bar1 != null && tk.bar1 !== "" ? `${esc(tk.bar1)}${tk.bar1max ? "/" + esc(tk.bar1max) : ""}` : "—";
-      return `<div class="bp-row" data-id="${esc(tk.id)}" data-name="${esc(tk.name)}"><span class="bp-name">${esc(tk.name)}</span><span class="bp-meta">HP ${hpStr} · @${tk.x},${tk.y}</span></div>`;
+      return `<div class="bp-row" data-id="${esc(tk.id)}" data-name="${esc(tk.name)}" data-charname="${esc(tk.charName || "")}"><span class="bp-name">${esc(tk.name)}</span><span class="bp-meta">HP ${hpStr} · @${tk.x},${tk.y}</span></div>`;
     })
     .join("");
   const menu = el;
@@ -944,7 +960,7 @@ function showBindPicker(tokens: { id: string; name: string; bar1: string; bar1ma
   menu.hidden = false;
   menu.querySelectorAll<HTMLElement>(".bp-row").forEach((row) => {
     row.onclick = async () => {
-      boundToken = { id: row.dataset.id!, name: row.dataset.name! };
+      boundToken = { id: row.dataset.id!, name: row.dataset.name!, charName: row.dataset.charname || null };
       saveBinding(); // remember this binding for the character (survives restart / rename / map change)
       cleanup();
       renderBindToken();
@@ -974,14 +990,19 @@ function renderBindToken() {
 async function maybeSyncNameToRoll20() {
   if (activeSource !== "poke5e" || !boundToken || !model?.name) return;
   const pokeName = String(model.name).trim();
-  if (!pokeName || pokeName === boundToken.name) return; // already matches → nothing to do
+  // Sync if EITHER the token OR its represented character (the chat speaker, e.g. "002 - Ivysaur")
+  // differs from the poke5e name — not just the token, or a mismatched character never gets fixed.
+  const charName = boundToken.charName ? String(boundToken.charName).trim() : "";
+  if (!pokeName || (pokeName === boundToken.name && (!charName || pokeName === charName))) return;
+  const fromLabel = charName && charName !== boundToken.name ? `“${boundToken.name}” (character “${charName}”)` : `“${boundToken.name}”`;
   const ok = window.confirm(
-    `poke5e is the source of truth for names.\n\nRename this Roll20 token and its character from “${boundToken.name}” to “${pokeName}”?`,
+    `poke5e is the source of truth for names.\n\nRename this Roll20 token and its character from ${fromLabel} to “${pokeName}”?`,
   );
   if (!ok) return;
   const res = await window.api.r20RenameToken(boundToken.id, pokeName).catch(() => null);
   if (res?.ok) {
     boundToken.name = pokeName; // keep the binding + HP-by-name matching aligned to the new name
+    boundToken.charName = pokeName;
     saveBinding();
     renderBindToken();
     const changed = [res.token === true ? "token" : "", res.character === true ? "character" : ""].filter(Boolean);
@@ -1092,7 +1113,7 @@ async function hpWrite(removed: number, temp: number, prevR: number, prevT: numb
 
 // Show whether a matching Roll20 token is being kept in sync, next to the HP heading.
 let tokenSync: { ok?: boolean; found: number; bar?: string; linked?: boolean } | null = null;
-let boundToken: { id: string; name: string } | null = null; // a specific Roll20 token HP is bound to
+let boundToken: { id: string; name: string; charName?: string | null } | null = null; // a specific Roll20 token HP is bound to
 function updateHpMeta() {
   const el = $("hpMeta") as HTMLElement;
   const bits: string[] = [];
@@ -2388,6 +2409,7 @@ $("keysBtn").onclick = async () => {
   setStatus(`🔑 Read ${k.readKey}${k.writeKey ? ` · Write ${k.writeKey}` : " · (read-only)"} — copied to clipboard`);
 };
 $("removeTrainerBtn").onclick = () => removeCurrent();
+$("evolveBtn").onclick = () => openEvoWizard();
 $("deleteTrainerBtn").onclick = () => deleteCurrentTrainer();
 
 // ---- Hit points ----
@@ -2502,6 +2524,182 @@ async function removeCurrentTrainer() {
   if (!r?.ok) { setStatus(r?.error || "Couldn't remove trainer", true); return; }
   setStatus("Removed from your list (still in poke5e — re-add with its read key)");
   await afterTrainerGone(r.readKey);
+}
+
+// ── Evolution ─────────────────────────────────────────────────────────────
+// The Evolve button (eligible targets, owned Pokémon) + the pending-ASI reminder banner.
+function renderEvoBar(canEvolve: boolean) {
+  const bar = $("evoBar") as HTMLElement, btn = $("evolveBtn") as HTMLElement, banner = $("asiBanner") as HTMLElement;
+  const showBtn = canEvolve && evolveTargets.length > 0;
+  btn.hidden = !showBtn;
+  if (showBtn) btn.textContent = evolveTargets.length === 1 ? `✨ Evolve to ${evolveTargets[0]!.name}` : "✨ Evolve…";
+  if (asiPending) {
+    banner.hidden = false;
+    const txt = asiPending.feat
+      ? `✨ Evolved to ${esc(asiPending.toSpecies)} — add its +${asiPending.asi} ASI feat on poke5e.`
+      : `✨ Evolved to ${esc(asiPending.toSpecies)} — ${asiPending.remaining} of ${asiPending.asi} ASI to spend on poke5e (ability points or a feat).`;
+    banner.innerHTML = `<span class="asi-txt">${txt}</span><button id="asiDismiss" class="asi-x" title="Dismiss this reminder">Dismiss</button>`;
+    const d = document.getElementById("asiDismiss"); if (d) d.onclick = dismissAsi;
+  } else {
+    banner.hidden = true; banner.innerHTML = "";
+  }
+  bar.hidden = btn.hidden && banner.hidden;
+}
+
+async function dismissAsi() {
+  const pid = pmonId(activeRef); if (!pid) return;
+  await window.api.poke5eEvoDismiss(Number(pid)).catch(() => {});
+  asiPending = null;
+  renderEvoBar(activeSource === "poke5e" && activeRef.startsWith("pmon:") && writable);
+}
+
+// ── Evolve wizard (matches poke5e: pick target → re-stat AC/HP → spend the ASI → save in place) ──
+const EVO_ZERO = (): Record<string, number> => ({ STR: 0, DEX: 0, CON: 0, INT: 0, WIS: 0, CHA: 0 });
+
+function ensureEvoOverlay(): HTMLElement {
+  let ov = document.getElementById("evoWizard");
+  if (!ov) {
+    ov = document.createElement("div"); ov.id = "evoWizard"; ov.className = "catch-overlay";
+    ov.innerHTML = `<div class="catch-modal evo-modal" role="dialog" aria-modal="true" aria-label="Evolve"><button class="cm-x" id="ewX" title="Close">✕</button><div id="ewBody"></div></div>`;
+    document.body.appendChild(ov);
+    ov.addEventListener("click", (e) => { if (e.target === ov) closeEvoWizard(); });
+    (ov.querySelector("#ewX") as HTMLElement).onclick = closeEvoWizard;
+    document.addEventListener("keydown", (e) => { if ((e as KeyboardEvent).key === "Escape" && ov!.classList.contains("open")) closeEvoWizard(); });
+  }
+  return ov;
+}
+function closeEvoWizard() { document.getElementById("evoWizard")?.classList.remove("open"); }
+
+const curMaxHp = () => evolveFrom?.hpMax ?? hp?.max ?? 0;
+
+function openEvoWizard() {
+  const first = evolveTargets[0];
+  if (!first) return;
+  evoWiz = { targetId: first.id, deltas: EVO_ZERO(), hpMax: curMaxHp(), tookFeat: false }; // HP carries over by default
+  evoHpRoll = null;
+  ensureEvoOverlay().classList.add("open");
+  renderEvoWizard();
+}
+
+// The Roll20 speaker for a poke5e HP roll: the bound token if one is bound (v0.2.5 renames it to the
+// poke5e name), otherwise the owning trainer — both are real Roll20 characters, so the roll attributes
+// correctly and we can read the total back. Falls back to the Pokémon's own name only as a last resort.
+function pokeRollSpeaker(): string { return boundToken?.name || pokeTrainerName || model?.name || ""; }
+
+// Roll a level's HP on Roll20 (real dice on the VTT), read the total back, and return it. Dedicated
+// path — NOT sendRoll — so combat toggles / the one-off modifier never leak into an HP roll.
+async function rollHpOnVtt(die: number, mod: number, name: string): Promise<number | null> {
+  const speaker = pokeRollSpeaker();
+  const before = new Set((await window.api.roll20Scrape().catch(() => [])).map((r: any) => r.id));
+  const modStr = mod ? (mod > 0 ? ` + ${mod}` : ` - ${Math.abs(mod)}`) : "";
+  const card = `&{template:default} {{name=${name}}} {{HP roll=[[1d${die}${modStr}]]}}`;
+  const inj = await window.api.roll20Say(card, speaker || undefined).catch(() => ({ ok: false }));
+  if (!inj?.ok) return null;
+  const sp = speaker.toLowerCase();
+  for (let i = 0; i < 12; i++) { // up to ~6s for Roll20 to render the result
+    await new Promise((r) => setTimeout(r, 500));
+    const recs = await window.api.roll20Scrape().catch(() => []);
+    const fresh = recs.filter((r: any) => !before.has(r.id) && r.total != null && !Number.isNaN(Number(r.total)));
+    if (!fresh.length) continue;
+    // Prefer the roll attributed to our speaker; match loosely because Roll20 shows the CHARACTER the
+    // token represents (e.g. "002 - Ivysaur"), which may only contain our speaker name ("Ivysaur").
+    const mine = fresh.filter((r: any) => {
+      const c = String(r.character || "").trim().toLowerCase();
+      return (!!sp && (c === sp || c.includes(sp) || sp.includes(c))) || /\bhp\b/i.test(String(r.name || ""));
+    });
+    const pick = (mine.length ? mine : fresh)[(mine.length ? mine : fresh).length - 1];
+    const t = Number(pick.total);
+    return Number.isFinite(t) ? t : null;
+  }
+  return null; // posted, but couldn't read the total back
+}
+
+function evoStatRow(label: string, from: unknown, to: unknown): string {
+  const f = from ?? "—", t = to ?? "—";
+  const changed = String(f) !== String(t);
+  return `<div class="ew-stat"><span class="ew-k">${label}</span><span class="ew-v${changed ? " chg" : ""}">${esc(String(f))} → ${esc(String(t))}</span></div>`;
+}
+
+function stepAsi(ab: string, dir: number, asi: number) {
+  if (!evoWiz) return;
+  const used = ABILITIES.reduce((s, a) => s + (evoWiz!.deltas[a] || 0), 0);
+  const cur = model?.abilities?.[ab as Ability]?.score ?? 10;
+  let d = evoWiz.deltas[ab] || 0;
+  if (dir > 0) { if (used >= asi || cur + d >= 22) return; d++; } // poke5e caps a score at 22
+  else { if (d <= 0) return; d--; }
+  evoWiz.deltas[ab] = d;
+  renderEvoWizard();
+}
+
+function renderEvoWizard() {
+  const body = document.getElementById("ewBody");
+  if (!body || !evoWiz) return;
+  const t = evolveTargets.find((x) => x.id === evoWiz!.targetId) || evolveTargets[0];
+  if (!t) return;
+  const asi = t.asi || 0;
+  const used = ABILITIES.reduce((s, a) => s + (evoWiz!.deltas[a] || 0), 0);
+  const remaining = asi - used;
+  let h = `<div class="cm-head"><div class="cm-name">Evolve ${esc(model?.name || "Pokémon")}</div></div>`;
+  if (evolveTargets.length > 1) {
+    h += `<div class="ew-targets">` + evolveTargets.map((x) =>
+      `<button class="ew-tgt${x.id === t.id ? " on" : ""}" data-tid="${esc(x.id)}"><span>${esc(x.name)}</span>${x.cond ? `<span class="ew-cond">${esc(x.cond)}</span>` : ""}</button>`).join("") + `</div>`;
+  } else {
+    h += `<div class="ew-into">→ <b>${esc(t.name)}</b>${t.cond ? ` <span class="ew-cond">${esc(t.cond)}</span>` : ""}</div>`;
+  }
+  const newDie = parseInt(String(t.hitDie || "").replace(/\D/g, ""), 10) || 0;
+  const conMod = model?.abilities?.CON?.mod ?? 0;
+  const avgGain = newDie ? Math.max(1, Math.ceil(0.5 + newDie / 2) + conMod) : 0; // one level's HP at the new die
+  h += `<div class="ew-stats">${evoStatRow("AC", evolveFrom?.ac, t.ac)}${evoStatRow("Hit die", evolveFrom?.hitDie, t.hitDie)}`
+    + `<div class="ew-stat ew-hp-row"><span class="ew-k">Max HP</span><span class="ew-v"><input id="ewHp" class="ew-hp" type="number" min="1" value="${evoWiz.hpMax}">`
+    + (newDie ? ` <button class="ew-hpbtn" id="ewRoll" title="Leveled up too? Roll 1${t.hitDie}+CON and add it">🎲 Roll</button><button class="ew-hpbtn" id="ewAvg" title="Add the average, ${avgGain}">+avg</button>` : "")
+    + `</span></div></div>`
+    + (evoHpRoll
+      ? `<div class="ew-hp-note${evoHpRoll.err ? " err" : ""}">${esc(evoHpRoll.text)}</div>`
+      : `<div class="ew-hp-note">Evolving keeps current HP (${curMaxHp()}). Use Roll / +avg only if this evolution came with a level-up.</div>`);
+  if (asi > 0) {
+    h += `<div class="ew-asi"><div class="ew-asi-head"><span>Ability Score Increase <b>+${asi}</b></span><label class="ew-feat"><input type="checkbox" id="ewFeat" ${evoWiz.tookFeat ? "checked" : ""}> take a feat instead</label></div>`;
+    if (evoWiz.tookFeat) {
+      h += `<div class="ew-note">Add the feat on poke5e — Conduit will leave a reminder.</div>`;
+    } else {
+      h += `<div class="ew-remaining${remaining < 0 ? " over" : ""}">${remaining} point${remaining === 1 ? "" : "s"} left</div>`;
+      h += `<div class="ew-alloc">` + ABILITIES.map((a) => {
+        const cur = model?.abilities?.[a]?.score ?? 10;
+        const d = evoWiz!.deltas[a] || 0;
+        return `<div class="ew-row"><span class="ew-ab">${a}</span><button class="ew-step" data-ab="${a}" data-dir="-1" ${d <= 0 ? "disabled" : ""}>−</button><span class="ew-score">${cur + d}</span><button class="ew-step" data-ab="${a}" data-dir="1" ${remaining <= 0 || cur + d >= 22 ? "disabled" : ""}>+</button>${d ? `<span class="ew-delta">+${d}</span>` : ""}</div>`;
+      }).join("") + `</div>`;
+    }
+  }
+  const canGo = evoWiz.tookFeat || asi === 0 || remaining === 0;
+  h += `<div class="ew-actions"><button class="mini-btn" id="ewCancel">Cancel</button><button class="mini-btn ew-go" id="ewGo" ${canGo ? "" : "disabled"}>Evolve into ${esc(t.name)}</button></div>`;
+  body.innerHTML = h;
+  body.querySelectorAll<HTMLElement>(".ew-tgt").forEach((b) => { b.onclick = () => { const nt = evolveTargets.find((x) => x.id === b.dataset.tid); if (nt) { evoWiz = { targetId: nt.id, deltas: EVO_ZERO(), hpMax: curMaxHp(), tookFeat: false }; evoHpRoll = null; renderEvoWizard(); } }; });
+  body.querySelectorAll<HTMLElement>(".ew-step").forEach((b) => { b.onclick = () => stepAsi(b.dataset.ab!, Number(b.dataset.dir), asi); });
+  const feat = document.getElementById("ewFeat") as HTMLInputElement | null; if (feat) feat.onchange = () => { evoWiz!.tookFeat = feat.checked; renderEvoWizard(); };
+  const hpIn = document.getElementById("ewHp") as HTMLInputElement | null; if (hpIn) hpIn.onchange = () => { evoWiz!.hpMax = Math.max(1, Math.round(Number(hpIn.value) || evoWiz!.hpMax)); };
+  const roll = document.getElementById("ewRoll") as HTMLButtonElement | null;
+  if (roll) roll.onclick = async () => {
+    roll.disabled = true; roll.textContent = "🎲 Rolling…";
+    const total = await rollHpOnVtt(newDie, conMod, `${t.name} HP (evolution)`);
+    if (total == null) { evoHpRoll = { text: "Couldn't roll on Roll20 — open a game, or use +avg.", err: true }; }
+    else { evoWiz!.hpMax = curMaxHp() + total; evoHpRoll = { text: `🎲 ${pokeRollSpeaker() || "Rolled"} rolled ${total} (1d${newDie}${conMod ? ` + ${conMod}` : ""}) on Roll20 → Max HP ${evoWiz!.hpMax}`, err: false }; }
+    renderEvoWizard();
+  };
+  const avg = document.getElementById("ewAvg"); if (avg) avg.onclick = () => { evoWiz!.hpMax = curMaxHp() + avgGain; evoHpRoll = { text: `Average +${avgGain} (⌈½+d${newDie}/2⌉ + CON) → Max HP ${evoWiz!.hpMax}`, err: false }; renderEvoWizard(); };
+  (document.getElementById("ewCancel") as HTMLElement).onclick = closeEvoWizard;
+  (document.getElementById("ewGo") as HTMLElement).onclick = () => submitEvolve(t);
+}
+
+async function submitEvolve(t: EvoTarget) {
+  if (!evoWiz) return;
+  const pid = pmonId(activeRef); if (!pid) return;
+  const abilities: Record<string, number> = {};
+  for (const a of ABILITIES) abilities[a] = (model?.abilities?.[a]?.score ?? 10) + (evoWiz.tookFeat ? 0 : (evoWiz.deltas[a] || 0));
+  const r = await window.api.poke5eEvolve(Number(pid), t.id, { abilities, hpMax: evoWiz.hpMax, tookFeat: evoWiz.tookFeat }).catch(() => null);
+  if (!r || r.canceled) return;
+  if (!r.ok) { setStatus(r.error || "Couldn't evolve", true); return; }
+  closeEvoWizard();
+  setStatus(`Evolved into ${r.toName} ✓${r.tookFeat ? " — add its feat on poke5e" : r.asi ? ` — +${r.asi} ASI applied` : ""}`);
+  await reloadCurrent(); // same roster entry — now the evolved, re-statted form
 }
 
 // Permanently delete the loaded poke5e trainer (main shows a confirm dialog first).

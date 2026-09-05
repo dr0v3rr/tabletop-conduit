@@ -270,6 +270,7 @@ export function pokemonToCharacter(
   moves: Record<string, any>,
   featNames: string[] = [], // the Pokémon's feat names (from get_pokemon_feats) — for the feats engine
   speciesSpeeds: SpeedMode[] = [], // movement modes from the SPECIES (pokemon.json); poke5e stores no speed on the pokémon row
+  speciesName = "", // proper-cased species name (e.g. "Ivysaur") — the no-nickname display, not the raw id
 ): { model: RollModel; hp: { current: number; max: number; temp: number; removed: number }; spellcasting: any } {
   const level = Number(pk.level) || 1;
   const profBonus = profFor(level);
@@ -291,7 +292,7 @@ export function pokemonToCharacter(
   const passive = (k: SkillKey) => 10 + skills[k].mod;
   const maxHp = Number(pk.hp_max) || 0;
   const curHp = pk.hp_cur != null ? Number(pk.hp_cur) : maxHp;
-  const nick = pk.nickname && String(pk.nickname).trim() ? String(pk.nickname).trim() : String(pk.species || "Pokémon");
+  const nick = pk.nickname && String(pk.nickname).trim() ? String(pk.nickname).trim() : (speciesName || String(pk.species || "Pokémon"));
 
   const model: RollModel = {
     name: nick,

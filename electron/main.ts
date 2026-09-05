@@ -13,7 +13,7 @@ import { buildSendExpression } from "../src/roll20/inject.js";
 import { displayCard } from "../src/roll20/format.js";
 import { r20TokenExpr } from "../src/roll20/token.js";
 import { ddbSlotsExpr, ddbHitDiceExpr, ddbInventoryExpr, ddbFetchCharExpr } from "../src/ddb/inject.js";
-import { extractReadKey, fetchTrainer, trainerToRollModel, trainerExtras, buildInventory, fetchTrainerFeats, updateTrainerHp, updatePokemonHp, updateMovePp, updateInventoryItem, addInventoryItem, fetchItemsCatalog, addPokemonToTeam, removePokemon, deleteTrainer, setPoke5eCredentials, getPoke5eCredentials } from "../src/poke5e/source.js";
+import { extractReadKey, fetchTrainer, trainerToRollModel, trainerExtras, buildInventory, fetchTrainerFeats, updateTrainerHp, updatePokemonHp, updateMovePp, updateInventoryItem, addInventoryItem, fetchItemsCatalog, addPokemonToTeam, removePokemon, evolvePokemon, deleteTrainer, setPoke5eCredentials, getPoke5eCredentials } from "../src/poke5e/source.js";
 import { buildPokedex } from "../src/poke5e/pokedex.js";
 import type { DexEntry } from "../src/poke5e/pokedex.js";
 import { isNewer } from "../src/update/version.js";
@@ -49,6 +49,12 @@ let updateSkip: string | null = null;
 // filter — poke5e has no team field yet). Keyed by pokemon id.
 const pokeHidden = new Set<string>();
 
+// Pending evolution ASI reminders. Conduit now allocates the ASI points inline during the evolve
+// wizard, so a record is only kept when the user chose a FEAT instead (feat:true, dismiss-only —
+// Conduit can't add feats to poke5e). Legacy point-based records (target = stat-total to reach) are
+// still honoured and auto-clear. Keyed by pokemon id.
+const evoAsi = new Map<string, { toSpecies: string; asi: number; target?: number; feat?: boolean }>();
+
 async function loadStore() {
   try {
     const data = JSON.parse(await readFile(storePath(), "utf8"));
@@ -60,6 +66,9 @@ async function loadStore() {
     }
     if (typeof data.updateSkip === "string") updateSkip = data.updateSkip;
     for (const id of data.pokeHidden ?? []) pokeHidden.add(String(id));
+    for (const [id, v] of Object.entries(data.evoAsi ?? {})) {
+      if (v && typeof v === "object" && (v as any).toSpecies) evoAsi.set(String(id), v as any);
+    }
     // Re-apply a previously detected poke5e key/endpoint so RPCs work before the pane reloads.
     if (data.poke5e && setPoke5eCredentials(data.poke5e)) detectedPoke5e = getPoke5eCredentials();
   } catch {
@@ -85,7 +94,7 @@ function saveStoreSoon() {
   saveTimer = setTimeout(async () => {
     saveTimer = null;
     try {
-      await writeFile(storePath(), JSON.stringify({ records: [...sessionLog.values()], actions: actionLog, campaigns: Object.fromEntries(campaignNames), poke5e: detectedPoke5e, pokedex: Object.fromEntries(pokedexCollection), updateSkip, pokeHidden: [...pokeHidden] }), "utf8");
+      await writeFile(storePath(), JSON.stringify({ records: [...sessionLog.values()], actions: actionLog, campaigns: Object.fromEntries(campaignNames), poke5e: detectedPoke5e, pokedex: Object.fromEntries(pokedexCollection), updateSkip, pokeHidden: [...pokeHidden], evoAsi: Object.fromEntries(evoAsi) }), "utf8");
     } catch {
       /* best-effort */
     }
@@ -805,20 +814,39 @@ ipcMain.handle("load-poke5e-pokemon", async (_e, pokemonId: number) => {
       fetchPokemonFeats(Number(pokemonId)),
     ]);
     const featNames = (Array.isArray(pfeats) ? pfeats : []).map((f: any) => f.name).filter(Boolean);
-    // Speed lives on the SPECIES (pokemon.json), not the pokémon row — look it up from the dex.
-    const speciesSpeeds = (await ensurePokedex().catch(() => [] as DexEntry[])).find((e) => e.id === String(pk.species))?.speedModes ?? [];
-    const { model, hp, spellcasting } = pokemonToCharacter(pk, moveset, moves, featNames, speciesSpeeds);
+    // Speed + evolution live on the SPECIES (pokemon.json), not the pokémon row — look them up.
+    const dex = await ensurePokedex().catch(() => [] as DexEntry[]);
+    const speciesEntry = dex.find((e) => e.id === String(pk.species));
+    const { model, hp, spellcasting } = pokemonToCharacter(pk, moveset, moves, featNames, speciesEntry?.speedModes ?? [], speciesEntry?.name ?? "");
     current = { data: {} as CharacterData, name: model.name, id: `pmon:${pokemonId}`, model };
     // A Pokémon's "feats" section = its passive abilities (Blaze, …) plus any Pokémon feats.
     const feats = [...abilities, ...pfeats];
     // Pokémon-wide passives (resist/immunity/AC/form/…) surfaced as live, condition-lit reminders.
     const passives = passiveAbilityEffects(abilityIds(pk));
+    // Evolution targets (write-key gated). Gate on level + gender (hard, stored); other conditions
+    // (item/time/friendship/…) are shown as labels for the table to adjudicate. Each target carries
+    // the evolved form's AC, hit die, and types. HP carries over on evolution (poke5e accumulates HP
+    // per level; a bigger die only affects the NEXT level-up), so we don't recompute it here — the
+    // wizard defaults Max HP to the current value with an optional roll/avg for a coincident level-up.
+    const level = Number(pk.level) || 1;
+    const pkGender = String(pk.gender || "").toLowerCase();
+    const evolveTargets = (poke5eCtx.writeKey ? speciesEntry?.evoTargets ?? [] : [])
+      .filter((t) => t.level == null || level >= t.level)
+      .filter((t) => !t.gender || !pkGender || t.gender === pkGender)
+      .map((t) => {
+        const te = dex.find((e) => e.id === t.id);
+        return { ...t, ac: te?.ac ?? null, hitDie: te?.hitDice ?? null, types: te?.types ?? [] };
+      });
     return {
       ok: true, model, hp, weapons: [], spellcasting, spellSlots: [], hitDice: null,
       inventory: [], conditions: [], defenses: { resist: [], immune: [], vulnerable: [] }, writable: !!poke5eCtx.writeKey,
       ac: typeof pk.ac === "number" ? pk.ac : undefined,
       feats, passives,
-      poke: pokemonMeta(pk),
+      poke: { ...pokemonMeta(pk), species: speciesEntry?.name || pk.species || "" }, // proper-cased species name
+      trainerName: poke5eCtx.trainerRow?.name || "", // the owning trainer — a real Roll20 speaker for rolls
+      evolveTargets,
+      evolveFrom: { ac: typeof pk.ac === "number" ? pk.ac : null, hitDie: speciesEntry?.hitDice ?? null, hpMax: Number(pk.hp_max) || null },
+      asiPending: evoAsiStatus(String(pokemonId), pk, dex),
     };
   } catch (err) {
     return { ok: false, error: "Couldn't load Pokémon: " + String(err) };
@@ -1559,6 +1587,79 @@ ipcMain.handle("poke5e-delete-trainer", async () => {
   } catch (err) {
     return { ok: false, error: String(err) };
   }
+});
+
+// Sum of a Pokémon's six ability scores — the signal we watch to know an evolution's ASI was spent.
+const POKE_STAT_COLS = ["strength", "dexterity", "constitution", "intelligence", "wisdom", "charisma"];
+function pokemonStatSum(pk: any): number {
+  return POKE_STAT_COLS.reduce((a, c) => a + (Number(pk?.[c]) || 0), 0);
+}
+// The pending-ASI banner state for a Pokémon: null when nothing is owed (or it's been allocated —
+// in which case we clear the record). `remaining` counts down as stats are raised on poke5e.
+function evoAsiStatus(pokemonId: string, pk: any, dex: DexEntry[]): { toSpecies: string; asi: number; remaining: number; feat?: boolean } | null {
+  const rec = evoAsi.get(pokemonId);
+  if (!rec) return null;
+  const name = dex.find((e) => e.id === rec.toSpecies)?.name || rec.toSpecies;
+  if (rec.feat) return { toSpecies: name, asi: rec.asi, remaining: rec.asi, feat: true }; // dismiss-only
+  const remaining = (rec.target ?? 0) - pokemonStatSum(pk);
+  if (remaining <= 0) { evoAsi.delete(pokemonId); saveStoreSoon(); return null; }
+  return { toSpecies: name, asi: rec.asi, remaining };
+}
+
+// Evolve a Pokémon IN PLACE (same roster entry), matching poke5e's evolve wizard: swap species/type,
+// re-stat AC + HP to the evolved form, and apply the ASI the renderer collected (points folded into
+// the ability scores, or a feat → a dismiss-only reminder since Conduit can't add feats to poke5e).
+ipcMain.handle("poke5e-evolve", async (_e, pokemonId: number, targetSpeciesId: string, alloc: any) => {
+  if (!poke5eCtx?.writeKey) return { ok: false, error: "This trainer is read-only (no write key) — evolve on poke5e." };
+  const pid = Number(pokemonId);
+  const pk = poke5eCtx.team.get(pid);
+  if (!pk) return { ok: false, error: "That Pokémon isn't on this trainer." };
+  const dex = await ensurePokedex().catch(() => [] as DexEntry[]);
+  const from = dex.find((e) => e.id === String(pk.species));
+  const target = (from?.evoTargets ?? []).find((t) => t.id === String(targetSpeciesId));
+  const targetEntry = dex.find((e) => e.id === String(targetSpeciesId));
+  if (!target || !targetEntry) return { ok: false, error: "That evolution isn't available for this Pokémon." };
+  const level = Number(pk.level) || 1;
+  if (target.level != null && level < target.level) return { ok: false, error: `${pk.species} must be level ${target.level} to evolve.` };
+  const pkGender = String(pk.gender || "").toLowerCase();
+  if (target.gender && pkGender && target.gender !== pkGender) return { ok: false, error: `Only ${target.gender} ${pk.species} can evolve into ${target.name}.` };
+  // Re-stat overrides. Ability scores come from the wizard (current + allocated ASI points); AC/HP
+  // follow the evolved species. Preserve damage taken by shifting current HP by the max delta.
+  const a = alloc?.abilities || {};
+  const score = (v: unknown, fallback: number) => Math.max(1, Math.min(30, Math.round(Number(v ?? fallback) || fallback)));
+  const oldMax = Number(pk.hp_max) || 0;
+  const oldCur = pk.hp_cur != null ? Number(pk.hp_cur) : oldMax;
+  const newMax = Math.max(1, Math.round(Number(alloc?.hpMax) || oldMax));
+  const newCur = Math.max(0, Math.min(newMax, oldCur + (newMax - oldMax)));
+  const overrides: Record<string, unknown> = {
+    _species: target.id,
+    _type: targetEntry.types,
+    _ac: typeof targetEntry.ac === "number" ? targetEntry.ac : pk.ac,
+    _hp_max: newMax,
+    _hp_cur: newCur,
+    _strength: score(a.STR, pk.strength), _dexterity: score(a.DEX, pk.dexterity), _constitution: score(a.CON, pk.constitution),
+    _intelligence: score(a.INT, pk.intelligence), _wisdom: score(a.WIS, pk.wisdom), _charisma: score(a.CHA, pk.charisma),
+  };
+  try {
+    await evolvePokemon(poke5eCtx.writeKey, pk, overrides);
+    // ASI bookkeeping: taking a feat leaves a dismiss-only reminder (add it on poke5e); points were
+    // folded into the scores above, so no reminder is needed.
+    if (alloc?.tookFeat && target.asi > 0) { evoAsi.set(String(pid), { toSpecies: target.id, asi: target.asi, feat: true }); saveStoreSoon(); }
+    else if (evoAsi.has(String(pid))) { evoAsi.delete(String(pid)); saveStoreSoon(); }
+    const team = await fetchPokemon(poke5eCtx.trainerId).catch(() => null);
+    if (Array.isArray(team)) poke5eCtx.team = new Map(team.map((p: any) => [p.id, p]));
+    schedulePoke5ePaneRefresh();
+    return { ok: true, evolved: true, pokemonId: pid, toName: target.name, asi: target.asi, tookFeat: !!alloc?.tookFeat };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+});
+
+// Dismiss a pending evolution-ASI reminder (the user allocated the points, or doesn't want the nag).
+ipcMain.handle("poke5e-evo-dismiss", async (_e, pokemonId: number) => {
+  evoAsi.delete(String(Number(pokemonId)));
+  saveStoreSoon();
+  return { ok: true };
 });
 
 // Permanently remove ONE Pokémon from the loaded trainer (poke5e's `remove_pokemon`, write-key

@@ -8,7 +8,7 @@ const RALTS = {
   savingThrows: ["wis"], skills: ["insight"],
   abilities: [{ id: "synchronize", name: "Synchronize", description: "Passes status conditions back to the attacker." }, { id: "trace", name: "Trace" }, { id: "telepathy", name: "Telepathy", hidden: true }],
   habitat: { nativeRegion: "Hoenn", biomes: ["forest", "city"] },
-  evolution: { from: [], to: [{ id: "kirlia", conditions: [{ type: "level", value: 6 }] }] },
+  evolution: { from: [], to: [{ id: "kirlia", conditions: [{ type: "level", value: 6 }], effects: [{ type: "asi", value: 6 }] }] },
   moves: { start: ["growl", "confusion"], level14: ["hypnosis", "dream-eater"] },
 };
 const KIRLIA = { id: "kirlia", name: "Kirlia", number: 281, type: ["psychic", "fairy"], evolution: {} };
@@ -39,6 +39,34 @@ describe("pokedex normalizeSpecies", () => {
     expect(e.abilities.find((a) => a.name === "Trace")!.description).toBe(""); // missing text → empty, not undefined
     expect(e.speed).toBe("25 ft");
     expect(e.speedModes).toEqual([{ type: "walking", value: 25 }]);
+  });
+  it("builds actionable evolution targets (id, level, ASI, conditions, gender)", () => {
+    expect(e.evoTargets).toEqual([{ id: "kirlia", name: "Kirlia", level: 6, items: [], asi: 6, gender: null, cond: "Lv 6" }]);
+    // a species with no evolution.to yields no targets
+    expect(normalizeSpecies(KIRLIA, movesById, byId).evoTargets).toEqual([]);
+  });
+  it("surfaces every condition type (item/time/gender/move/move-type/special) + gender lock", () => {
+    const EEVEE = {
+      id: "eevee", name: "Eevee", number: 133, type: ["normal"],
+      abilities: [], evolution: { from: [], to: [
+        { id: "vaporeon", conditions: [{ type: "level", value: 8 }, { type: "item", value: "water-stone" }], effects: [{ type: "asi", value: 14 }] },
+        { id: "umbreon", conditions: [{ type: "level", value: 8 }, { type: "loyalty", value: 2 }, { type: "time", value: "night" }], effects: [{ type: "asi", value: 14 }] },
+        { id: "sylveon", conditions: [{ type: "level", value: 8 }, { type: "move-type", value: "fairy" }], effects: [{ type: "asi", value: 14 }] },
+      ] },
+      moves: {},
+    };
+    const names: Record<string, any> = { vaporeon: { name: "Vaporeon" }, umbreon: { name: "Umbreon" }, sylveon: { name: "Sylveon" } };
+    const t = normalizeSpecies(EEVEE, {}, names).evoTargets;
+    expect(t.find((x) => x.id === "vaporeon")!.cond).toBe("Lv 8 · Water Stone");
+    expect(t.find((x) => x.id === "vaporeon")!.items).toEqual(["Water Stone"]);
+    expect(t.find((x) => x.id === "umbreon")!.cond).toBe("Lv 8 · Friendship · Night");
+    expect(t.find((x) => x.id === "sylveon")!.cond).toBe("Lv 8 · knows a Fairy move");
+    // gender lock is captured when present
+    const COMBEE = { id: "combee", name: "Combee", number: 415, type: ["bug", "flying"], abilities: [],
+      evolution: { to: [{ id: "vespiquen", conditions: [{ type: "level", value: 7 }, { type: "gender", value: "female" }], effects: [{ type: "asi", value: 17 }] }] }, moves: {} };
+    const v = normalizeSpecies(COMBEE, {}, { vespiquen: { name: "Vespiquen" } }).evoTargets[0]!;
+    expect(v.gender).toBe("female");
+    expect(v.cond).toBe("Lv 7 · Female");
   });
   it("resolves level-up moves with wording + level labels, and flags sleep moves", () => {
     const hyp = e.moves.find((m) => m.id === "hypnosis")!;

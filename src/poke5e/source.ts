@@ -259,6 +259,16 @@ export async function addPokemonToTeam(writeKey: string, e: AddPokemonSpecies, l
   return true;
 }
 
+/** Evolve a Pokémon IN PLACE: update_pokemon on the same row (same id → the roster keeps one entry,
+ *  the creature becomes its evolved form). `overrides` are the changed columns — at minimum the new
+ *  `_species`/`_type`, and (matching poke5e's evolve wizard) the re-statted `_ac`/`_hp_*` and the
+ *  post-ASI ability scores. Everything not overridden is carried through from the current row. */
+export async function evolvePokemon(writeKey: string, pk: any, overrides: Record<string, unknown>): Promise<boolean> {
+  const params = { _write_key: writeKey, ...buildParams(POKEMON_PARAMS, pk, overrides) };
+  const r = await poke5eRpc("update_pokemon", params);
+  return Number(r) > 0;
+}
+
 /** Permanently remove one Pokémon from a trainer (poke5e's `remove_pokemon`). Needs the trainer's
  *  write key; `id` is the Pokémon row id. Irreversible on poke5e. */
 export async function removePokemon(writeKey: string, id: number): Promise<boolean> {

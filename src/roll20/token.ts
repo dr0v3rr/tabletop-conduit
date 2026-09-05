@@ -104,7 +104,17 @@ window.__r20Token = (function () {
           .filter(function (g) { var a = g && g.attributes; return a && (a.layer === 'objects' || (isGM() && a.layer === 'gmlayer')) && mayControl(a); })
           .map(function (g) {
             var a = g.attributes;
-            return { id: g.id, name: a.name || '(unnamed)', bar1: a.bar1_value, bar1max: a.bar1_max, x: Math.round(a.left || 0), y: Math.round(a.top || 0) };
+            // The represented character's name (what Roll20 shows as the chat speaker) — may differ
+            // from the token name (e.g. token "Ivysaur" representing character "002 - Ivysaur").
+            var charName = null;
+            try {
+              if (a.represents) {
+                var coll = window.Campaign && window.Campaign.characters;
+                var ch = coll && coll.get ? coll.get(a.represents) : null;
+                if (ch && ch.attributes) charName = ch.attributes.name || null;
+              }
+            } catch (e) {}
+            return { id: g.id, name: a.name || '(unnamed)', charName: charName, bar1: a.bar1_value, bar1max: a.bar1_max, x: Math.round(a.left || 0), y: Math.round(a.top || 0) };
           });
         return { ok: true, tokens: out, gm: isGM() };
       } catch (e) { return { ok: false, tokens: [], error: String(e) }; }

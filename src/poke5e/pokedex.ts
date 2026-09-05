@@ -28,6 +28,16 @@ export interface DexEvoStep {
   here?: boolean; // the species being viewed
 }
 
+export interface DexEvoTarget {
+  id: string; // evolved species id
+  name: string;
+  level: number | null; // minimum level condition, if any
+  items: string[]; // required item names (e.g. "Water Stone") — informational
+  asi: number; // ability-score points granted on this evolution (poke5e homebrew)
+  gender: string | null; // "male"/"female" if the edge is gender-locked, else null
+  cond: string; // full condition string for display (e.g. "Lv 8 · Friendship · Night")
+}
+
 export interface DexEntry {
   id: string;
   num: number;
@@ -47,6 +57,7 @@ export interface DexEntry {
   skillIds: string[]; // raw ids ("animal-handling") — for add_pokemon rank_* params
   abilities: { id: string; name: string; hidden: boolean; description: string }[];
   evolution: DexEvoStep[];
+  evoTargets: DexEvoTarget[]; // actionable "evolves into" options (id, level/item conditions, ASI)
   region: string;
   biomes: string[];
   sprite: string; // small pixel sprite URL
@@ -59,15 +70,22 @@ export interface DexEntry {
 const up = (s: string) => (s ? s.toUpperCase() : s);
 const cap = (s: string) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 
-/** One level-up condition/effect → a short display string. */
-function evoCond(t: any, name: (id: string) => string): string {
+const titleItem = (v: unknown) => String(v).split("-").map(cap).join(" ");
+/** All of an evolution edge's conditions → a short display string (covers every poke5e type). */
+function evoCond(t: any): string {
   const parts: string[] = [];
   for (const c of t.conditions || []) {
-    if (c.type === "level") parts.push(`Lv ${c.value}`);
-    else if (c.type === "item") parts.push(String(c.value).split("-").map(cap).join(" "));
-    else if (c.type === "friendship") parts.push("Friendship");
-    else if (c.type === "gender") parts.push(cap(String(c.value)));
-    else parts.push(`${c.type}: ${c.value}`);
+    switch (c.type) {
+      case "level": parts.push(`Lv ${c.value}`); break;
+      case "item": parts.push(titleItem(c.value)); break;
+      case "loyalty": case "friendship": parts.push("Friendship"); break;
+      case "gender": parts.push(cap(String(c.value))); break;
+      case "time": parts.push(cap(String(c.value))); break;
+      case "move": parts.push(`knows ${titleItem(c.value)}`); break;
+      case "move-type": parts.push(`knows a ${cap(String(c.value))} move`); break;
+      case "special": parts.push(String(c.value)); break;
+      default: parts.push(`${c.type}: ${c.value}`);
+    }
   }
   return parts.join(" · ");
 }
@@ -85,9 +103,30 @@ function buildEvolution(p: any, byId: Record<string, any>): DexEvoStep[] {
   }
   chain.push({ name: p.name, here: true });
   for (const t of ev.to || []) {
-    chain.push({ name: nameOf(t.id), cond: evoCond(t, nameOf) });
+    chain.push({ name: nameOf(t.id), cond: evoCond(t) });
   }
   return chain;
+}
+
+/** Actionable evolution targets: id + level/item conditions + ASI, from a species' `evolution.to`. */
+function buildEvoTargets(p: any, byId: Record<string, any>): DexEvoTarget[] {
+  const ev = p.evolution || {};
+  return (Array.isArray(ev.to) ? ev.to : []).map((t: any) => {
+    const conds: any[] = Array.isArray(t.conditions) ? t.conditions : [];
+    const lvl = conds.find((c) => c.type === "level");
+    const items = conds.filter((c) => c.type === "item").map((c) => String(c.value).split("-").map(cap).join(" "));
+    const asi = (Array.isArray(t.effects) ? t.effects : []).find((e: any) => e.type === "asi");
+    const genderC = conds.find((c) => c.type === "gender");
+    return {
+      id: t.id,
+      name: byId[t.id]?.name || t.id,
+      level: lvl != null ? Number(lvl.value) : null,
+      items,
+      asi: asi ? Number(asi.value) || 0 : 0,
+      gender: genderC ? String(genderC.value).toLowerCase() : null,
+      cond: evoCond(t), // full condition string for display (level · item · time · gender · …)
+    };
+  });
 }
 
 const POKE5E_HOST = "https://poke5e.app";
@@ -147,6 +186,7 @@ export function normalizeSpecies(p: any, movesById: Record<string, any>, byId: R
     skillIds: (p.skills || []).map((s: string) => String(s)),
     abilities: (p.abilities || []).map((x: any) => ({ id: x.id || x.name, name: x.name || x.id, hidden: !!x.hidden, description: x.description || "" })),
     evolution: buildEvolution(p, byId),
+    evoTargets: buildEvoTargets(p, byId),
     region: p.habitat?.nativeRegion || "",
     biomes: p.habitat?.biomes || [],
     // Prefer the dataset's own media paths; fall back to the id-based convention; "" if it has none.
