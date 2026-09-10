@@ -13,7 +13,7 @@ import { buildSendExpression } from "../src/roll20/inject.js";
 import { displayCard } from "../src/roll20/format.js";
 import { r20TokenExpr } from "../src/roll20/token.js";
 import { ddbSlotsExpr, ddbHitDiceExpr, ddbInventoryExpr, ddbFetchCharExpr } from "../src/ddb/inject.js";
-import { extractReadKey, fetchTrainer, trainerToRollModel, trainerExtras, buildInventory, fetchTrainerFeats, updateTrainerHp, updatePokemonHp, updateMovePp, updateInventoryItem, addInventoryItem, fetchItemsCatalog, addPokemonToTeam, removePokemon, evolvePokemon, deleteTrainer, setPoke5eCredentials, getPoke5eCredentials } from "../src/poke5e/source.js";
+import { extractReadKey, fetchTrainer, trainerToRollModel, trainerExtras, buildInventory, fetchTrainerFeats, updateTrainerHp, updatePokemonHp, updatePokemonStatus, updateMovePp, updateInventoryItem, addInventoryItem, fetchItemsCatalog, addPokemonToTeam, removePokemon, evolvePokemon, deleteTrainer, setPoke5eCredentials, getPoke5eCredentials } from "../src/poke5e/source.js";
 import { buildPokedex } from "../src/poke5e/pokedex.js";
 import type { DexEntry } from "../src/poke5e/pokedex.js";
 import { isNewer } from "../src/update/version.js";
@@ -1650,6 +1650,26 @@ ipcMain.handle("poke5e-evolve", async (_e, pokemonId: number, targetSpeciesId: s
     if (Array.isArray(team)) poke5eCtx.team = new Map(team.map((p: any) => [p.id, p]));
     schedulePoke5ePaneRefresh();
     return { ok: true, evolved: true, pokemonId: pid, toName: target.name, asi: target.asi, tookFeat: !!alloc?.tookFeat };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+});
+
+// Set (or clear) a Pokémon's poke5e status — the write-key-gated backend for the condition chips
+// that map to a poke5e status (Poisoned → "Poisoned", Paralyzed → "Paralysis"). `status` is a
+// poke5e status id or null to clear. Non-mapped conditions / trainers / read-only never reach here
+// (the renderer keeps those local), so this only ever writes a value poke5e's `_status` accepts.
+ipcMain.handle("poke5e-set-status", async (_e, pokemonId: number, status: string | null) => {
+  if (!poke5eCtx?.writeKey) return { ok: false, error: "This trainer is read-only (no write key) — set status on poke5e." };
+  const pid = Number(pokemonId);
+  const pk = poke5eCtx.team.get(pid);
+  if (!pk) return { ok: false, error: "That Pokémon isn't on this trainer." };
+  try {
+    const ok = await updatePokemonStatus(poke5eCtx.writeKey, pk, status);
+    if (!ok) return { ok: false, error: "poke5e didn't apply the status change." };
+    pk.status = status ?? ""; // keep the cached row in sync so re-opening the Pokémon reflects it
+    schedulePoke5ePaneRefresh();
+    return { ok: true };
   } catch (err) {
     return { ok: false, error: String(err) };
   }

@@ -155,6 +155,15 @@ export async function updatePokemonHp(writeKey: string, pk: any, curHp: number, 
   return Number(r) > 0;
 }
 
+/** Set a Pokémon's status — poke5e's single `_status` column (write-key gated, full-row upsert like
+ *  the HP setter). `status` is one of poke5e's status ids (e.g. "Poisoned", "Paralysis") or null to
+ *  clear it. Everything else on the row is carried through unchanged. */
+export async function updatePokemonStatus(writeKey: string, pk: any, status: string | null): Promise<boolean> {
+  const params = { _write_key: writeKey, ...buildParams(POKEMON_PARAMS, pk, { _status: status }) };
+  const r = await poke5eRpc("update_pokemon", params);
+  return Number(r) > 0;
+}
+
 /** Update a learned move's PP (targeted RPC — the one poke5e write that isn't a full-row upsert). */
 export async function updateMovePp(writeKey: string, moveRowId: number, moveId: string, ppCur: number, ppMax: number, notes = ""): Promise<boolean> {
   const r = await poke5eRpc("update_move", { _write_key: writeKey, _id: moveRowId, _move_id: moveId, _pp_cur: ppCur, _pp_max: ppMax, _notes: notes });

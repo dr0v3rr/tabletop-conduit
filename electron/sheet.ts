@@ -1,6 +1,7 @@
 // Sheet renderer — thin client over window.api (preload IPC). No engine here.
 import { aggregate } from "../src/stats/roll-stats.js"; // pure stats, safe in the renderer bundle
 import { CONDITIONS } from "../src/engine/conditions.js"; // pure data catalog
+import { POKE5E_STATUSES, poke5eStatusName } from "../src/poke5e/status.js"; // poke5e's own status list
 type Ability = "STR" | "DEX" | "CON" | "INT" | "WIS" | "CHA";
 type AdvMode = "normal" | "advantage" | "disadvantage" | "super-advantage" | "super-disadvantage";
 
@@ -60,6 +61,7 @@ declare global {
       poke5eAddTeam(speciesId: string, level: number): Promise<{ ok: boolean; error?: string }>;
       poke5eRemoveTrainer(): Promise<{ ok: boolean; readKey?: string; error?: string }>;
       poke5eRemovePokemon(pokemonId: number): Promise<{ ok: boolean; removed?: boolean; canceled?: boolean; pokemonId?: number; error?: string }>;
+      poke5eSetStatus(pokemonId: number, status: string | null): Promise<{ ok: boolean; error?: string }>;
       poke5eEvolve(pokemonId: number, targetSpeciesId: string, alloc: { abilities: Record<string, number>; hpMax: number; tookFeat: boolean }): Promise<{ ok: boolean; evolved?: boolean; canceled?: boolean; toName?: string; asi?: number; tookFeat?: boolean; error?: string }>;
       poke5eEvoDismiss(pokemonId: number): Promise<{ ok: boolean }>;
       poke5eDeleteTrainer(): Promise<{ ok: boolean; deleted?: boolean; canceled?: boolean; readKey?: string; error?: string }>;
@@ -672,7 +674,7 @@ function renderPokeChips() {
   if (pokeMeta.types.length) bits.push(pokeMeta.types.map(cap).join("/") + (pokeMeta.shiny ? " ✨" : ""));
   if (pokeMeta.nature) bits.push(pokeMeta.nature);
   if (pokeMeta.tera) bits.push("Tera " + cap(pokeMeta.tera));
-  if (pokeMeta.status) bits.push("⚠ " + cap(pokeMeta.status));
+  // Status is shown (and edited) in the conditions row now — don't duplicate it in the meta line.
   if (pokeMeta.bond.level) bits.push(`Bond ${pokeMeta.bond.level}`);
   for (const p of passives) if (p.cond !== "always" && condActive(p.cond)) bits.push(`🛡 ${p.ability}`);
   $("meta").textContent = bits.join(" · ");
@@ -772,9 +774,13 @@ function renderVitals() {
   }
 }
 
-// Conditions: chips you tap to toggle. Active ones sync to D&D Beyond and auto-apply their roll
-// effects (Poisoned → disadvantage, etc.) via the `condition-<slug>` rules on every roll.
+// Conditions: chips you tap to toggle. The list shown depends on the sheet's source — a poke5e
+// Pokémon gets poke5e's own status conditions (see renderPoke5eStatus); everything else gets the
+// D&D 5e conditions below, which auto-apply their roll effects (Poisoned → disadvantage, etc.) via
+// the `condition-<slug>` rules on every roll. D&D Beyond characters also sync to the DDB backend;
+// trainers & monsters keep the D&D conditions locally (no backend field to write to).
 function renderConditions() {
+  if (isPoke5ePokemon()) return renderPoke5eStatus();
   const active = $("condActive");
   const list = $("condList");
   const addBtn = $("condAddBtn") as HTMLButtonElement;
@@ -809,7 +815,11 @@ async function toggleCondition(id: number) {
   if (wasActive) activeConditions.delete(id);
   else activeConditions.set(id, null);
   renderConditions();
-  if (writable) {
+  // Only D&D Beyond characters sync conditions to a backend. Trainers & monsters keep them locally —
+  // the roll effects still apply and it's still announced to Roll20, but nothing is written back.
+  // (poke5e Pokémon use their own status list and never reach here — see setPoke5eStatus.)
+  const syncToDdb = activeSource === "ddb" && writable;
+  if (syncToDdb) {
     const res = await window.api.ddbSetCondition(id, !wasActive, null).catch(() => ({ ok: false, error: "failed" } as any));
     if (!res.ok) {
       // revert
@@ -821,12 +831,72 @@ async function toggleCondition(id: number) {
   }
   const def = CONDITIONS.find((c) => c.id === id);
   const name = def?.name ?? "condition";
-  setStatus(`${name} ${wasActive ? "cleared" : "applied"}${writable ? " on D&D Beyond ✓" : ""}`);
+  setStatus(`${name} ${wasActive ? "cleared" : "applied"}${syncToDdb ? " on D&D Beyond ✓" : ""}`);
   // Announce to the Roll20 table. Sent AS the character (speaking-as), so Roll20 prefixes the
   // sender's name itself. A clean, symmetric one-line template — no dice, no repeated name.
   if (model?.name) {
     const label = wasActive ? "Condition Cleared" : "Condition Gained";
     window.api.roll20Say(`&{template:default} {{${label}=${name}}}`, model.name).catch(() => {});
+  }
+}
+
+// ── poke5e Pokémon status (its own condition list) ─────────────────────────────────────────────
+// A poke5e Pokémon has ONE status (its `_status` column), not the D&D 5e condition set. Its sheet
+// shows poke5e's status list instead; picking one sets pokeMeta.status (which the roll engine reads
+// live) and — with a write key — persists it to poke5e, else it's kept locally.
+const isPoke5ePokemon = () => activeSource === "poke5e" && activeRef.startsWith("pmon:");
+
+function renderPoke5eStatus() {
+  const active = $("condActive");
+  const list = $("condList");
+  const addBtn = $("condAddBtn") as HTMLButtonElement;
+  if (!model) { active.innerHTML = ""; addBtn.hidden = true; return; }
+  addBtn.hidden = false;
+  const cur = pokeMeta?.status || "";
+
+  // Inline: the single active status (click ✕ to clear).
+  active.innerHTML = cur
+    ? `<button class="cond-chip on affects" data-status="${esc(cur)}" title="Clear ${esc(poke5eStatusName(cur))}">${esc(poke5eStatusName(cur))} <span class="cx">✕</span></button>`
+    : "";
+  active.querySelectorAll<HTMLElement>(".cond-chip").forEach((chip) => { chip.onclick = () => setPoke5eStatus(null); });
+  addBtn.textContent = cur ? "＋" : "＋ Condition";
+
+  // Popover: poke5e's statuses, single-select (poke5e holds one). Picking one closes the popover.
+  list.innerHTML = POKE5E_STATUSES
+    .map((s) => `<button class="cond-opt${s.id === cur ? " on" : ""}" data-status="${esc(s.id)}"><span class="cond-tick">${s.id === cur ? "✓" : ""}</span>${esc(s.name)}</button>`)
+    .join("");
+  list.querySelectorAll<HTMLElement>(".cond-opt").forEach((opt) => {
+    opt.onclick = (e) => { e.stopPropagation(); const sid = opt.dataset.status!; setPoke5eStatus(sid === cur ? null : sid); };
+  });
+}
+
+async function setPoke5eStatus(statusId: string | null) {
+  const prev = pokeMeta?.status || "";
+  const next = statusId || "";
+  ($("condList") as HTMLElement).hidden = true; // single-select: pick and close
+  if (prev === next || !pokeMeta) return;
+  // Optimistic: update the live status the roll engine + header read, and re-render what depends on it.
+  pokeMeta.status = next;
+  renderConditions();
+  renderPokeChips();
+  renderSpells(); // move badges / status roll-mods re-evaluate against the new status
+  if (writable) {
+    const pid = pmonId(activeRef);
+    const res = pid
+      ? await window.api.poke5eSetStatus(Number(pid), statusId).catch(() => ({ ok: false, error: "failed" } as any))
+      : { ok: false, error: "No Pokémon loaded" };
+    if (!res.ok) {
+      pokeMeta.status = prev; // revert
+      renderConditions(); renderPokeChips(); renderSpells();
+      setStatus(res.error || "Couldn't update status on poke5e", true);
+      return;
+    }
+  }
+  const changed = next ? `${poke5eStatusName(next)} applied` : `${poke5eStatusName(prev)} cleared`;
+  setStatus(`${changed}${writable ? " on poke5e ✓" : ""}`);
+  if (model?.name) {
+    const label = next ? "Condition Gained" : "Condition Cleared";
+    window.api.roll20Say(`&{template:default} {{${label}=${next ? poke5eStatusName(next) : poke5eStatusName(prev)}}}`, model.name).catch(() => {});
   }
 }
 
