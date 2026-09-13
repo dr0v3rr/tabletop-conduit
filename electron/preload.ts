@@ -62,6 +62,7 @@ contextBridge.exposeInMainWorld("api", {
   sessionDeepSync: () => ipcRenderer.invoke("session-deep-sync"),
   sessionClear: () => ipcRenderer.invoke("session-clear"),
   sessionExport: (kind: "json" | "csv-log" | "csv-stats") => ipcRenderer.invoke("session-export", kind),
+  exportCharacterPdf: (dto: unknown) => ipcRenderer.invoke("export-character-pdf", dto),
   copyText: (text: string) => ipcRenderer.invoke("copy-text", text),
   logout: () => ipcRenderer.invoke("logout"),
   checkUpdate: () => ipcRenderer.invoke("check-update"),

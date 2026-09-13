@@ -2,6 +2,7 @@
 import { aggregate } from "../src/stats/roll-stats.js"; // pure stats, safe in the renderer bundle
 import { CONDITIONS } from "../src/engine/conditions.js"; // pure data catalog
 import { POKE5E_STATUSES, poke5eStatusName } from "../src/poke5e/status.js"; // poke5e's own status list
+import { buildSheetDto } from "../src/sheet/sheet-pdf.js"; // printable-sheet DTO builder (pure)
 type Ability = "STR" | "DEX" | "CON" | "INT" | "WIS" | "CHA";
 type AdvMode = "normal" | "advantage" | "disadvantage" | "super-advantage" | "super-disadvantage";
 
@@ -75,6 +76,7 @@ declare global {
       sessionDeepSync(): Promise<{ records: any[]; stats: any; actions: any[]; currentCampaign?: string | null; campaigns?: Record<string, string> }>;
       sessionClear(): Promise<{ ok: boolean }>;
       sessionExport(kind: "json" | "csv-log" | "csv-stats"): Promise<{ ok: boolean; path?: string; canceled?: boolean }>;
+      exportCharacterPdf(dto: unknown): Promise<{ ok: boolean; path?: string; canceled?: boolean; error?: string }>;
       copyText(text: string): Promise<void>;
       logout(): Promise<{ ok: boolean; error?: string }>;
       checkUpdate(): Promise<void>;
@@ -136,8 +138,9 @@ let writable = true; // false for public/others' sheets & monsters — edits sta
 let roster: { id: string; name: string; avatar?: string; mine?: boolean; kind?: "trainer" | "pokemon"; group?: string; writable?: boolean }[] = [];
 let poke5eTrainerKey = ""; // read key of the currently-loaded poke5e trainer (for cross-trainer switches)
 let feats: { name: string; description: string }[] = []; // trainer feats / abilities (poke5e etc.)
+let charClassLine = ""; // class/level subtitle from the source, used on the printable sheet
 let passives: { ability: string; cond: any; effect: string }[] = []; // Pokémon-wide ability passives
-let pokeMeta: { species: string; types: string[]; nature: string; tera: string; status: string; shiny: boolean; bond: { level: number; cur: number; max: number } } | null = null;
+let pokeMeta: { species: string; types: string[]; nature: string; tera: string; status: string; shiny: boolean; bond: { level: number; cur: number; max: number }; sprite?: string } | null = null;
 let activeRef = ""; // ref (DDB character id) of the currently-shown roster member
 const enabled = new Set<string>();
 
@@ -442,6 +445,7 @@ function applyCharacter(res: any, ref: string) {
   ($("rerollBtn") as HTMLButtonElement).disabled = true;
   feats = res.feats || [];
   passives = res.passives || [];
+  charClassLine = res.className || ""; // subtitle for the printable sheet (DDB sends this)
   pokeMeta = res.poke || null;
   evolveTargets = res.evolveTargets || [];
   evolveFrom = res.evolveFrom || null;
@@ -815,6 +819,7 @@ async function toggleCondition(id: number) {
   if (wasActive) activeConditions.delete(id);
   else activeConditions.set(id, null);
   renderConditions();
+  ($("condList") as HTMLElement).hidden = true; // close the picker on select (same as the poke5e list)
   // Only D&D Beyond characters sync conditions to a backend. Trainers & monsters keep them locally —
   // the roll effects still apply and it's still announced to Roll20, but nothing is written back.
   // (poke5e Pokémon use their own status list and never reach here — see setPoke5eStatus.)
@@ -2464,6 +2469,32 @@ function toggleRosterMenu(e: Event) {
 $("rosterToggle").onclick = toggleRosterMenu;
 $("charName").onclick = toggleRosterMenu;
 $("reloadChar").onclick = () => reloadCurrent();
+$("exportPdfBtn").onclick = () => exportSheetPdf();
+
+// Build the printable-sheet DTO from the live sheet state and hand it to the main process to render
+// → print → save as a PDF (D&D-Beyond-style layout).
+async function exportSheetPdf() {
+  if (!model) { setStatus("Load a character first", true); return; }
+  const subtitle = charClassLine
+    || (activeSource === "poke5e" ? (activeRef.startsWith("pmon:") ? "poke5e Pokémon" : "poke5e Trainer") : activeSource === "monster" ? "Monster" : "Character")
+       + (model.level ? ` · Level ${model.level}` : "");
+  const hd = hitDice?.pools?.length ? hitDice.pools.map((p: any) => `${p.total}d${p.die}`).join(" ") : null;
+  const dto = buildSheetDto({
+    model, subtitle,
+    ac: acValue,
+    hp: hp ? { current: hp.current, max: hp.max, temp: hp.temp } : null,
+    hitDice: hd,
+    weapons, spellcasting, spellSlots, inventory, feats,
+    imageUrl: pokeMeta?.sprite || "", // Pokémon art (main embeds it into the PDF)
+  });
+  const btn = $("exportPdfBtn") as HTMLButtonElement;
+  btn.disabled = true;
+  const r = await window.api.exportCharacterPdf(dto).catch(() => ({ ok: false, error: "failed" } as any));
+  btn.disabled = false;
+  if (!r || r.canceled) return;
+  if (!r.ok) { setStatus(r.error || "Couldn't export the PDF", true); return; }
+  setStatus(`Saved PDF ✓`);
+}
 
 // Reveal + copy the loaded poke5e trainer's keys so they can be backed up. The write key is a
 // secret cached only in the poke5e pane — it can't be regenerated if lost, so make it retrievable.

@@ -6,7 +6,8 @@ import type { MenuItemConstructorOptions } from "electron";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve, relative, isAbsolute } from "node:path";
 import { campaignLogFileName } from "./archive-path.js";
-import { writeFile, readFile, appendFile, mkdir, readdir } from "node:fs/promises";
+import { writeFile, readFile, appendFile, mkdir, readdir, unlink } from "node:fs/promises";
+import { renderSheetHtml } from "../src/sheet/sheet-pdf.js";
 import { rollFrom, buildCharacter, availableToggles } from "../src/pipeline.js";
 import type { CharacterData, RollRequest } from "../src/pipeline.js";
 import { buildSendExpression } from "../src/roll20/inject.js";
@@ -842,7 +843,7 @@ ipcMain.handle("load-poke5e-pokemon", async (_e, pokemonId: number) => {
       inventory: [], conditions: [], defenses: { resist: [], immune: [], vulnerable: [] }, writable: !!poke5eCtx.writeKey,
       ac: typeof pk.ac === "number" ? pk.ac : undefined,
       feats, passives,
-      poke: { ...pokemonMeta(pk), species: speciesEntry?.name || pk.species || "" }, // proper-cased species name
+      poke: { ...pokemonMeta(pk), species: speciesEntry?.name || pk.species || "", sprite: speciesEntry?.art || speciesEntry?.sprite || "" }, // proper-cased name + species art (for the printable sheet)
       trainerName: poke5eCtx.trainerRow?.name || "", // the owning trainer — a real Roll20 speaker for rolls
       evolveTargets,
       evolveFrom: { ac: typeof pk.ac === "number" ? pk.ac : null, hitDie: speciesEntry?.hitDice ?? null, hpMax: Number(pk.hp_max) || null },
@@ -1872,6 +1873,52 @@ ipcMain.handle("session-clear", () => {
   actionLog.length = 0;
   saveStoreSoon(); // persist the empty store so the clear survives a restart
   return { ok: true };
+});
+
+/** Export a printable character-sheet PDF. The renderer sends a display-ready DTO; we render it to a
+ *  self-contained HTML page, print it to PDF with a hidden BrowserWindow, and save it via a dialog. */
+ipcMain.handle("export-character-pdf", async (_e, dto: import("../src/sheet/sheet-pdf.js").SheetDto) => {
+  if (!dto || !dto.name) return { ok: false, error: "No character loaded" };
+  const char = String(dto.name).replace(/[^\w]+/g, "_") || "character";
+  const { canceled, filePath } = await dialog.showSaveDialog(win, {
+    title: "Export character sheet",
+    defaultPath: `${char}-sheet.pdf`,
+    filters: [{ name: "PDF", extensions: ["pdf"] }],
+  });
+  if (canceled || !filePath) return { ok: false, canceled: true };
+
+  const tmpHtml = join(app.getPath("temp"), `conduit-sheet-${Date.now()}.html`);
+  let printWin: BrowserWindow | null = null;
+  try {
+    // Embed the creature art as a data URI so the printed page is self-contained (no network at
+    // print time). Best-effort: on any failure the sheet simply renders without the image.
+    if (dto.image && /^https?:/i.test(dto.image)) {
+      try {
+        const r = await fetch(dto.image);
+        dto.image = r.ok ? `data:${r.headers.get("content-type") || "image/png"};base64,${Buffer.from(await r.arrayBuffer()).toString("base64")}` : "";
+      } catch { dto.image = ""; }
+    }
+    await writeFile(tmpHtml, renderSheetHtml(dto), "utf8");
+    printWin = new BrowserWindow({
+      show: false,
+      webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, javascript: false },
+    });
+    await printWin.loadFile(tmpHtml);
+    // A short settle lets fonts/layout finish before we snapshot the page to PDF.
+    await new Promise((r) => setTimeout(r, 150));
+    const pdf = await printWin.webContents.printToPDF({
+      pageSize: "Letter",
+      printBackground: true,
+      margins: { top: 0.4, bottom: 0.4, left: 0.4, right: 0.4 },
+    });
+    await writeFile(filePath, pdf);
+    return { ok: true, path: filePath };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  } finally {
+    if (printWin && !printWin.isDestroyed()) printWin.destroy();
+    unlink(tmpHtml).catch(() => {});
+  }
 });
 
 /** Export the session as a file. kind: 'json' (full bundle) | 'csv-log' | 'csv-stats'. */
