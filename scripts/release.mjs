@@ -50,10 +50,21 @@ run("node scripts/verify-release.mjs");
 
 if (!has("--upload")) { console.log(`\n✓ built + verified ${tag}. Re-run with --upload to publish.`); process.exit(0); }
 
-// --- Publish the exact verified set (installers + manifests + blockmaps + checksums) ------------
+// --- Publish (installers + manifests + blockmaps + checksums) -----------------------------------
+// Create the release metadata FIRST, then upload each asset one at a time with `release upload
+// --clobber`. gh's multi-asset upload on `release create` runs concurrently and intermittently 422s
+// on large files ("ReleaseAsset.name already exists"); sequential per-asset uploads are reliable and
+// idempotent, so a retry (with --force) safely re-uploads without duplicating. NOTE: --clobber is a
+// `gh release upload` flag only — `gh release create` rejects it.
 const assets = readdirSync(REL).filter((f) => /\.(dmg|zip|exe|AppImage|blockmap)$/.test(f) || /^latest.*\.yml$/.test(f) || f === "SHA256SUMS");
+if (!assets.length) die("no assets to upload.");
 const notes = `docs/release-notes/${tag}.md`;
 const notesArg = existsSync(notes) ? `--notes-file "${notes}"` : `--generate-notes`;
-const quoted = assets.map((f) => `"${join(REL, f)}"`).join(" ");
-run(`gh release create ${tag} --repo ${REPO} --title "Conduit ${tag}" ${notesArg} --latest ${has("--force") ? "--clobber " : ""}${quoted}`);
+try {
+  run(`gh release create ${tag} --repo ${REPO} --title "Conduit ${tag}" ${notesArg} --latest`);
+} catch (e) {
+  if (!has("--force")) throw e; // a fresh release must create cleanly; --force reuses an existing one
+  console.log(`(release ${tag} already exists — reusing it to (re)upload assets)`);
+}
+for (const f of assets) run(`gh release upload ${tag} "${join(REL, f)}" --repo ${REPO} --clobber`);
 console.log(`\n✓ published ${tag}: ${assets.length} assets (verified).`);

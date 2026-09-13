@@ -1901,15 +1901,19 @@ ipcMain.handle("export-character-pdf", async (_e, dto: import("../src/sheet/shee
     await writeFile(tmpHtml, renderSheetHtml(dto), "utf8");
     printWin = new BrowserWindow({
       show: false,
-      webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, javascript: false },
+      // JS is enabled only to run our own inline "scale-to-fit-one-page" script; the page content is
+      // our template with every value HTML-escaped, so there's no untrusted script to run.
+      webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, javascript: true },
     });
     await printWin.loadFile(tmpHtml);
-    // A short settle lets fonts/layout finish before we snapshot the page to PDF.
-    await new Promise((r) => setTimeout(r, 150));
+    // A short settle lets fonts/layout finish and the scale-to-fit script run before we snapshot.
+    await new Promise((r) => setTimeout(r, 250));
+    // Zero PDF margins — the page's own 0.4in body padding provides the margin, and the sheet is
+    // scaled to fit inside the resulting content area.
     const pdf = await printWin.webContents.printToPDF({
       pageSize: "Letter",
       printBackground: true,
-      margins: { top: 0.4, bottom: 0.4, left: 0.4, right: 0.4 },
+      margins: { top: 0, bottom: 0, left: 0, right: 0 },
     });
     await writeFile(filePath, pdf);
     return { ok: true, path: filePath };

@@ -158,11 +158,26 @@ function esc(s: unknown): string {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 }
 
+/** A single-use random nonce for the page's Content-Security-Policy. */
+function makeNonce(): string {
+  const g = globalThis as any;
+  if (g.crypto?.randomUUID) return g.crypto.randomUUID().replace(/-/g, "");
+  return "n" + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+}
+
 const STYLE = `
 :root { --ink:#1b1b1b; --line:#8a8172; --muted:#5b5346; --box:#faf7f0; --shade:#efe9dc; }
 * { box-sizing: border-box; }
-@page { size: Letter; margin: 0.5in; }
-body { margin:0; color:var(--ink); font:12px/1.35 "Helvetica Neue",Arial,sans-serif; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+@page { size: Letter; margin: 0; }
+/* Full page = 816x1056px @96dpi; 0.4in (38.4px) padding all round → 739x979px content area.
+   #sheetRoot renders at that width, then a tiny script scales it down uniformly so the whole
+   sheet always fits on ONE page regardless of how much content a character has. */
+body { margin:0; padding:0.4in; color:var(--ink); font:12px/1.35 "Helvetica Neue",Arial,sans-serif; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+/* The script sets #sheetWrap's height to the SCALED height and clips the overflow, so the document
+   is exactly one page tall — a transform shrinks the paint but not the layout height, so without this
+   the engine would still paginate the full natural height (pushing lower boxes to page 2). */
+#sheetWrap { overflow:hidden; }
+#sheetRoot { width:739px; transform-origin:top left; }
 h1 { font-size:26px; margin:0; letter-spacing:.5px; }
 .sub { color:var(--muted); font-size:12px; margin:2px 0 10px; }
 .box { border:1.5px solid var(--line); border-radius:8px; padding:8px 10px; background:var(--box); }
@@ -205,6 +220,7 @@ td { padding:3px 4px; border-bottom:1px solid var(--shade); vertical-align:top; 
 
 /** Render a full, self-contained HTML page for the sheet DTO. Pure. */
 export function renderSheetHtml(dto: SheetDto): string {
+  const cspNonce = makeNonce();
   const topStat = (lbl: string, val: string) => `<div class="stat box"><div class="big">${esc(val)}</div><div class="lbl">${esc(lbl)}</div></div>`;
   const abilBox = (a: { key: string; score: string; mod: string }) =>
     `<div class="abil"><div class="k">${esc(a.key)}</div><div class="mod">${esc(a.mod)}</div><div class="sc">${esc(a.score)}</div></div>`;
@@ -229,8 +245,11 @@ export function renderSheetHtml(dto: SheetDto): string {
   const equipment = `${dto.equipment.length ? `<div class="equip">${dto.equipment.map((e) => `<div>${esc(e.name)} ${esc(e.qty)}</div>`).join("")}</div>` : ""}${blankRows(5)}`;
   const photo = dto.image ? `<div class="box photo"><img src="${esc(dto.image)}" alt=""></div>` : "";
 
-  return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(dto.name)} — Character Sheet</title><style>${STYLE}</style></head>
+  return `<!doctype html><html><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'nonce-${cspNonce}'; base-uri 'none'; form-action 'none'">
+<title>${esc(dto.name)} — Character Sheet</title><style>${STYLE}</style></head>
 <body>
+<div id="sheetWrap"><div id="sheetRoot">
   <h1>${esc(dto.name)}</h1>
   <div class="sub">${esc(dto.subtitle)}</div>
   <div class="topline">
@@ -257,5 +276,22 @@ export function renderSheetHtml(dto: SheetDto): string {
       <div class="box notes"><h2>Notes</h2><div class="lines">${blankRows(12)}</div></div>
     </div>
   </div>
+</div></div>
+<script nonce="${cspNonce}">
+  // Scale the whole sheet down so it always fits on one page (content area 739x979px).
+  (function () {
+    var root = document.getElementById("sheetRoot"), wrap = document.getElementById("sheetWrap");
+    if (!root || !wrap) return;
+    var run = function () {
+      var w = root.offsetWidth, h = root.offsetHeight;
+      var s = Math.min(1, 739 / w, 979 / h);
+      root.style.transform = "scale(" + s + ")";
+      wrap.style.width = w * s + "px";
+      wrap.style.height = h * s + "px";
+    };
+    if (document.readyState === "complete") run();
+    else window.addEventListener("load", run);
+  })();
+</script>
 </body></html>`;
 }

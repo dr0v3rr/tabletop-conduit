@@ -109,6 +109,35 @@ describe("renderSheetHtml", () => {
     expect(html).toContain("&lt;script&gt;");
   });
 
+  it("locks scripts to a per-render CSP nonce (no unsafe-inline, no remote loads)", () => {
+    const html = renderSheetHtml(buildSheetDto(sampleInput()));
+    const m = html.match(/script-src 'nonce-([a-z0-9]+)'/i);
+    expect(m).toBeTruthy();
+    expect(html).toContain(`<script nonce="${m![1]}">`); // only our scaling script carries the nonce
+    expect(html).toContain("default-src 'none'");
+    expect(html).not.toMatch(/script-src[^;"]*'unsafe-inline'/); // scripts are never unsafe-inline
+    // a second render uses a different nonce
+    const m2 = renderSheetHtml(buildSheetDto(sampleInput())).match(/script-src 'nonce-([a-z0-9]+)'/i);
+    expect(m2![1]).not.toBe(m![1]);
+  });
+
+  it("neutralizes injected markup/handlers from any user-controlled field", () => {
+    const evil = '"><img src=x onerror=alert(1)><script>alert(2)</script>';
+    const html = renderSheetHtml(buildSheetDto(sampleInput({ subtitle: evil, feats: [{ name: evil, description: evil }] })));
+    expect(html).not.toContain("<img src=x onerror=");
+    expect(html).not.toContain("<script>alert(2)</script>");
+    expect(html).not.toContain('"><img'); // attribute break-out neutralized
+    expect(html).toContain("&lt;img src=x onerror=alert(1)&gt;");
+  });
+
+  it("wraps the sheet for scale-to-fit-one-page (zero page margin + scaling script)", () => {
+    const html = renderSheetHtml(buildSheetDto(sampleInput()));
+    expect(html).toContain('id="sheetRoot"');
+    expect(html).toContain('id="sheetWrap"');
+    expect(html).toContain("@page { size: Letter; margin: 0;");
+    expect(html).toMatch(/Math\.min\(1, *739 *\/ *w, *979 *\/ *h\)/); // fits into the 739x979 content area
+  });
+
   it("always includes a Notes section and blank equipment rows to write on", () => {
     const html = renderSheetHtml(buildSheetDto(sampleInput()));
     expect(html).toContain(">Notes<");
