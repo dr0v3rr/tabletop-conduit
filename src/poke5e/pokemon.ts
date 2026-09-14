@@ -130,13 +130,54 @@ function pokemonTypes(pk: any): string[] {
   return Array.isArray(t) ? t.map((x: string) => String(x).toLowerCase()) : t ? [String(t).toLowerCase()] : [];
 }
 
-/** Best ability modifier a move can use (its `power` lists the allowed attributes). */
-function bestPowerMod(pk: any, power: any): number {
-  const mods: Record<string, number> = {};
-  for (const a of Object.keys(ATTR_ABILITY)) mods[a] = abilityMod(Number(pk[({ str: "strength", dex: "dexterity", con: "constitution", int: "intelligence", wis: "wisdom", cha: "charisma" } as any)[a]]) || 10);
-  if (Array.isArray(power) && power.length) return Math.max(...power.map((a: string) => mods[a] ?? 0));
-  if (power === "any") return Math.max(...Object.values(mods));
-  return 0; // "none" | "varies"
+const POWER_COL: Record<string, string> = { str: "strength", dex: "dexterity", con: "constitution", int: "intelligence", wis: "wisdom", cha: "charisma" };
+
+/** The best ability a move can use for its power (its `power` lists the allowed attributes), with the
+ *  winning ability's UPPERCASE label — so a roll's bonus can show WHERE it comes from. Ties keep the
+ *  first-listed ability. Returns {ability:null, mod:0} for "none"/"varies". */
+function bestPowerAbility(pk: any, power: any): { ability: string | null; mod: number } {
+  const cand: string[] = Array.isArray(power) && power.length ? power : power === "any" ? Object.keys(POWER_COL) : [];
+  let best: { ability: string | null; mod: number } = { ability: null, mod: 0 };
+  for (const a of cand) {
+    const col = POWER_COL[a];
+    if (!col) continue;
+    const m = abilityMod(Number(pk[col]) || 10);
+    if (best.ability === null || m > best.mod) best = { ability: a.toUpperCase(), mod: m };
+  }
+  return best;
+}
+
+/** A signed value for tooltips, e.g. 2 → "+2", -1 → "−1" (real minus). */
+const signed = (v: number) => (v >= 0 ? `+${v}` : `−${Math.abs(v)}`);
+
+/** Struggle — the universal fallback move (poke5e /reference). Typeless, STR-or-DEX, 2 + MOVE damage,
+ *  never boosted by STAB/items/abilities. Modeled as "MOVE + 2" over empty dice so it's a flat hit. */
+const STRUGGLE_MOVE = {
+  name: "Struggle", type: "typeless", power: ["str", "dex"], attack: { scope: "ranged" }, range: "melee/60ft",
+  damage: { dice: {}, modifier: "MOVE + 2", type: ["typeless"] },
+  description: ["Known by all Pokémon; usable at any time. Make a melee or ranged attack roll, dealing 2 + MOVE typeless damage on a hit. This damage cannot be increased by another move, item, or ability."],
+};
+
+/** Parse a move's damage `modifier` into a flat total + labeled components (for the tooltip). Tokens
+ *  are joined by "+": MOVE→best ability mod, LEVEL→the Pokémon's level, STAB→its STAB value, and any
+ *  numeric literal (e.g. "MOVE + 5"). STAB is auto-added for a type-matching, non-healing move even
+ *  when the modifier doesn't name it (poke5e applies STAB by type-match); an explicit STAB token
+ *  covers moves whose type "varies". Never double-counts STAB. */
+function parseDamageFlat(
+  m: unknown,
+  ctx: { mod: number; ability: string | null; level: number; stab: number; typeMatch: boolean },
+): { flat: number; parts: { label: string; value: number }[] } {
+  const parts: { label: string; value: number }[] = [];
+  let hasStabToken = false;
+  for (const t of m == null ? [] : String(m).split("+").map((x) => x.trim()).filter(Boolean)) {
+    const up = t.toUpperCase();
+    if (up === "MOVE") { if (ctx.mod) parts.push({ label: ctx.ability || "move", value: ctx.mod }); }
+    else if (up === "LEVEL") { if (ctx.level) parts.push({ label: "level", value: ctx.level }); }
+    else if (up === "STAB") { hasStabToken = true; if (ctx.stab) parts.push({ label: "STAB", value: ctx.stab }); }
+    else if (/^-?\d+$/.test(t)) { const n = Number(t); if (n) parts.push({ label: "flat", value: n }); }
+  }
+  if (ctx.typeMatch && !hasStabToken && ctx.stab) parts.push({ label: "STAB", value: ctx.stab });
+  return { flat: parts.reduce((s, p) => s + p.value, 0), parts };
 }
 
 /** The damage dice for a move at a Pokémon's level (highest threshold ≤ level). */
@@ -164,6 +205,9 @@ export interface MoveStat {
   isCantrip: boolean;
   level: number;
   stab: number; // this move's STAB value (for the abilities engine)
+  attackTip?: string; // breakdown of the to-hit bonus, e.g. "+2 prof +1 WIS"
+  saveTip?: string; // breakdown of the save DC, e.g. "8 base +2 prof +1 WIS"
+  damageTip?: string; // breakdown of the damage, e.g. "1d8 +1 WIS +2 STAB"
   description?: string; // the move's full wording — for "Display in VTT"
   range?: string; // the move's range text (e.g. "40ft") — for the display card's meta line
 }
@@ -206,27 +250,26 @@ function computeStab(pk: any, moveMod: number, level: number): number {
 export function moveStat(move: any, pk: any, learned?: any): MoveStat {
   const level = Number(pk.level) || 1;
   const pb = profFor(level);
-  const mod = bestPowerMod(pk, move.power);
+  const best = bestPowerAbility(pk, move.power);
+  const mod = best.mod;
   const types = pokemonTypes(pk);
-  // STAB applies only when the move's type matches one of the Pokémon's types.
-  const stab = types.includes(String(move.type).toLowerCase()) ? computeStab(pk, mod, level) : 0;
+  const typeMatch = types.includes(String(move.type).toLowerCase()); // move type == one of the Pokémon's
+  const stab = typeMatch ? computeStab(pk, mod, level) : 0; // this move's STAB value (0 if off-type)
 
   const dmg = move.damage;
   let damageDice = "";
   let healDice = "";
   let damageType: string | undefined;
+  let damageTip = "";
   if (dmg) {
     const base = damageDiceForLevel(dmg.dice, level);
-    let flat = 0;
-    const m = dmg.modifier;
-    if (typeof m === "number") flat = m;
-    else if (m === "MOVE") flat = mod;
-    else if (m === "LEVEL") flat = level;
-    else if (typeof m === "string" && /MOVE/.test(m)) flat = mod + (/STAB/.test(m) ? stab : 0);
-    else if (typeof m === "string" && /STAB/.test(m)) flat = stab;
-    const formula = base ? (flat ? `${base}${flat >= 0 ? " + " + flat : " - " + -flat}` : base) : flat ? String(flat) : "";
     const dtype = Array.isArray(dmg.type) ? dmg.type[0] : dmg.type;
-    if (dtype === "healing") healDice = formula;
+    const isHeal = dtype === "healing"; // STAB is a damage bonus — never added to healing
+    const stabVal = computeStab(pk, mod, level); // STAB value regardless of type (for explicit tokens)
+    const { flat, parts } = parseDamageFlat(dmg.modifier, { mod, ability: best.ability, level, stab: stabVal, typeMatch: typeMatch && !isHeal });
+    const formula = base ? (flat ? `${base}${flat >= 0 ? " + " + flat : " - " + -flat}` : base) : flat ? String(flat) : "";
+    damageTip = [base, ...parts.map((p) => `${signed(p.value)} ${p.label}`)].filter(Boolean).join(" ");
+    if (isHeal) healDice = formula;
     else { damageDice = formula; damageType = dtype && dtype !== "typeless" ? String(dtype) : String(move.type); }
   }
 
@@ -236,14 +279,19 @@ export function moveStat(move: any, pk: any, learned?: any): MoveStat {
   const wording = moveWording(move.description);
   if (wording) out.description = wording;
   if (move.range) out.range = String(move.range);
-  if (casting === "attack") out.attackBonus = pb + mod;
+  const abilBit = best.ability ? ` ${signed(mod)} ${best.ability}` : "";
+  if (casting === "attack") {
+    out.attackBonus = pb + mod;
+    out.attackTip = `${signed(pb)} prof${abilBit}`;
+  }
   if (casting === "save") {
     out.saveDc = 8 + pb + mod;
+    out.saveTip = `8 base ${signed(pb)} prof${abilBit}`;
     const sa = move.save && Array.isArray(move.save.attribute) ? move.save.attribute[0] : null;
     if (sa && ATTR_ABILITY[sa]) out.saveAbility = ATTR_ABILITY[sa];
   }
-  if (damageDice) out.damageDice = damageDice;
-  if (healDice) out.healDice = healDice;
+  if (damageDice) { out.damageDice = damageDice; if (damageTip) out.damageTip = damageTip; }
+  if (healDice) { out.healDice = healDice; if (damageTip) out.damageTip = damageTip; }
   if (damageType) out.damageType = damageType;
   // A damaging move with no to-hit and no save is a guaranteed hit (Swift, Aura Sphere, Magical
   // Leaf, …) — it must still ROLL its damage, not be a no-dice announcement.
@@ -328,9 +376,12 @@ export function pokemonToCharacter(
         casting: st.casting,
         type: st.type, // the move's type (Fire, Psychic, …) — for tags + the Display-in-VTT meta line
         attackBonus: st.attackBonus,
+        attackTip: st.attackTip, // to-hit breakdown (prof / ability) for the hover tooltip
         saveAbility: st.saveAbility,
         saveDc: st.saveDc,
+        saveTip: st.saveTip, // save-DC breakdown for the hover tooltip
         damageDice: st.damageDice,
+        damageTip: st.damageTip, // damage breakdown (ability / STAB / flat) for the hover tooltip
         damageType: st.damageType,
         healDice: st.healDice,
         autoHit: st.autoHit, // guaranteed-hit damage (no to-hit)
@@ -348,6 +399,19 @@ export function pokemonToCharacter(
       };
     })
     .filter(Boolean);
+
+  // Struggle — known by ALL Pokémon and usable any time (esp. when every move is out of PP). It's
+  // typeless, uses the better of STR/DEX, deals 2 + MOVE, and takes no STAB/bonuses per the rules.
+  {
+    const st = moveStat(STRUGGLE_MOVE, pk);
+    spells.push({
+      name: "Struggle", level: 0, isCantrip: true, casting: st.casting, type: st.type,
+      attackBonus: st.attackBonus, attackTip: st.attackTip,
+      damageDice: st.damageDice, damageTip: st.damageTip, damageType: st.damageType,
+      description: st.description, range: st.range,
+      abilityMods: [], concentration: false, ritual: false,
+    } as any);
+  }
 
   const atkMods = spells.filter((s: any) => s.casting === "attack").map((s: any) => s.attackBonus);
   const dcs = spells.filter((s: any) => s.casting === "save").map((s: any) => s.saveDc);

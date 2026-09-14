@@ -21,6 +21,7 @@ import { isNewer } from "../src/update/version.js";
 import electronUpdater from "electron-updater";
 const { autoUpdater } = electronUpdater;
 import { fetchPokemon, fetchMoveset, movesMap, pokemonToCharacter, resolveAbilities, fetchPokemonFeats, pokemonMeta } from "../src/poke5e/pokemon.js";
+import { ppItemSpec, ppItemEffect, restoredPp } from "../src/poke5e/pp-items.js";
 import { abilityIds, passiveAbilityEffects } from "../src/poke5e/abilities-engine.js";
 import { searchMonsters, fetchMonster, monsterToCharacter } from "../src/monster/source.js";
 import { searchDdbMonsters, fetchDdbMonster, ddbMonsterToCharacter } from "../src/monster/ddb.js";
@@ -310,6 +311,15 @@ function setupPersistentSession(): string {
   const PARTITION = "persist:main";
   const s = session.fromPartition(PARTITION);
   const THIRTY_DAYS = 60 * 60 * 24 * 30;
+  // Electron writes the cookie store to disk lazily, so a login made just before an unclean exit
+  // (crash / force-kill) can be lost. Flush shortly after any Set-Cookie (debounced) and again on
+  // quit, so Roll20 / D&D Beyond sessions actually survive restarts.
+  let flushTimer: ReturnType<typeof setTimeout> | null = null;
+  const flushCookiesSoon = () => {
+    if (flushTimer) clearTimeout(flushTimer);
+    flushTimer = setTimeout(() => { flushTimer = null; s.cookies.flushStore().catch(() => {}); }, 1500);
+  };
+  app.on("before-quit", () => { s.cookies.flushStore().catch(() => {}); });
   s.webRequest.onHeadersReceived((details, cb) => {
     const headers = details.responseHeaders ?? {};
     const key = Object.keys(headers).find((k) => k.toLowerCase() === "set-cookie");
@@ -317,6 +327,7 @@ function setupPersistentSession(): string {
       headers[key] = (headers[key] as string[]).map((c) =>
         /expires=|max-age=/i.test(c) ? c : `${c}; Max-Age=${THIRTY_DAYS}`,
       );
+      flushCookiesSoon(); // persist the new/updated cookie to disk within ~1.5s
     }
     cb({ responseHeaders: headers });
   });
@@ -1671,6 +1682,59 @@ ipcMain.handle("poke5e-set-status", async (_e, pokemonId: number, status: string
     pk.status = status ?? ""; // keep the cached row in sync so re-opening the Pokémon reflects it
     schedulePoke5ePaneRefresh();
     return { ok: true };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+});
+
+// ── PP-restore items (Ether family) ────────────────────────────────────────────────────────────
+// These live in the loaded trainer's bag and restore PP on one of its Pokémon's moves.
+
+/** The trainer's PP-restore items (Ether/Elixir/Leppa), for the "Restore PP" picker. */
+ipcMain.handle("poke5e-pp-items", async () => {
+  if (!poke5eCtx) return { items: [], writable: false };
+  const bag = await buildInventory(poke5eCtx.readKey).catch(() => [] as any[]);
+  const items = bag
+    .filter((i: any) => i.itemId && ppItemSpec(i.itemId) && (Number(i.quantity) || 0) > 0)
+    .map((i: any) => { const s = ppItemSpec(i.itemId)!; return { itemId: i.itemId, name: i.name, quantity: Number(i.quantity) || 0, restore: s.restore, scope: s.scope, effect: ppItemEffect(s) }; });
+  return { items, writable: !!poke5eCtx.writeKey };
+});
+
+/** A Pokémon's PP-tracked moves with current/max PP — so the picker can show what a restore will fill. */
+ipcMain.handle("poke5e-pokemon-moves-pp", async (_e, pokemonId: number) => {
+  const [moveset, moves] = await Promise.all([fetchMoveset(Number(pokemonId)).catch(() => [] as any[]), movesMap().catch(() => ({} as any))]);
+  const list = (Array.isArray(moveset) ? moveset : [])
+    .filter((m: any) => (Number(m.pp_max) || 0) > 0)
+    .map((m: any) => ({ learnedId: m.id, moveId: m.move_id, name: moves[m.move_id]?.name || String(m.move_id), ppCur: Number(m.pp_cur) || 0, ppMax: Number(m.pp_max) || 0 }));
+  return { moves: list };
+});
+
+/** Use a PP-restore item on a Pokémon: restore the target move (or all moves for an Elixir), then
+ *  consume one of the item from the trainer's bag. Write-key gated; strictly poke5e. */
+ipcMain.handle("poke5e-use-pp-item", async (_e, pokemonId: number, itemId: string, learnedId: number | null) => {
+  if (!poke5eCtx?.writeKey) return { ok: false, error: "This trainer is read-only (no write key)." };
+  const spec = ppItemSpec(String(itemId));
+  if (!spec) return { ok: false, error: "That item doesn't restore PP." };
+  const pid = Number(pokemonId);
+  if (!poke5eCtx.team.get(pid)) return { ok: false, error: "That Pokémon isn't on this trainer." };
+  const bag = await buildInventory(poke5eCtx.readKey).catch(() => [] as any[]);
+  const item = bag.find((i: any) => i.itemId === String(itemId) && (Number(i.quantity) || 0) > 0);
+  if (!item) return { ok: false, error: "None left in the bag." };
+  const moveset = await fetchMoveset(pid).catch(() => [] as any[]);
+  const targets = spec.scope === "all" ? moveset : moveset.filter((m: any) => m.id === Number(learnedId));
+  if (!targets.length) return { ok: false, error: "No matching move to restore." };
+  try {
+    const restored: { learnedId: number; ppCur: number; ppMax: number }[] = [];
+    for (const m of targets) {
+      const max = Number(m.pp_max) || 0;
+      if (max <= 0) continue;
+      const next = restoredPp(Number(m.pp_cur) || 0, max, spec.restore);
+      if (next !== (Number(m.pp_cur) || 0)) await updateMovePp(poke5eCtx.writeKey, m.id, m.move_id, next, max, m.notes || "");
+      restored.push({ learnedId: m.id, ppCur: next, ppMax: max });
+    }
+    await updateInventoryItem(poke5eCtx.writeKey, item, Math.max(0, (Number(item.quantity) || 1) - 1));
+    schedulePoke5ePaneRefresh();
+    return { ok: true, restored, itemName: item.name, remaining: Math.max(0, (Number(item.quantity) || 1) - 1), pokemonId: pid };
   } catch (err) {
     return { ok: false, error: String(err) };
   }

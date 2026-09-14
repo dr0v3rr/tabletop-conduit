@@ -63,6 +63,9 @@ declare global {
       poke5eRemoveTrainer(): Promise<{ ok: boolean; readKey?: string; error?: string }>;
       poke5eRemovePokemon(pokemonId: number): Promise<{ ok: boolean; removed?: boolean; canceled?: boolean; pokemonId?: number; error?: string }>;
       poke5eSetStatus(pokemonId: number, status: string | null): Promise<{ ok: boolean; error?: string }>;
+      poke5ePpItems(): Promise<{ items: { itemId: string; name: string; quantity: number; restore: number; scope: "one" | "all"; effect: string }[]; writable: boolean }>;
+      poke5ePokemonMovesPp(pokemonId: number): Promise<{ moves: { learnedId: number; moveId: string; name: string; ppCur: number; ppMax: number }[] }>;
+      poke5eUsePpItem(pokemonId: number, itemId: string, learnedId: number | null): Promise<{ ok: boolean; restored?: { learnedId: number; ppCur: number; ppMax: number }[]; itemName?: string; remaining?: number; error?: string }>;
       poke5eEvolve(pokemonId: number, targetSpeciesId: string, alloc: { abilities: Record<string, number>; hpMax: number; tookFeat: boolean }): Promise<{ ok: boolean; evolved?: boolean; canceled?: boolean; toName?: string; asi?: number; tookFeat?: boolean; error?: string }>;
       poke5eEvoDismiss(pokemonId: number): Promise<{ ok: boolean }>;
       poke5eDeleteTrainer(): Promise<{ ok: boolean; deleted?: boolean; canceled?: boolean; readKey?: string; error?: string }>;
@@ -700,6 +703,9 @@ function render() {
     ? "Permanently remove this Pokémon from the trainer on poke5e"
     : "Remove this trainer from your list (stays in poke5e; re-add with its read key)";
   renderEvoBar(isPokemon && writable);
+  // Restore-PP (Ether/Elixir): poke5e only, needs a write key. Shown on a Pokémon (restores its own
+  // moves) and on the trainer (pick a team Pokémon). If the bag has no PP items, the click says so.
+  ($("restorePpBtn") as HTMLElement).hidden = !(activeSource === "poke5e" && writable);
   ($("reloadChar") as HTMLElement).hidden = activeSource === "monster"; // monsters reload via search, not here
   if (!writable) ($("ddbStatus") as HTMLElement).hidden = true; // no source sync to show
   if (pokeMeta) renderPokeChips();
@@ -1642,10 +1648,12 @@ function spellRow(sp: any): HTMLElement {
   if (depleted) b.title = outOfPp ? "No PP left" : `No level ${lvl} spell slots left`;
   let right = "";
   const sd = spellDamage(sp); // full damage incl. any secondary component
-  if (sp.casting === "attack") right = `<span class="mod">${sgn(sp.attackBonus)}</span><span class="dmg">${esc(sd.dice || "")} ${esc(sd.type || "")}</span>`;
-  else if (sp.casting === "save") right = `<span class="dmg">${esc(sp.saveAbility || "")} DC ${esc(sp.saveDc)} · ${esc(sd.dice || "—")}</span>`;
-  else if (sp.healDice) right = `<span class="dmg heal">heal ${esc(sp.healDice)}</span>`;
-  else if (sp.autoHit && sp.damageDice) right = `<span class="dmg">${esc(sp.damageDice)} ${esc(sp.damageType || "")}</span>`; // guaranteed-hit damage
+  // Hover tooltips break a bonus down into where it comes from (prof / ability / STAB / flat).
+  const tip = (t?: string) => (t ? ` title="${esc(t)}"` : "");
+  if (sp.casting === "attack") right = `<span class="mod"${tip(sp.attackTip)}>${sgn(sp.attackBonus)}</span><span class="dmg"${tip(sp.damageTip)}>${esc(sd.dice || "")} ${esc(sd.type || "")}</span>`;
+  else if (sp.casting === "save") right = `<span class="dmg"${tip([sp.saveTip, sp.damageTip].filter(Boolean).join(" · "))}>${esc(sp.saveAbility || "")} DC ${esc(sp.saveDc)} · ${esc(sd.dice || "—")}</span>`;
+  else if (sp.healDice) right = `<span class="dmg heal"${tip(sp.damageTip)}>heal ${esc(sp.healDice)}</span>`;
+  else if (sp.autoHit && sp.damageDice) right = `<span class="dmg"${tip(sp.damageTip)}>${esc(sp.damageDice)} ${esc(sp.damageType || "")}</span>`; // guaranteed-hit damage
   else if (sp.rollDie) right = `<span class="dmg">roll ${esc(sp.rollDie)}</span>`; // OHKO / prose die
   else right = `<span class="dmg util">cast</span>`;
   const pp = sp.pp && sp.pp.max > 0 ? `<span class="pp">${sp.pp.current}/${sp.pp.max} PP</span>` : "";
@@ -2017,6 +2025,8 @@ function doRoll(req: { kind: string; key?: string }) {
 
 // wire controls
 $("restBtn").onclick = async () => {
+  // A poke5e Pokémon's "slots" are its moves' PP — a long rest refills every move to full.
+  if (activeSource === "poke5e" && activeRef.startsWith("pmon:")) { await restorePokemonPp(); return; }
   if (writable && ddbConnected) {
     await withDdbLock(async () => {
       const res = await window.api.ddbRestoreAll();
@@ -2029,6 +2039,22 @@ $("restBtn").onclick = async () => {
     setStatus("Long rest — slots restored (local)");
   }
 };
+
+// Long rest for a poke5e Pokémon: restore every move's PP to its max (write-key gated; local-only
+// without one). Struggle has no PP, so it's naturally skipped.
+async function restorePokemonPp() {
+  const moves = (spellcasting?.spells || []).filter((m: any) => m.pp && m.pp.max > 0 && m.pp.current < m.pp.max && m.learnedId);
+  if (!moves.length) { setStatus("Long rest — PP already full"); return; }
+  for (const m of moves) m.pp.current = m.pp.max;
+  renderSpells();
+  if (!writable) { setStatus("Long rest — PP restored (local)"); return; }
+  let failed = 0;
+  for (const m of moves) {
+    const r = await window.api.poke5eSetPp(m.learnedId, m.moveId, m.pp.current, m.pp.max, m.moveNotes).catch(() => ({ ok: false }));
+    if (!r?.ok) failed++;
+  }
+  setStatus(failed ? `Long rest — PP restored (${failed} not saved to poke5e)` : "Long rest — all PP restored ✓", failed > 0);
+}
 $("shortRest").onclick = async () => {
   const pools: any[] = hitDice?.pools ?? [];
   const pendingTotal = Object.values(hitPending).reduce((a, b) => a + b, 0);
@@ -2470,6 +2496,118 @@ $("rosterToggle").onclick = toggleRosterMenu;
 $("charName").onclick = toggleRosterMenu;
 $("reloadChar").onclick = () => reloadCurrent();
 $("exportPdfBtn").onclick = () => exportSheetPdf();
+$("restorePpBtn").onclick = () => openRestorePp();
+
+// ── Restore PP (Ether / Elixir / Leppa) ─────────────────────────────────────────────────────────
+// One picker used from both sheets. On a Pokémon it targets that Pokémon; on a trainer you pick a
+// team Pokémon. It shows each move's current/max PP so you can see what an item will fill, then
+// consumes one item from the trainer's bag and writes the restored PP back (poke5e-only).
+type PpWiz = { pid: number | null; pName: string; items: any[]; itemId: string | null; moves: any[] | null; learnedId: number | null };
+let ppWiz: PpWiz | null = null;
+
+function ensurePpOverlay(): HTMLElement {
+  let ov = document.getElementById("ppWizard");
+  if (!ov) {
+    ov = document.createElement("div"); ov.id = "ppWizard"; ov.className = "catch-overlay";
+    ov.innerHTML = `<div class="catch-modal evo-modal" role="dialog" aria-modal="true" aria-label="Restore PP"><button class="cm-x" id="ppX" title="Close">✕</button><div id="ppBody"></div></div>`;
+    document.body.appendChild(ov);
+    ov.addEventListener("click", (e) => { if (e.target === ov) closePpWizard(); });
+    (ov.querySelector("#ppX") as HTMLElement).onclick = closePpWizard;
+    document.addEventListener("keydown", (e) => { if ((e as KeyboardEvent).key === "Escape" && ov!.classList.contains("open")) closePpWizard(); });
+  }
+  return ov;
+}
+function closePpWizard() { document.getElementById("ppWizard")?.classList.remove("open"); }
+
+async function openRestorePp() {
+  const res = await window.api.poke5ePpItems().catch(() => ({ items: [], writable: false }));
+  if (!res.writable) { setStatus("This trainer is read-only — can't use items", true); return; }
+  if (!res.items.length) { setStatus("No Ether/Elixir/Leppa in the trainer's bag", true); return; }
+  const onPokemon = isPoke5ePokemon();
+  ppWiz = { pid: onPokemon ? Number(pmonId(activeRef)) || null : null, pName: onPokemon ? (model?.name || "Pokémon") : "", items: res.items, itemId: null, moves: null, learnedId: null };
+  ensurePpOverlay().classList.add("open");
+  if (ppWiz.pid) await loadPpMoves(ppWiz.pid);
+  renderPpWizard();
+}
+
+async function loadPpMoves(pid: number) {
+  const r = await window.api.poke5ePokemonMovesPp(pid).catch(() => ({ moves: [] }));
+  if (ppWiz) ppWiz.moves = r.moves;
+}
+
+function renderPpWizard() {
+  const body = document.getElementById("ppBody");
+  if (!body || !ppWiz) return;
+  const w = ppWiz;
+  let h = `<div class="cm-head"><div class="cm-name">Restore PP</div></div>`;
+
+  // Target (only when launched from the trainer — on a Pokémon it's fixed).
+  if (!w.pid) {
+    const team = roster.filter((r) => r.id.startsWith("pmon:"));
+    h += `<div class="pp-label">Target Pokémon</div><div class="ew-targets">` +
+      team.map((r) => `<button class="ew-tgt" data-pid="${esc(pmonId(r.id))}"><span>${esc(r.name)}</span></button>`).join("") + `</div>`;
+  } else {
+    h += `<div class="ew-into">Restoring PP on <b>${esc(w.pName)}</b></div>`;
+  }
+
+  // Item choice.
+  if (w.pid) {
+    h += `<div class="pp-label">Item</div><div class="ew-targets">` + w.items.map((it) =>
+      `<button class="ew-tgt${it.itemId === w.itemId ? " on" : ""}" data-item="${esc(it.itemId)}"><span>${esc(it.name)} ×${it.quantity}</span><span class="ew-cond">${esc(it.effect)}</span></button>`).join("") + `</div>`;
+  }
+
+  // Move list (with current PP) — for single-move items; shown once an item is chosen.
+  const spec = w.items.find((it) => it.itemId === w.itemId);
+  if (w.pid && spec) {
+    const moves = w.moves || [];
+    if (spec.scope === "one") {
+      h += `<div class="pp-label">Move to restore <span class="muted-note">(+${spec.restore} PP)</span></div>`;
+      h += moves.length
+        ? `<div class="pp-moves">` + moves.map((m) => {
+            const full = m.ppCur >= m.ppMax;
+            return `<button class="pp-move${m.learnedId === w.learnedId ? " on" : ""}" data-lid="${m.learnedId}" ${full ? "disabled" : ""}><span class="pp-mn">${esc(m.name)}</span><span class="pp-pp">${m.ppCur}/${m.ppMax}${full ? " (full)" : ""}</span></button>`;
+          }).join("") + `</div>`
+        : `<div class="muted-note">No PP-tracked moves.</div>`;
+    } else {
+      h += `<div class="muted-note">Restores +${spec.restore} PP to <b>all</b> of ${esc(w.pName)}'s moves.</div>`;
+    }
+  }
+
+  const ready = !!(w.pid && spec && (spec.scope === "all" || w.learnedId));
+  h += `<div class="ew-actions"><button class="mini-btn" id="ppCancel">Cancel</button><button class="mini-btn ew-go" id="ppUse" ${ready ? "" : "disabled"}>Use ${spec ? esc(spec.name) : "item"}</button></div>`;
+  body.innerHTML = h;
+
+  body.querySelectorAll<HTMLElement>(".ew-tgt[data-pid]").forEach((b) => { b.onclick = async () => { w.pid = Number(b.dataset.pid); w.pName = roster.find((r) => pmonId(r.id) === b.dataset.pid)?.name || "Pokémon"; w.itemId = null; w.learnedId = null; await loadPpMoves(w.pid); renderPpWizard(); }; });
+  body.querySelectorAll<HTMLElement>(".ew-tgt[data-item]").forEach((b) => { b.onclick = () => { w.itemId = b.dataset.item!; w.learnedId = null; renderPpWizard(); }; });
+  body.querySelectorAll<HTMLElement>(".pp-move").forEach((b) => { b.onclick = () => { w.learnedId = Number(b.dataset.lid); renderPpWizard(); }; });
+  (document.getElementById("ppCancel") as HTMLElement).onclick = closePpWizard;
+  (document.getElementById("ppUse") as HTMLElement).onclick = () => usePpItem();
+}
+
+async function usePpItem() {
+  if (!ppWiz || !ppWiz.pid || !ppWiz.itemId) return;
+  const usedItemId = ppWiz.itemId;
+  const r = await window.api.poke5eUsePpItem(ppWiz.pid, usedItemId, ppWiz.learnedId).catch(() => null);
+  if (!r || !r.ok) { setStatus(r?.error || "Couldn't restore PP", true); return; }
+  const n = r.restored?.length || 0;
+  setStatus(`${r.itemName}: restored PP on ${n} move${n === 1 ? "" : "s"} ✓`);
+  // If we're on the TRAINER's sheet (Option B), its bag is on screen — drop the consumed item's
+  // count right away so the UI matches poke5e (a Pokémon sheet doesn't show the bag; switching back
+  // to the trainer re-fetches it fresh anyway).
+  if (activeSource === "poke5e" && !activeRef.startsWith("pmon:")) {
+    const inv = inventory.find((i: any) => i.itemId === usedItemId);
+    if (inv) { inv.quantity = r.remaining ?? Math.max(0, (Number(inv.quantity) || 1) - 1); renderInventory(); }
+  }
+  // Refresh the target Pokémon's moves/PP if it's the currently-loaded sheet (Option A).
+  if (isPoke5ePokemon() && Number(pmonId(activeRef)) === ppWiz.pid) await reloadCurrent();
+  const it = ppWiz.items.find((i) => i.itemId === usedItemId);
+  if (it) it.quantity = r.remaining ?? Math.max(0, it.quantity - 1);
+  ppWiz.items = ppWiz.items.filter((i) => i.quantity > 0);
+  ppWiz.itemId = null; ppWiz.learnedId = null;
+  if (ppWiz.pid) await loadPpMoves(ppWiz.pid);
+  if (!ppWiz.items.length) { closePpWizard(); return; }
+  renderPpWizard();
+}
 
 // Build the printable-sheet DTO from the live sheet state and hand it to the main process to render
 // → print → save as a PDF (D&D-Beyond-style layout).

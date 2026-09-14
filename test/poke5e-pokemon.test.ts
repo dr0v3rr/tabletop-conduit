@@ -40,7 +40,7 @@ describe('poke5e moveStat', () => {
     expect(s.casting).toBe('save');
     expect(s.saveAbility).toBe('DEX');
     expect(s.saveDc).toBe(14); // 8 + PB(3) + DEXmod(3)
-    expect(s.damageDice).toBe('2d10 + 3'); // level 5 -> 2d10, MOVE -> +3
+    expect(s.damageDice).toBe('2d10 + 6'); // level 5 -> 2d10, MOVE +3 + STAB +3 (Fire move on a Fire Pokémon)
     expect(s.damageType).toBe('fire');
   });
   it('attack move: to-hit = PB + best ability mod', () => {
@@ -113,8 +113,9 @@ describe('poke5e pokemonToCharacter', () => {
     expect(model.saves.DEX).toEqual({ mod: 6, proficient: true });
     expect(hp).toEqual({ current: 22, max: 30, temp: 0, removed: 8 });
   });
-  it('exposes moves as rollable spells', () => {
-    expect(spellcasting.spells.map((s: any) => s.name)).toEqual(['Flamethrower', 'Tackle']);
+  it('exposes moves as rollable spells (plus the universal Struggle)', () => {
+    expect(spellcasting.spells.map((s: any) => s.name)).toEqual(['Flamethrower', 'Tackle', 'Struggle']);
     expect(spellcasting.spells[1]).toMatchObject({ casting: 'attack', attackBonus: 6, damageDice: '1d6 + 3' });
+    expect(spellcasting.spells[2]).toMatchObject({ name: 'Struggle', casting: 'attack', damageType: 'typeless' });
   });
 });
