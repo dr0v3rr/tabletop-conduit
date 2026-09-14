@@ -22,6 +22,7 @@ import electronUpdater from "electron-updater";
 const { autoUpdater } = electronUpdater;
 import { fetchPokemon, fetchMoveset, movesMap, pokemonToCharacter, resolveAbilities, fetchPokemonFeats, pokemonMeta } from "../src/poke5e/pokemon.js";
 import { ppItemSpec, ppItemEffect, restoredPp } from "../src/poke5e/pp-items.js";
+import { specCounts } from "../src/poke5e/specializations.js";
 import { abilityIds, passiveAbilityEffects } from "../src/poke5e/abilities-engine.js";
 import { searchMonsters, fetchMonster, monsterToCharacter } from "../src/monster/source.js";
 import { searchDdbMonsters, fetchDdbMonster, ddbMonsterToCharacter } from "../src/monster/ddb.js";
@@ -829,7 +830,7 @@ ipcMain.handle("load-poke5e-pokemon", async (_e, pokemonId: number) => {
     // Speed + evolution live on the SPECIES (pokemon.json), not the pokémon row — look them up.
     const dex = await ensurePokedex().catch(() => [] as DexEntry[]);
     const speciesEntry = dex.find((e) => e.id === String(pk.species));
-    const { model, hp, spellcasting } = pokemonToCharacter(pk, moveset, moves, featNames, speciesEntry?.speedModes ?? [], speciesEntry?.name ?? "");
+    const { model, hp, spellcasting } = pokemonToCharacter(pk, moveset, moves, featNames, speciesEntry?.speedModes ?? [], speciesEntry?.name ?? "", specCounts(poke5eCtx.trainerRow));
     current = { data: {} as CharacterData, name: model.name, id: `pmon:${pokemonId}`, model };
     // A Pokémon's "feats" section = its passive abilities (Blaze, …) plus any Pokémon feats.
     const feats = [...abilities, ...pfeats];

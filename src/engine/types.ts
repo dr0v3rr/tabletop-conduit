@@ -169,6 +169,9 @@ export interface RollModel {
   skills: Record<SkillKey, SkillValue>;
   passives: { perception: number; investigation: number; insight: number };
   initiative: number;
+  /** Flat bonus folded into every skill from a poke5e trainer specialization (skills only). Present
+   *  only when > 0; used to annotate skill rows. Never applies to saves/attacks/ability checks. */
+  specBonus?: number;
   /** Primary speed in feet (walking if the creature has it, else its leading movement mode). */
   speed: number;
   /** All movement modes, when known (poke5e species can have walking/climbing/swimming/flying/

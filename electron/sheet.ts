@@ -732,11 +732,12 @@ function render() {
 
   const sk = $("skills");
   sk.innerHTML = "";
+  const specTip = model.specBonus ? `Includes +${model.specBonus} from the trainer's specialisation` : "";
   for (const key of Object.keys(SKILL_NAMES)) {
     const s = model.skills[key];
     if (!s) continue;
     const cls = s.expertise ? "exp" : s.proficient ? "prof" : "";
-    sk.appendChild(rollLine(SKILL_NAMES[key]!, s.mod, cls, () => doRoll({ kind: "skill", key })));
+    sk.appendChild(rollLine(SKILL_NAMES[key]!, s.mod, cls, () => doRoll({ kind: "skill", key }), specTip));
   }
 
   renderVitals();
@@ -1924,9 +1925,10 @@ function spellReq(sp: any): any | null {
   return { kind: "cast", key: sp.name, verb };
 }
 
-function rollLine(label: string, mod: number, dotCls: string, onclick: () => void): HTMLElement {
+function rollLine(label: string, mod: number, dotCls: string, onclick: () => void, title = ""): HTMLElement {
   const b = document.createElement("button");
   b.className = "roll-line";
+  if (title) b.title = title;
   b.innerHTML = `<span class="label"><span class="dot ${dotCls}"></span>${label}</span><span class="mod">${sgn(mod)}</span>`;
   b.onclick = onclick;
   return b;

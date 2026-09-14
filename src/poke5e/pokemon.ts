@@ -10,6 +10,7 @@ import { abilityIds, moveAbilityMods } from "./abilities-engine";
 import type { AbilityMod } from "./abilities-engine";
 import { moveFeatMods } from "./feats-engine";
 import { primarySpeed, type SpeedMode } from "./speed";
+import { specSkillBonus } from "./specializations";
 
 // poke5e status conditions that alter the Pokémon's OWN move rolls (from /reference/status-conditions).
 // Rendered/applied via the existing ability-mod machinery (cond:{status} is evaluated live against the
@@ -319,6 +320,7 @@ export function pokemonToCharacter(
   featNames: string[] = [], // the Pokémon's feat names (from get_pokemon_feats) — for the feats engine
   speciesSpeeds: SpeedMode[] = [], // movement modes from the SPECIES (pokemon.json); poke5e stores no speed on the pokémon row
   speciesName = "", // proper-cased species name (e.g. "Ivysaur") — the no-nickname display, not the raw id
+  trainerSpecCounts: Record<string, number> = {}, // owning trainer's specialization counts (per type)
 ): { model: RollModel; hp: { current: number; max: number; temp: number; removed: number }; spellcasting: any } {
   const level = Number(pk.level) || 1;
   const profBonus = profFor(level);
@@ -332,10 +334,13 @@ export function pokemonToCharacter(
     const proficient = !!pk[`save_${ab.toLowerCase()}`];
     saves[ab] = { mod: abilities[ab].mod + (proficient ? profBonus : 0), proficient };
   }
+  // Trainer specialization: +1 per matching-type stack, summed across this Pokémon's types, added to
+  // ALL skill checks (and, through them, passive skills). Never touches saves/attacks/ability checks.
+  const specBonus = specSkillBonus(trainerSpecCounts, pokemonTypes(pk));
   const skills = {} as Record<SkillKey, SkillValue>;
   for (const s of SKILLS) {
     const proficient = !!pk[`prof_${s.key.replace(/-/g, "_")}`];
-    skills[s.key] = { mod: abilities[s.ability].mod + (proficient ? profBonus : 0), ability: s.ability, proficient, expertise: false };
+    skills[s.key] = { mod: abilities[s.ability].mod + (proficient ? profBonus : 0) + specBonus, ability: s.ability, proficient, expertise: false };
   }
   const passive = (k: SkillKey) => 10 + skills[k].mod;
   const maxHp = Number(pk.hp_max) || 0;
@@ -354,6 +359,7 @@ export function pokemonToCharacter(
     speed: primarySpeed(speciesSpeeds),
     speeds: speciesSpeeds.length ? speciesSpeeds : undefined,
     conditional: [],
+    specBonus: specBonus || undefined, // trainer specialization bonus folded into every skill (for the tooltip)
   };
 
   // Moves → rollable "spells".
