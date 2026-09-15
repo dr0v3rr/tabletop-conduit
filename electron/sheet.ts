@@ -3,6 +3,7 @@ import { aggregate } from "../src/stats/roll-stats.js"; // pure stats, safe in t
 import { CONDITIONS } from "../src/engine/conditions.js"; // pure data catalog
 import { POKE5E_STATUSES, poke5eStatusName } from "../src/poke5e/status.js"; // poke5e's own status list
 import { buildSheetDto } from "../src/sheet/sheet-pdf.js"; // printable-sheet DTO builder (pure)
+import { expUntilLevelUp, expProgress, formatExp, MAX_LEVEL } from "../src/poke5e/experience.js"; // EXP maths
 type Ability = "STR" | "DEX" | "CON" | "INT" | "WIS" | "CHA";
 type AdvMode = "normal" | "advantage" | "disadvantage" | "super-advantage" | "super-disadvantage";
 
@@ -63,6 +64,7 @@ declare global {
       poke5eRemoveTrainer(): Promise<{ ok: boolean; readKey?: string; error?: string }>;
       poke5eRemovePokemon(pokemonId: number): Promise<{ ok: boolean; removed?: boolean; canceled?: boolean; pokemonId?: number; error?: string }>;
       poke5eSetStatus(pokemonId: number, status: string | null): Promise<{ ok: boolean; error?: string }>;
+      poke5eSetExp(pokemonId: number, exp: number): Promise<{ ok: boolean; exp?: number; error?: string }>;
       poke5ePpItems(): Promise<{ items: { itemId: string; name: string; quantity: number; restore: number; scope: "one" | "all"; effect: string }[]; writable: boolean }>;
       poke5ePokemonMovesPp(pokemonId: number): Promise<{ moves: { learnedId: number; moveId: string; name: string; ppCur: number; ppMax: number }[] }>;
       poke5eUsePpItem(pokemonId: number, itemId: string, learnedId: number | null): Promise<{ ok: boolean; restored?: { learnedId: number; ppCur: number; ppMax: number }[]; itemName?: string; remaining?: number; error?: string }>;
@@ -143,7 +145,7 @@ let poke5eTrainerKey = ""; // read key of the currently-loaded poke5e trainer (f
 let feats: { name: string; description: string }[] = []; // trainer feats / abilities (poke5e etc.)
 let charClassLine = ""; // class/level subtitle from the source, used on the printable sheet
 let passives: { ability: string; cond: any; effect: string }[] = []; // Pokémon-wide ability passives
-let pokeMeta: { species: string; types: string[]; nature: string; tera: string; status: string; shiny: boolean; bond: { level: number; cur: number; max: number }; sprite?: string } | null = null;
+let pokeMeta: { species: string; types: string[]; nature: string; tera: string; status: string; shiny: boolean; bond: { level: number; cur: number; max: number }; sprite?: string; exp?: number } | null = null;
 let activeRef = ""; // ref (DDB character id) of the currently-shown roster member
 const enabled = new Set<string>();
 
@@ -703,6 +705,7 @@ function render() {
     ? "Permanently remove this Pokémon from the trainer on poke5e"
     : "Remove this trainer from your list (stays in poke5e; re-add with its read key)";
   renderEvoBar(isPokemon && writable);
+  renderExpBar(isPokemon);
   // Restore-PP (Ether/Elixir): poke5e only, needs a write key. Shown on a Pokémon (restores its own
   // moves) and on the trainer (pick a team Pokémon). If the bag has no PP items, the click says so.
   ($("restorePpBtn") as HTMLElement).hidden = !(activeSource === "poke5e" && writable);
@@ -2792,6 +2795,48 @@ async function dismissAsi() {
   await window.api.poke5eEvoDismiss(Number(pid)).catch(() => {});
   asiPending = null;
   renderEvoBar(activeSource === "poke5e" && activeRef.startsWith("pmon:") && writable);
+}
+
+// ── Experience tracker (poke5e Pokémon) ────────────────────────────────────────────────────────
+// Shows the Pokémon's EXP, progress to the next level, and an editable total + quick "add" — the
+// incremental tracker from poke5e.app. Write-key gated; leveling itself is still done on poke5e.
+function renderExpBar(isPokemon: boolean) {
+  const bar = $("expBar") as HTMLElement;
+  if (!isPokemon || !pokeMeta) { bar.hidden = true; bar.innerHTML = ""; return; }
+  const exp = Number(pokeMeta.exp) || 0;
+  const level = model?.level || 1;
+  const { pct, readyToLevel } = expProgress(exp, level);
+  const until = expUntilLevelUp(exp, level);
+  const note = level >= MAX_LEVEL ? "Max level"
+    : readyToLevel ? `⭐ Ready to level up (on poke5e)`
+    : `${formatExp(until)} to Lv ${level + 1}`;
+  const controls = writable
+    ? `<input id="expInput" class="exp-input" type="number" min="0" value="${exp}" title="Set total EXP">`
+      + `<span class="exp-add"><input id="expAdd" class="exp-input sm" type="number" min="1" placeholder="+ gained"><button id="expAddBtn" class="mini-btn">Add</button></span>`
+    : `<b class="exp-val">${formatExp(exp)}</b>`;
+  bar.hidden = false;
+  bar.innerHTML = `<span class="exp-lbl">EXP</span>${controls}<span class="exp-note${readyToLevel ? " ready" : ""}">${note}</span>`
+    + `<div class="exp-track"><div class="exp-fill" style="width:${Math.round(pct * 100)}%"></div></div>`;
+  if (writable) {
+    const inp = document.getElementById("expInput") as HTMLInputElement | null;
+    if (inp) inp.onchange = () => setExp(Math.max(0, Math.round(Number(inp.value) || 0)));
+    const add = document.getElementById("expAdd") as HTMLInputElement | null;
+    const addBtn = document.getElementById("expAddBtn");
+    if (addBtn) addBtn.onclick = () => { const g = Math.round(Number(add?.value) || 0); if (g) { setExp(exp + g); if (add) add.value = ""; } };
+  }
+}
+
+async function setExp(newExp: number) {
+  if (!pokeMeta || !writable) return;
+  const prev = Number(pokeMeta.exp) || 0;
+  const next = Math.max(0, Math.round(newExp));
+  if (next === prev) return;
+  pokeMeta.exp = next; // optimistic
+  renderExpBar(true);
+  const pid = pmonId(activeRef);
+  const r = pid ? await window.api.poke5eSetExp(Number(pid), next).catch(() => ({ ok: false, error: "failed" } as any)) : { ok: false, error: "No Pokémon loaded" };
+  if (!r.ok) { pokeMeta.exp = prev; renderExpBar(true); setStatus(r.error || "Couldn't save EXP", true); return; }
+  setStatus(`EXP set to ${formatExp(next)} ✓`);
 }
 
 // ── Evolve wizard (matches poke5e: pick target → re-stat AC/HP → spend the ASI → save in place) ──

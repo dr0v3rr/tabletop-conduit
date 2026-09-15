@@ -121,6 +121,7 @@ export function pokemonMeta(pk: any) {
     tera: pk.tera_type || "",
     status: pk.status || "",
     shiny: !!pk.is_shiny,
+    exp: Number(pk.exp) || 0,
     bond: { level: Number(pk.bond_level) || 0, cur: Number(pk.bond_points_cur) || 0, max: Number(pk.bond_points_max) || 0 },
   };
 }
@@ -202,6 +203,7 @@ export interface MoveStat {
   autoHit?: boolean; // damage move with no to-hit / no save — guaranteed hit (Swift, Aura Sphere, …)
   rollDie?: string; // a utility move whose prose is "roll a d20/d100/…" (OHKO moves, Metronome, …)
   note?: string; // a per-move reminder (charge / recharge, from the move's `time`)
+  castingTime?: "action" | "bonus" | "reaction"; // action economy, from the move's `time` field
   pp?: { current: number; max: number };
   isCantrip: boolean;
   level: number;
@@ -304,8 +306,10 @@ export function moveStat(move: any, pk: any, learned?: any): MoveStat {
     const rm = /roll (?:a |1)?d(\d+)/i.exec(desc);
     if (rm) out.rollDie = `1d${rm[1]}`;
   }
-  // Charge / recharge moves (from `time`, e.g. "1 action, recharge"): surface a reminder on use.
+  // Action economy + charge/recharge, from the move's `time` field ("1 action" / "1 bonus action" /
+  // "1 reaction", optionally ", charge" / ", recharge").
   const time = String(move.time || "").toLowerCase();
+  out.castingTime = /bonus action/.test(time) ? "bonus" : /reaction/.test(time) ? "reaction" : "action";
   if (/recharge/.test(time)) out.note = "must recharge — no move on your next turn";
   else if (/charge/.test(time)) out.note = "charges now — fires on your next turn (keep concentration)";
   if (learned) out.pp = { current: Number(learned.pp_cur) || 0, max: Number(learned.pp_max) || 0 };
@@ -392,6 +396,7 @@ export function pokemonToCharacter(
         healDice: st.healDice,
         autoHit: st.autoHit, // guaranteed-hit damage (no to-hit)
         rollDie: st.rollDie, // OHKO / prose "roll a dN" moves
+        castingTime: st.castingTime, // action / bonus action / reaction → BA / RXN tags
         moveHint: st.note, // charge / recharge reminder
         description: st.description, // full move wording — for "Display in VTT"
         range: st.range, // move range (e.g. "40ft") — for the Display-in-VTT meta line

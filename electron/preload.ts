@@ -51,6 +51,7 @@ contextBridge.exposeInMainWorld("api", {
   poke5eRemoveTrainer: () => ipcRenderer.invoke("poke5e-remove-trainer"),
   poke5eRemovePokemon: (pokemonId: number) => ipcRenderer.invoke("poke5e-remove-pokemon", pokemonId),
   poke5eSetStatus: (pokemonId: number, status: string | null) => ipcRenderer.invoke("poke5e-set-status", pokemonId, status),
+  poke5eSetExp: (pokemonId: number, exp: number) => ipcRenderer.invoke("poke5e-set-exp", pokemonId, exp),
   poke5ePpItems: () => ipcRenderer.invoke("poke5e-pp-items"),
   poke5ePokemonMovesPp: (pokemonId: number) => ipcRenderer.invoke("poke5e-pokemon-moves-pp", pokemonId),
   poke5eUsePpItem: (pokemonId: number, itemId: string, learnedId: number | null) => ipcRenderer.invoke("poke5e-use-pp-item", pokemonId, itemId, learnedId),

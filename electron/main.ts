@@ -14,7 +14,7 @@ import { buildSendExpression } from "../src/roll20/inject.js";
 import { displayCard } from "../src/roll20/format.js";
 import { r20TokenExpr } from "../src/roll20/token.js";
 import { ddbSlotsExpr, ddbHitDiceExpr, ddbInventoryExpr, ddbFetchCharExpr } from "../src/ddb/inject.js";
-import { extractReadKey, fetchTrainer, trainerToRollModel, trainerExtras, buildInventory, fetchTrainerFeats, updateTrainerHp, updatePokemonHp, updatePokemonStatus, updateMovePp, updateInventoryItem, addInventoryItem, fetchItemsCatalog, addPokemonToTeam, removePokemon, evolvePokemon, deleteTrainer, setPoke5eCredentials, getPoke5eCredentials } from "../src/poke5e/source.js";
+import { extractReadKey, fetchTrainer, trainerToRollModel, trainerExtras, buildInventory, fetchTrainerFeats, updateTrainerHp, updatePokemonHp, updatePokemonStatus, updatePokemonExp, updateMovePp, updateInventoryItem, addInventoryItem, fetchItemsCatalog, addPokemonToTeam, removePokemon, evolvePokemon, deleteTrainer, setPoke5eCredentials, getPoke5eCredentials } from "../src/poke5e/source.js";
 import { buildPokedex } from "../src/poke5e/pokedex.js";
 import type { DexEntry } from "../src/poke5e/pokedex.js";
 import { isNewer } from "../src/update/version.js";
@@ -1736,6 +1736,24 @@ ipcMain.handle("poke5e-use-pp-item", async (_e, pokemonId: number, itemId: strin
     await updateInventoryItem(poke5eCtx.writeKey, item, Math.max(0, (Number(item.quantity) || 1) - 1));
     schedulePoke5ePaneRefresh();
     return { ok: true, restored, itemName: item.name, remaining: Math.max(0, (Number(item.quantity) || 1) - 1), pokemonId: pid };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+});
+
+// Set a Pokémon's experience (poke5e's `_exp`), write-key gated. Leveling itself stays on poke5e.
+ipcMain.handle("poke5e-set-exp", async (_e, pokemonId: number, exp: number) => {
+  if (!poke5eCtx?.writeKey) return { ok: false, error: "This trainer is read-only (no write key) — set EXP on poke5e." };
+  const pid = Number(pokemonId);
+  const pk = poke5eCtx.team.get(pid);
+  if (!pk) return { ok: false, error: "That Pokémon isn't on this trainer." };
+  const next = Math.max(0, Math.round(Number(exp) || 0));
+  try {
+    const ok = await updatePokemonExp(poke5eCtx.writeKey, pk, next);
+    if (!ok) return { ok: false, error: "poke5e didn't apply the EXP change." };
+    pk.exp = next; // keep the cached row in sync
+    schedulePoke5ePaneRefresh();
+    return { ok: true, exp: next };
   } catch (err) {
     return { ok: false, error: String(err) };
   }

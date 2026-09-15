@@ -57,6 +57,17 @@ describe("moveStat — STAB + damage-modifier parsing", () => {
     expect(s.damageTip).not.toContain("STAB");
   });
 
+  it("reads action economy from the move's `time` field", () => {
+    const mk = (time: string) => ({ name: "X", type: "normal", power: ["dex"], time, attack: { scope: "melee" }, damage: { dice: { "1": "1d6" }, modifier: "MOVE", type: ["normal"] } });
+    expect(moveStat(mk("1 bonus action"), ralts()).castingTime).toBe("bonus");
+    expect(moveStat(mk("1 reaction"), ralts()).castingTime).toBe("reaction");
+    expect(moveStat(mk("1 action"), ralts()).castingTime).toBe("action");
+    expect(moveStat(mk(""), ralts()).castingTime).toBe("action"); // default
+    const recharge = moveStat(mk("1 action, recharge"), ralts());
+    expect(recharge.castingTime).toBe("action");
+    expect(recharge.note).toMatch(/recharge/);
+  });
+
   it("builds a save-DC breakdown tooltip", () => {
     const move = { name: "Hypnosis", type: "psychic", power: ["wis"], save: { attribute: ["wis"] } };
     const s = moveStat(move, ralts());

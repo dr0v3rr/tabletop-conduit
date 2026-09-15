@@ -164,6 +164,13 @@ export async function updatePokemonStatus(writeKey: string, pk: any, status: str
   return Number(r) > 0;
 }
 
+/** Set a Pokémon's experience (poke5e's single `_exp` column; write-key gated, full-row upsert). */
+export async function updatePokemonExp(writeKey: string, pk: any, exp: number): Promise<boolean> {
+  const params = { _write_key: writeKey, ...buildParams(POKEMON_PARAMS, pk, { _exp: Math.max(0, Math.round(exp)) }) };
+  const r = await poke5eRpc("update_pokemon", params);
+  return Number(r) > 0;
+}
+
 /** Update a learned move's PP (targeted RPC — the one poke5e write that isn't a full-row upsert). */
 export async function updateMovePp(writeKey: string, moveRowId: number, moveId: string, ppCur: number, ppMax: number, notes = ""): Promise<boolean> {
   const r = await poke5eRpc("update_move", { _write_key: writeKey, _id: moveRowId, _move_id: moveId, _pp_cur: ppCur, _pp_max: ppMax, _notes: notes });
