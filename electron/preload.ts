@@ -33,6 +33,11 @@ contextBridge.exposeInMainWorld("api", {
   r20RenameToken: (id: string, name: string) => ipcRenderer.invoke("r20-token-rename", id, name),
   ddbReadAc: () => ipcRenderer.invoke("ddb-read-ac"),
   openRollLogs: () => ipcRenderer.invoke("roll-logs-open"),
+  // Per-campaign notebook (notes tied to the Roll20 campaign currently open)
+  notebookLoad: () => ipcRenderer.invoke("notebook-load"),
+  notebookSave: (campaign: string, doc: unknown) => ipcRenderer.invoke("notebook-save", campaign, doc),
+  notebookView: (open: boolean) => ipcRenderer.invoke("notebook-view", open),
+  notebookOpen: () => ipcRenderer.invoke("notebook-open"),
   roll20Scrape: () => ipcRenderer.invoke("roll20-scrape"),
   roll20Say: (message: string, speakingAs?: string) => ipcRenderer.invoke("roll20-say", message, speakingAs),
   displayInVtt: (payload: { name: string; body: string; meta?: string; label?: string; speakingAs?: string }) =>

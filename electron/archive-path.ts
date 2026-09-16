@@ -9,12 +9,22 @@
 // Windows treats these base names as devices regardless of extension (CON.jsonl == the CON device).
 const WIN_RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
 
-/** A safe `<id>.jsonl` filename for a campaign id: id-safe chars only (no path separators, no dots),
+/** A safe single path segment for a campaign id: id-safe chars only (no path separators, no dots),
  *  length-capped, reserved-name-neutralised, non-empty. Real Roll20 ids are already `[A-Za-z0-9_-]`,
  *  so legitimate ids are unchanged; only adversarial input is rewritten. Because the result contains
  *  no separators and no `..`, it is always a single in-directory path segment. */
-export function campaignLogFileName(id: string | null | undefined): string {
+function campaignFileBase(id: string | null | undefined): string {
   let base = String(id ?? "").replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 100) || "unknown";
   if (WIN_RESERVED.test(base)) base = "_" + base; // e.g. CON -> _CON
-  return `${base}.jsonl`;
+  return base;
+}
+
+/** A safe `<id>.jsonl` filename for a campaign's durable roll archive. */
+export function campaignLogFileName(id: string | null | undefined): string {
+  return `${campaignFileBase(id)}.jsonl`;
+}
+
+/** A safe `<id>.json` filename for a campaign's notebook (same sanitising as the archive). */
+export function campaignNotesFileName(id: string | null | undefined): string {
+  return `${campaignFileBase(id)}.json`;
 }

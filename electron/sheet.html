@@ -21,10 +21,13 @@
       </div>
       <div id="status" class="status"></div>
       <div class="toolbar">
-        <div class="seg" id="paneSeg">
-          <button data-pane="roll20" class="on">Table</button>
-          <button data-pane="ddb">D&amp;D Beyond</button>
-          <button data-pane="pokedex" hidden title="Browse every species — stat blocks, moves, evolution, catch odds">Pokédex</button>
+        <div class="pane-group">
+          <div class="seg" id="paneSeg">
+            <button data-pane="roll20" class="on">Table</button>
+            <button data-pane="ddb">D&amp;D Beyond</button>
+            <button data-pane="notebook" title="Notes for the campaign currently open in Roll20">📓 Notebook</button>
+          </div>
+          <button id="dexBtn" class="dex-btn" hidden title="Pokédex — browse species, stat blocks, moves, evolution, catch odds" aria-label="Open the Pokédex"><span class="d-scr"></span></button>
         </div>
         <span id="ddbStatus" class="ddb-status" title="Slot sync with D&amp;D Beyond — click to re-check">DDB: —</span>
         <button id="logoutBtn" class="mini-btn" title="Return to the setup menu — change character source or VTT">⇦ Menu</button>
@@ -211,8 +214,13 @@
     </div>
 
     <div id="pokedex" hidden>
-      <div class="dex-head">
-        <h2 class="dex-title">Pokédex</h2>
+     <div class="dex-device">
+      <span class="dex-screw tl"></span><span class="dex-screw tr"></span><span class="dex-screw bl"></span><span class="dex-screw br"></span>
+      <button id="dexClose" class="dex-close" title="Close (Esc)" aria-label="Close">✕</button>
+      <div class="dex-topbar">
+        <div class="dex-lens"><i></i></div>
+        <div class="dex-leds"><span class="dex-led r"></span><span class="dex-led y"></span><span class="dex-led g"></span></div>
+        <div class="dex-wordmark">POKéDEX</div>
         <div class="dex-progress">
           <span>Seen <b id="dexSeen">0</b></span>
           <span>Caught <b id="dexCaught">0</b> / <b id="dexTotal">—</b></span>
@@ -234,6 +242,29 @@
       <div class="dex-body">
         <div class="dex-list" id="dexList" role="listbox" aria-label="Species"></div>
         <div class="dex-detail" id="dexDetail" aria-live="polite"></div>
+      </div>
+     </div>
+    </div>
+
+    <div id="notebook" hidden>
+      <div class="nb">
+        <aside class="nb-rail">
+          <div class="nb-campaign">
+            <div class="nb-eyebrow"><span class="nb-dot"></span> Notebook for</div>
+            <div class="nb-campname" id="nbCampName">—</div>
+            <div class="nb-cid">campaign id · <b id="nbCid">—</b></div>
+          </div>
+          <div class="nb-pages-head">
+            <span>Pages</span>
+            <button id="nbNew" class="mini-btn" title="Add a new note page">＋ New</button>
+          </div>
+          <div class="nb-pagelist" id="nbPages"></div>
+          <div class="nb-rail-foot">
+            <span>💾 Saved per campaign, on this device</span>
+            <button id="nbFolder" class="mini-btn" title="Open the notebook folder">📁</button>
+          </div>
+        </aside>
+        <section class="nb-editor" id="nbEditor"></section>
       </div>
     </div>
 

@@ -5,7 +5,7 @@ import { app, BaseWindow, BrowserWindow, WebContentsView, ipcMain, dialog, sessi
 import type { MenuItemConstructorOptions } from "electron";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve, relative, isAbsolute } from "node:path";
-import { campaignLogFileName } from "./archive-path.js";
+import { campaignLogFileName, campaignNotesFileName } from "./archive-path.js";
 import { writeFile, readFile, appendFile, mkdir, readdir, unlink } from "node:fs/promises";
 import { renderSheetHtml } from "../src/sheet/sheet-pdf.js";
 import { rollFrom, buildCharacter, availableToggles } from "../src/pipeline.js";
@@ -138,6 +138,19 @@ function withinArchive(fullPath: string): boolean {
   return rel.length > 0 && !rel.startsWith("..") && !isAbsolute(rel);
 }
 
+// ---- Per-campaign notebook -------------------------------------------------------------------
+// Free-form notes tied to the Roll20 campaign currently open (window.campaign_id). One JSON file
+// per campaign, in the same durable dot-dir family as the roll archive, so notes survive restarts
+// and are easy to find / back up. Same untrusted-id sanitising + containment check as the archive.
+const notesDir = () =>
+  process.platform === "win32"
+    ? join(app.getPath("appData"), "Conduit", "notebook")
+    : join(app.getPath("home"), ".conduit", "notebook");
+function withinNotes(fullPath: string): boolean {
+  const rel = relative(resolve(notesDir()), resolve(fullPath));
+  return rel.length > 0 && !rel.startsWith("..") && !isAbsolute(rel);
+}
+
 /** Load the existing archive at startup: rebuild the id-dedupe set + per-campaign index. */
 async function loadArchive() {
   try {
@@ -250,6 +263,7 @@ let ddbView: WebContentsView;
 let splashView: WebContentsView;
 let rightMode: "roll20" | "ddb" = "roll20";
 let pokedexOpen = false; // Pokédex tab active → sheet pane covers the whole window
+let notebookOpen = false; // Notebook tab active → sheet pane covers the whole window (same as dex)
 let launched = false; // false until the user picks a source + VTT on the splash screen
 let activeSource: "ddb" | "poke5e" | "monster" = "ddb";
 let activeVtt: "roll20" = "roll20";
@@ -286,10 +300,14 @@ function layout() {
   // Pokédex tab: the sheet pane covers the FULL window (its list+detail layout wants the room).
   // The right panes keep their desktop-width bounds but sit BEHIND the sheet (z-order), so they're
   // hidden without resizing to 0×0 — which would flip D&D Beyond into its broken mobile layout.
-  sheetView.setBounds(pokedexOpen ? { x: 0, y: 0, width: w, height: h } : { x: 0, y: 0, width: SHEET_W, height: h });
-  // BOTH right-pane views get the full right region at all times — the inactive one sits BEHIND
-  // the active one (z-order), so it's invisible but still rendered at desktop width. A 0×0 view
-  // makes D&D Beyond switch to its mobile layout, which breaks the rest/hit-dice controls.
+  // Pokédex is a popup: the sheet goes full-window (transparent, so its right half reveals the VTT and
+  // the left column keeps the character panel) with a dim scrim + device on top. Notebook is an opaque
+  // full-window view. Either way the sheet covers the window; the VTT keeps its normal right-region bounds.
+  const fullWidth = pokedexOpen || notebookOpen;
+  sheetView.setBounds(fullWidth ? { x: 0, y: 0, width: w, height: h } : { x: 0, y: 0, width: SHEET_W, height: h });
+  // BOTH right-pane views keep the full right region at all times — the inactive one sits BEHIND the
+  // active one (z-order), invisible but still rendered at desktop width (a 0×0 view flips D&D Beyond
+  // into its broken mobile layout).
   const right = { x: SHEET_W, y: 0, width: Math.max(1, w - SHEET_W), height: h };
   roll20View.setBounds(right);
   ddbView.setBounds(right);
@@ -577,6 +595,10 @@ function createWindow() {
   hardenView(roll20View, { externalLinks: true });
   hardenView(ddbView, { externalLinks: true });
   hardenView(sheetView, { externalLinks: true, lockToFile: true, ownUi: true });
+  // The sheet view composites with alpha so the Pokédex can float as a transparent popup OVER the
+  // VTT. Normally the page paints an opaque body, so this is invisible; only the dex-overlay state
+  // makes the body transparent and lets the Roll20 pane (expanded full-window in layout()) show through.
+  sheetView.setBackgroundColor("#00000000");
 
   // The inactive pane is sized 0×0 (see layout()); Chromium would otherwise throttle its
   // timers/React re-render when hidden, making slot write-backs to the background DDB pane
@@ -1495,6 +1517,12 @@ ipcMain.handle("pokedex-view", (_e, open: boolean) => {
   raiseRightPane(); // keeps the sheet pane on top (it now covers the whole window)
   return { ok: true };
 });
+ipcMain.handle("notebook-view", (_e, open: boolean) => {
+  notebookOpen = !!open;
+  layout();
+  raiseRightPane(); // sheet pane on top, covering the window (same model as the Pokédex tab)
+  return { ok: true };
+});
 // A manual, persisted dex flag: "seen" (encounter the DM confirms) or "caught" (marked by hand,
 // e.g. after an inventory Poké Ball throw). Team membership is layered on top as caught at read time.
 ipcMain.handle("pokedex-mark", (_e, id: string, state: "seen" | "caught" | null) => {
@@ -1908,6 +1936,43 @@ async function currentCampaignId(): Promise<string | null> {
   if (c.id) { if (c.name) campaignNames.set(c.id, c.name); saveStoreSoon(); }
   return c.id;
 }
+
+// ---- Notebook IPC ----------------------------------------------------------------------------
+// Load reads the campaign currently open in Roll20 (one round-trip); save takes the campaign id back
+// from the renderer so autosaves don't re-probe the page every keystroke and can't race a game switch.
+type NotebookDoc = { pages?: unknown[]; activeId?: string | null };
+ipcMain.handle("notebook-load", async () => {
+  const cid = (await currentCampaignId()) || "unknown";
+  const name = campaignNames.get(cid) || null;
+  const target = join(notesDir(), campaignNotesFileName(cid));
+  let data: NotebookDoc = { pages: [], activeId: null };
+  if (withinNotes(target)) {
+    try { data = JSON.parse(await readFile(target, "utf8")); } catch { /* no notebook for this campaign yet */ }
+  }
+  return { ok: true, campaign: cid, name, data };
+});
+ipcMain.handle("notebook-save", async (_e, campaign: string, doc: NotebookDoc) => {
+  const cid = (campaign || "unknown"); // untrusted, but campaignNotesFileName whitelists it
+  const target = join(notesDir(), campaignNotesFileName(cid));
+  if (!withinNotes(target)) return { ok: false, error: "path" };
+  try {
+    await mkdir(notesDir(), { recursive: true });
+    await writeFile(target, JSON.stringify(doc ?? { pages: [] }, null, 2), "utf8");
+    return { ok: true, campaign: cid };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+});
+/** Open the notebook folder in the OS file manager. */
+ipcMain.handle("notebook-open", async () => {
+  try {
+    await mkdir(notesDir(), { recursive: true });
+    const err = await shell.openPath(notesDir());
+    return { ok: !err, dir: notesDir(), error: err || undefined };
+  } catch (e) {
+    return { ok: false, dir: notesDir(), error: String(e) };
+  }
+});
 
 function sessionPayload(currentCampaign: string | null) {
   const all = [...sessionLog.values()];

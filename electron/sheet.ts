@@ -6,6 +6,8 @@ import { buildSheetDto } from "../src/sheet/sheet-pdf.js"; // printable-sheet DT
 import { expUntilLevelUp, expProgress, formatExp, MAX_LEVEL } from "../src/poke5e/experience.js"; // EXP maths
 type Ability = "STR" | "DEX" | "CON" | "INT" | "WIS" | "CHA";
 type AdvMode = "normal" | "advantage" | "disadvantage" | "super-advantage" | "super-disadvantage";
+type NotebookPage = { id: string; emoji: string; title: string; html: string; updated: number };
+type NotebookDoc = { pages: NotebookPage[]; activeId: string | null };
 
 declare global {
   interface Window {
@@ -50,6 +52,10 @@ declare global {
       r20RenameToken(id: string, name: string): Promise<{ ok: boolean; token?: boolean | string; character?: boolean | string; prevToken?: string; prevChar?: string | null; charBlocked?: boolean; reason?: string; tokenErr?: string; charErr?: string }>;
       ddbReadAc(): Promise<{ ac: number | null }>;
       openRollLogs(): Promise<{ ok: boolean; dir: string; error?: string }>;
+      notebookLoad(): Promise<{ ok: boolean; campaign: string; name: string | null; data: { pages?: NotebookPage[]; activeId?: string | null } }>;
+      notebookSave(campaign: string, doc: NotebookDoc): Promise<{ ok: boolean; campaign?: string; error?: string }>;
+      notebookView(open: boolean): Promise<{ ok: boolean }>;
+      notebookOpen(): Promise<{ ok: boolean; dir: string; error?: string }>;
       roll20Scrape(): Promise<any[]>;
       roll20Say(message: string, speakingAs?: string): Promise<{ ok: boolean; error?: string }>;
       displayInVtt(payload: { name: string; body: string; meta?: string; label?: string; speakingAs?: string }): Promise<{ ok: boolean; command?: string; error?: string }>;
@@ -2138,11 +2144,11 @@ function syncHitPoolsFromDdb(ddbPools: any[]) {
 let pendingInvRefresh = false;
 $("paneSeg").querySelectorAll("button").forEach((b) => {
   b.addEventListener("click", () => {
+    const pane = b.getAttribute("data-pane");
     $("paneSeg").querySelectorAll("button").forEach((x) => x.classList.remove("on"));
     b.classList.add("on");
-    const pane = b.getAttribute("data-pane");
-    // Pokédex is a LEFT-pane view (the reference browser) — it doesn't touch the VTT/source pane.
-    if (pane === "pokedex") { setView("pokedex"); return; }
+    // Notebook is a full-window left-pane view; it doesn't touch the VTT/source pane.
+    if (pane === "notebook") { setView("notebook"); return; }
     setView("character");
     const mode = (pane as "roll20" | "ddb") || "roll20";
     window.api.setRightPane(mode);
@@ -2370,8 +2376,8 @@ async function refreshPoke5eTrainers(reloadPane = false): Promise<boolean> {
     activeSource = cfg?.source === "poke5e" ? "poke5e" : cfg?.source === "monster" ? "monster" : "ddb";
   } catch { /* default to ddb */ }
 
-  // The Pokédex is poke5e-only — reveal it for poke5e, drop it entirely for D&D Beyond / Monsters.
-  const pdxBtn = $("paneSeg").querySelector('[data-pane="pokedex"]');
+  // The Pokédex is poke5e-only — reveal its Poké Ball button for poke5e, drop it for D&D Beyond / Monsters.
+  const pdxBtn = document.getElementById("dexBtn");
   if (activeSource === "poke5e") { pdxBtn?.removeAttribute("hidden"); await loadHidden(); } // roster hide/show filter
   else pdxBtn?.remove();
 
@@ -3020,16 +3026,170 @@ async function loadCaught() {
   dexCaughtTeam = new Set((r?.species || []).map((s) => String(s).toLowerCase()));
 }
 
-function setView(v: "character" | "pokedex") {
+function setView(v: "character" | "pokedex" | "notebook") {
   const isDex = v === "pokedex";
+  const isNb = v === "notebook";
   document.body.classList.toggle("dex-open", isDex);
+  document.body.classList.toggle("nb-open", isNb);
   $("pokedex").hidden = !isDex;
+  $("notebook").hidden = !isNb;
   window.api.pokedexView(isDex).catch(() => {}); // expand the sheet pane full-width for the dex
+  window.api.notebookView(isNb).catch(() => {}); // …and for the notebook
   if (isDex) {
     if (!dexLoaded && !dexLoading) loadDex();
     else loadCaught().then(() => { updateDexProgress(); renderDexList(); renderDexDetail(); }); // trainer may have changed
   }
+  if (isNb) openNotebook(); // (re)load notes for whatever campaign is open now
 }
+
+// ============================ Notebook tab ============================
+// Free-form notes tied to the Roll20 campaign currently open (window.campaign_id). Multiple named
+// "pages" per campaign, autosaved to a per-campaign JSON file in main (notebook-load/-save). Page
+// bodies are plain contenteditable HTML (execCommand for bold / italic / list / heading).
+let nbCampaign = "unknown";
+let nbCampaignName: string | null = null;
+let nbPages: NotebookPage[] = [];
+let nbActiveId: string | null = null;
+let nbSaveTimer: ReturnType<typeof setTimeout> | null = null;
+let nbLoadedFor: string | null = null; // campaign id the in-memory notes belong to
+
+async function openNotebook() {
+  const res = await window.api.notebookLoad().catch(() => null);
+  const cid = res?.campaign || "unknown";
+  // Re-entering the tab with edits still pending for the same campaign → keep the in-memory copy.
+  if (nbLoadedFor === cid && nbSaveTimer) { renderNbHeader(); return; }
+  // Switching to a DIFFERENT campaign with an edit still pending → flush it to the old campaign's file
+  // now (nbSaveNow reads the still-current nbCampaign/nbPages) before we overwrite the globals below.
+  if (nbSaveTimer && nbLoadedFor !== null && nbLoadedFor !== cid) nbSaveNow();
+  nbCampaign = cid;
+  nbCampaignName = res?.name ?? null;
+  nbPages = Array.isArray(res?.data?.pages) ? (res!.data!.pages as NotebookPage[]) : [];
+  nbActiveId = res?.data?.activeId ?? (nbPages[0]?.id ?? null);
+  if (nbActiveId && !nbPages.some((p) => p.id === nbActiveId)) nbActiveId = nbPages[0]?.id ?? null;
+  nbLoadedFor = cid;
+  renderNbHeader();
+  renderNbPages();
+  renderNbEditor();
+}
+
+function renderNbHeader() {
+  $("nbCampName").textContent = nbCampaignName || (nbCampaign === "unknown" ? "No game open" : `Campaign ${nbCampaign}`);
+  $("nbCid").textContent = nbCampaign;
+}
+
+function nbActivePage(): NotebookPage | null {
+  return nbPages.find((p) => p.id === nbActiveId) || null;
+}
+
+function nbRelTime(ts: number): string {
+  const s = Math.max(1, Math.round((Date.now() - ts) / 1000));
+  if (s < 60) return "just now";
+  const m = Math.round(s / 60); if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60); if (h < 24) return `${h}h ago`;
+  return `${Math.round(h / 24)}d ago`;
+}
+
+function renderNbPages() {
+  const list = $("nbPages");
+  if (!nbPages.length) { list.innerHTML = `<div class="nb-empty-list">No pages yet — hit ＋ New.</div>`; return; }
+  list.innerHTML = [...nbPages]
+    .sort((a, b) => b.updated - a.updated)
+    .map((p) => {
+      const on = p.id === nbActiveId ? " on" : "";
+      return `<button class="nb-pageitem${on}" data-id="${esc(p.id)}"><span class="nb-emoji">${esc(p.emoji || "📄")}</span><span class="nb-t">${esc(p.title || "Untitled")}</span><span class="nb-when">${esc(nbRelTime(p.updated))}</span></button>`;
+    })
+    .join("");
+  list.querySelectorAll<HTMLElement>(".nb-pageitem").forEach((row) => {
+    row.onclick = () => { nbActiveId = row.dataset.id!; renderNbPages(); renderNbEditor(); };
+  });
+}
+
+function renderNbEditor() {
+  const host = $("nbEditor");
+  const p = nbActivePage();
+  if (!p) {
+    host.innerHTML = `<div class="nb-empty"><div class="nb-empty-ico">📓</div><div>No page yet for this campaign.</div><button id="nbEmptyNew" class="mini-btn">＋ New page</button></div>`;
+    ($("nbEmptyNew") as HTMLElement).onclick = nbNewPage;
+    return;
+  }
+  host.innerHTML =
+    `<div class="nb-toolbar">` +
+      `<input id="nbTitle" class="nb-title" placeholder="Untitled page" />` +
+      `<button class="nb-fmt" data-cmd="bold" title="Bold"><b>B</b></button>` +
+      `<button class="nb-fmt" data-cmd="italic" title="Italic"><i>I</i></button>` +
+      `<button class="nb-fmt" data-cmd="insertUnorderedList" title="Bullet list">•</button>` +
+      `<button class="nb-fmt" data-cmd="formatBlock:H2" title="Heading">H</button>` +
+      `<span id="nbSaveState" class="nb-save">Saved ✓</span>` +
+      `<button id="nbDel" class="nb-del" title="Delete this page">🗑</button>` +
+    `</div>` +
+    `<div class="nb-body-wrap"><div class="nb-body">` +
+      `<div id="nbContent" class="nb-content" contenteditable="true" data-ph="Start writing — session recaps, NPCs, clues, loot…"></div>` +
+    `</div></div>`;
+  const title = $("nbTitle") as HTMLInputElement;
+  const body = $("nbContent");
+  title.value = p.title || "";
+  body.innerHTML = p.html || "";
+  nbSetSaved(true);
+  title.addEventListener("input", () => { p.title = title.value; nbQueueSave(); });
+  body.addEventListener("input", () => { p.html = body.innerHTML; nbQueueSave(); });
+  host.querySelectorAll<HTMLElement>(".nb-fmt").forEach((btn) => {
+    btn.addEventListener("mousedown", (e) => e.preventDefault()); // don't steal the editor selection
+    btn.onclick = () => {
+      const cmd = btn.getAttribute("data-cmd")!;
+      body.focus();
+      if (cmd.startsWith("formatBlock:")) document.execCommand("formatBlock", false, cmd.split(":")[1]);
+      else document.execCommand(cmd, false);
+      p.html = body.innerHTML; nbQueueSave();
+    };
+  });
+  ($("nbDel") as HTMLElement).onclick = () => {
+    nbPages = nbPages.filter((x) => x.id !== p.id);
+    nbActiveId = nbPages[0]?.id ?? null;
+    nbSaveNow();
+    renderNbPages(); renderNbEditor();
+  };
+}
+
+function nbSetSaved(saved: boolean) {
+  const s = document.getElementById("nbSaveState");
+  if (!s) return;
+  s.textContent = saved ? "Saved ✓" : "Saving…";
+  s.classList.toggle("saving", !saved);
+}
+
+function nbDoc(): NotebookDoc { return { pages: nbPages, activeId: nbActiveId }; }
+
+function nbSaveNow() {
+  if (nbSaveTimer) { clearTimeout(nbSaveTimer); nbSaveTimer = null; }
+  window.api.notebookSave(nbCampaign, nbDoc()).then(() => nbSetSaved(true)).catch(() => {});
+}
+
+function nbQueueSave() {
+  nbSetSaved(false);
+  const p = nbActivePage();
+  if (p) p.updated = Date.now();
+  if (nbSaveTimer) clearTimeout(nbSaveTimer);
+  // Snapshot the campaign id AND its page array now. If the user switches the Roll20 game before the
+  // timer fires, openNotebook() reassigns the nbPages global — but this captured reference still points
+  // at the campaign being saved, so one campaign's notes can never be written into another's file.
+  const campaign = nbCampaign, doc = nbDoc();
+  nbSaveTimer = setTimeout(() => {
+    nbSaveTimer = null;
+    window.api.notebookSave(campaign, doc).then(() => { nbSetSaved(true); renderNbPages(); }).catch(() => {});
+  }, 600);
+}
+
+function nbNewPage() {
+  const id = "p" + Date.now().toString(36);
+  nbPages.push({ id, emoji: "📝", title: "", html: "", updated: Date.now() });
+  nbActiveId = id;
+  nbSaveNow();
+  renderNbPages(); renderNbEditor();
+  setTimeout(() => { (document.getElementById("nbTitle") as HTMLInputElement | null)?.focus(); }, 0);
+}
+
+$("nbNew").onclick = nbNewPage;
+$("nbFolder").onclick = () => { window.api.notebookOpen().catch(() => {}); };
 
 async function loadDex() {
   dexLoading = true;
@@ -3100,11 +3260,22 @@ function renderDexList() {
     r.onclick = () => selectDex(p.id);
     const st = dexState(p.id);
     const state = st === "caught" ? '<span class="caught" title="Caught (in your team)">●</span>' : st === "seen" ? '<span class="seen" title="Seen">○</span>' : "";
+    // Undiscovered species are masked — name, types and SR are hidden behind "?????????" and a
+    // silhouette until the player marks them Seen/Caught (or catches one). The search still matches
+    // the real name (see dexPass), so a masked row still surfaces when you type its name.
+    const revealed = st !== null;
+    const rname = revealed ? esc(p.name) : "?????????";
+    const ini = revealed ? esc((p.name || "?").charAt(0)) : "?";
+    const spriteImg = p.sprite
+      ? `<img loading="lazy" alt="${revealed ? esc(p.name) : "Undiscovered species"}" src="${esc(p.sprite)}"${revealed ? "" : ' class="dex-silhouette"'}>`
+      : "";
+    const typesHtml = revealed ? p.types.map((t: string) => dexTypeChip(t, "dex-mini")).join("") : "";
+    const srHtml = revealed ? `SR ${p.sr}` : "SR ?";
     r.innerHTML =
-      `<div class="dex-sprite${p.sprite ? "" : " noimg"}" data-ini="${esc((p.name || "?").charAt(0))}">${p.sprite ? `<img loading="lazy" alt="${esc(p.name)}" src="${esc(p.sprite)}">` : ""}</div>` +
-      `<div><div class="dex-rname">${esc(p.name)}</div>` +
-      `<div class="dex-rmeta"><span class="dex-rnum">#${String(p.num).padStart(3, "0")}</span>${p.types.map((t: string) => dexTypeChip(t, "dex-mini")).join("")}</div></div>` +
-      `<div class="dex-spacer"></div><span class="dex-sr">SR ${p.sr}</span><div class="dex-state">${state}</div>`;
+      `<div class="dex-sprite${p.sprite ? "" : " noimg"}" data-ini="${ini}">${spriteImg}</div>` +
+      `<div><div class="dex-rname">${rname}</div>` +
+      `<div class="dex-rmeta"><span class="dex-rnum">#${String(p.num).padStart(3, "0")}</span>${typesHtml}</div></div>` +
+      `<div class="dex-spacer"></div><span class="dex-sr">${srHtml}</span><div class="dex-state">${state}</div>`;
     L.appendChild(r);
   }
 }
@@ -3146,6 +3317,40 @@ function renderDexDetail() {
   if (!p) { D.innerHTML = `<div class="dex-empty">Select a species.</div>`; return; }
   const onTeam = isTeam(p.id), seen = dexSeen.has(p.id), caughtManual = dexCaughtManual.has(p.id);
   const canWrite = activeSource === "poke5e" && writable; // can we add to the poke5e roster?
+
+  // Undiscovered species: mask everything (silhouette + "?????????"), no stat block / abilities /
+  // moves / evolution. Only the Seen/Caught toggle and Catch are offered — using any of them reveals
+  // the entry. (Selecting a masked row is fine; the data stays hidden until it's Seen or Caught.)
+  if (dexState(p.id) === null) {
+    D.innerHTML = `<div class="dd-top">
+      <div class="dd-art dex-silhouette${p.art ? "" : " noimg"}" data-ini="?">${p.art ? `<img alt="Undiscovered species" src="${esc(p.art)}">` : ""}</div>
+      <div class="dd-title"><span class="num">#${String(p.num).padStart(3, "0")}</span><h2>?????????</h2>
+        <div class="dd-types"><span class="dd-type dd-type-unknown">???</span></div></div>
+      <div class="dd-actions">
+        <div class="dd-sr">Species Rating <b>?</b></div>
+        <div class="dd-toggle">
+          <button class="seen" id="dexSeenBtn">👁 Seen</button>
+          <button class="caught" id="dexCaughtBtn" title="${canWrite ? "Add this Pokémon to your poke5e roster (PC)" : "Flag as caught in your dex"}">● Caught</button>
+        </div>
+      </div></div>
+      <div class="dd-locked">🔒 Undiscovered. Mark this species <b>Seen</b> or <b>Caught</b> — or catch one — to reveal its stat block, abilities, moves and evolution.</div>
+      <h3 class="dd-sec">Catch</h3><div class="dd-catch">
+        <div class="roll"><button class="dd-btn primary" id="dexCatchOpen">🎯 Catch…</button></div>
+        <div class="note">Throw a Poké Ball and roll Animal Handling into Roll20; catching it reveals the entry.</div></div>`;
+    const sb = document.getElementById("dexSeenBtn");
+    if (sb) sb.onclick = () => { markState(p.id, "seen"); setStatus(`Marked ${p.name} as seen`); };
+    const cb = document.getElementById("dexCaughtBtn");
+    // Writer → add to the poke5e roster (the PC) via the add flow (to set its level); read-only viewer
+    // → flag caught locally. Either way the entry then reveals.
+    if (cb) cb.onclick = () => {
+      if (canWrite) { openCatch({ species: p }); return; }
+      markState(p.id, "caught"); setStatus(`Marked ${p.name} as caught`);
+    };
+    const co = document.getElementById("dexCatchOpen");
+    if (co) co.onclick = () => openCatch({ species: p });
+    return;
+  }
+
   const ahMod = model?.skills?.["animal-handling"]?.mod;
   const mod = (s: number) => Math.floor((s - 10) / 2), sg = (n: number) => (n >= 0 ? "+" + n : "" + n);
 
@@ -3159,7 +3364,7 @@ function renderDexDetail() {
         ${onTeam
           ? `<span class="dd-caught-badge" title="On your poke5e roster">● Caught · on poke5e</span>`
           : `<button class="seen ${seen ? "on" : ""}" id="dexSeenBtn">👁 Seen</button>` +
-            (canWrite ? "" : `<button class="caught ${caughtManual ? "on" : ""}" id="dexCaughtBtn">● Caught</button>`)}
+            `<button class="caught ${caughtManual ? "on" : ""}" id="dexCaughtBtn" title="${canWrite ? "Add this Pokémon to your poke5e roster (PC)" : "Flag as caught in your dex"}">● Caught</button>`}
       </div>
     </div></div>`;
 
@@ -3184,7 +3389,7 @@ function renderDexDetail() {
       <button class="dd-btn primary" id="dexCatchOpen">🎯 Catch…</button>
       <button class="dd-btn" id="dexDisplaySpecies">📖 Display species</button>
     </div>
-    <div class="note">Pick a Poké Ball and throw — your Animal Handling roll (with ball &amp; advantage modifiers) posts to Roll20; the GM adjudicates.</div></div>`;
+    <div class="note">Pick a Poké Ball and throw — your Animal Handling roll (plus advantage) posts to Roll20 with the ball's name; the GM applies the ball's effect and adjudicates the catch.</div></div>`;
 
   D.innerHTML = h;
 
@@ -3197,6 +3402,10 @@ function renderDexDetail() {
   };
   const caughtBtn = document.getElementById("dexCaughtBtn");
   if (caughtBtn) caughtBtn.onclick = () => {
+    // Writers record the catch on their poke5e roster (the PC) via the add flow, so it works even when
+    // the ball was thrown from the inventory "Use" button outside the dex; read-only viewers toggle a
+    // local caught flag in their own dex.
+    if (canWrite) { openCatch({ species: p }); return; }
     const now = !dexCaughtManual.has(p.id);
     markState(p.id, now ? "caught" : null);
     setStatus(now ? `Marked ${p.name} as caught` : `Unmarked ${p.name}`);
@@ -3257,14 +3466,21 @@ const BALL_DC: Record<string, { mod: number | "auto" | string; note?: string }> 
   "timer-ball": { mod: "cond", note: "scales with rounds elapsed" },
   "fast-ball": { mod: 0, note: "throw as a reaction to a fleeing Pokémon" },
 };
-/** Resolve a ball's DC effect for the current trainer (skill balls read the trainer's skill mod). */
-function ballEffect(itemId: string): { flat: number; auto: boolean; note?: string } {
+/** Resolve a ball's DC effect for the current trainer (skill balls read the trainer's skill mod).
+ *  The `note` strings in BALL_DC are descriptive documentation only — the app posts the ball's NAME
+ *  and the GM applies flat/conditional reductions to their hidden DC, so ballEffect doesn't surface them. */
+function ballEffect(itemId: string): { flat: number; auto: boolean; skill?: string } {
   const b = BALL_DC[itemId];
   if (!b) return { flat: 0, auto: false };
-  if (b.mod === "auto") return { flat: 0, auto: true, note: b.note };
-  if (typeof b.mod === "number") return { flat: b.mod, auto: false, note: b.note };
-  if (String(b.mod).startsWith("skill:")) return { flat: -(model?.skills?.[String(b.mod).slice(6)]?.mod || 0), auto: false, note: b.note };
-  return { flat: 0, auto: false, note: b.note }; // conditional — shown as a note, not auto-applied
+  if (b.mod === "auto") return { flat: 0, auto: true };
+  if (typeof b.mod === "number") return { flat: b.mod, auto: false };
+  if (String(b.mod).startsWith("skill:")) {
+    // Safari / Friend / Sport: the DC drops by the TRAINER's own Nature / Persuasion / Athletics mod,
+    // which we know from the sheet (the GM doesn't) — so `skill` is surfaced and posted with the throw.
+    const skill = String(b.mod).slice(6);
+    return { flat: -(model?.skills?.[skill]?.mod || 0), auto: false, skill };
+  }
+  return { flat: 0, auto: false }; // conditional — the GM applies it from the posted ball name
 }
 
 // ---- Catch modal (shared by the Pokédex "Catch…" button and inventory Poké Ball throws) ----
@@ -3390,28 +3606,35 @@ function renderCatch() {
 
   if (sp) {
     const eff = ballEffect(catchCtx.ballItemId || "");
-    const ballBonus = eff.auto ? 0 : -eff.flat; // a ball that lowers the DC by X = +X to the player's roll
     const other = catchCtx.other || 0;
-    const rollMod = (ahMod ?? 0) + ballBonus + other;
+    // The Pokéball's effect on the DC is the GM's to apply — it is NOT folded into your roll. You post
+    // a raw Animal Handling check (+ any ad-hoc "other") plus the ball's name; the GM lowers their
+    // hidden DC for the ball / SR / level / target HP.
+    const rollMod = (ahMod ?? 0) + other;
     const tooHigh = model?.level != null && lvl > model.level;
     const canWrite = activeSource === "poke5e" && writable;
 
-    // roll summary — what modifies your Animal Handling catch roll (no DC; the GM adjudicates)
+    // roll summary — the raw check you post (no DC, no ball math; the GM adjudicates)
     const mods: string[] = [];
     if (ahMod != null) mods.push(`Animal Handling ${sgn(ahMod)}`);
-    if (ballBonus) mods.push(`${ballName(catchCtx.ballItemId)} ${sgn(ballBonus)}`);
     if (other) mods.push(`other ${sgn(other)}`);
     h += `<div class="cm-mods">${eff.auto
       ? `<b>${esc(ballName(catchCtx.ballItemId))}: automatic catch</b>`
       : (ahMod != null ? `Catch roll <b>d20 ${sgn(rollMod)}</b>${catchCtx.adv ? " (advantage)" : ""}` : `Load your trainer to roll Animal Handling`)}` +
       (!eff.auto && mods.length ? ` <span class="cm-break">${mods.join(" · ")}</span>` : "") + `</div>`;
 
-    // modifiers the player controls: advantage (from a status) + an ad-hoc bonus
+    // Skill balls (Safari/Friend/Sport) lower the DC by the trainer's own Nature/Persuasion/Athletics
+    // modifier — a sheet value the GM can't see — so surface it here and post it with the throw.
+    if (!eff.auto && eff.skill) {
+      const skMod = -eff.flat, skName = SKILL_NAMES[eff.skill] || cap(eff.skill);
+      h += `<div class="cm-note">${esc(ballName(catchCtx.ballItemId))}: the GM lowers the catch DC by your <b>${esc(skName)} ${sgn(skMod)}</b> — sent to Roll20 with your throw.</div>`;
+    }
+
+    // modifiers the player controls: advantage (the GM tells you if a status grants it) + an ad-hoc bonus
     if (!eff.auto) {
-      h += `<div class="cm-row"><label class="cm-chk"><input type="checkbox" id="cmAdv"${catchCtx.adv ? " checked" : ""}> Advantage</label>` +
+      h += `<div class="cm-row"><label class="cm-chk" title="You throw with advantage if the target is poisoned, restrained, asleep, burning, confused, paralyzed, or frozen — the GM will tell you if it applies."><input type="checkbox" id="cmAdv"${catchCtx.adv ? " checked" : ""}> Advantage</label>` +
         `<label style="margin-left:auto">Other</label><input id="cmOther" type="number" value="${other}"></div>`;
     }
-    if (eff.note) h += `<div class="cm-note">${esc(eff.note)}</div>`;
     if (tooHigh) h += `<div class="cm-note" style="color:#ff7a6b">Its level (${lvl}) is above your trainer level (${model.level}) — it can't be caught.</div>`;
 
     if (isTeam(sp.id)) {
@@ -3476,13 +3699,22 @@ function doThrow() {
     if (res) { res.className = "result show hit"; res.innerHTML = `Threw a <b>${esc(ball.name)}</b> — automatic catch. Recording…`; }
     recordCatch(sp); return;
   }
-  // Post the actual Animal Handling catch roll (ball bonus + advantage + other) to Roll20. We DON'T
-  // compute a DC — the GM has that; they adjudicate the result and you then record the catch.
+  // Post the raw Animal Handling catch roll (+ advantage + any ad-hoc "other") to Roll20. We DON'T
+  // compute a DC or apply the ball — the GM has the hidden DC and lowers it for the ball / SR / level /
+  // target HP; they adjudicate the result and you then record the catch. The ball's name is posted so
+  // the GM knows which reduction to apply.
   const ahMod = model?.skills?.["animal-handling"]?.mod ?? 0;
-  const total = ahMod + (-eff.flat) + (catchCtx.other || 0);
+  const total = ahMod + (catchCtx.other || 0);
   const die = catchCtx.adv ? "2d20kh1" : "1d20";
   const modStr = total ? (total >= 0 ? ` + ${total}` : ` - ${Math.abs(total)}`) : "";
-  const card = `&{template:default} {{name=Catch — ${tclean(sp.name)}}} {{Ball=${tclean(ball.name)}}} {{Animal Handling=[[${die}${modStr}]]}}` + (catchCtx.adv ? ` {{Advantage=yes}}` : "");
+  // Skill balls (Safari/Friend/Sport) carry a sheet-derived DC reduction the GM can't compute — post
+  // it so they can apply it to their hidden DC. Other balls the GM already knows, so only their name goes.
+  let ballField = "";
+  if (eff.skill) {
+    const skMod = -eff.flat;
+    if (skMod !== 0) ballField = ` {{Ball effect=${sgn(-skMod)} to DC (your ${tclean(SKILL_NAMES[eff.skill] || cap(eff.skill))} ${sgn(skMod)})}}`;
+  }
+  const card = `&{template:default} {{name=Catch — ${tclean(sp.name)}}} {{Ball=${tclean(ball.name)}}}${ballField} {{Animal Handling=[[${die}${modStr}]]}}` + (catchCtx.adv ? ` {{Advantage=yes}}` : "");
   window.api.roll20Say(card, model?.name).catch(() => {});
   if (res) {
     const rec = (activeSource === "poke5e" && writable) ? "Add to poke5e" : "Mark caught";
@@ -3509,5 +3741,20 @@ async function addTeam() {
 ["dexQ"].forEach((id) => { const e = document.getElementById(id); if (e) (e as HTMLInputElement).oninput = renderDexList; });
 ["dexRegion", "dexSR", "dexState"].forEach((id) => { const e = document.getElementById(id); if (e) (e as HTMLSelectElement).onchange = renderDexList; });
 { const e = document.getElementById("dexFakemon"); if (e) (e as HTMLInputElement).onchange = renderDexList; }
+
+// The Poké Ball button opens the dex popup over whatever you're looking at (it doesn't change tabs).
+$("dexBtn").onclick = () => setView("pokedex");
+// Close the Pokédex popup → drop back to the character view (main restores the panes + sheet width).
+// If a catch modal (which reuses .catch-overlay) is open over the dex, Escape/close should dismiss only
+// that modal — its own handler does — so leave the dex standing. The dex's keydown listener is
+// registered before any modal's (they wire lazily on first open), so it runs first and sees .open here.
+function closeDex() {
+  if ($("pokedex").hidden) return;
+  if (document.querySelector(".catch-overlay.open")) return;
+  setView("character");
+}
+$("dexClose").onclick = closeDex;
+$("pokedex").addEventListener("click", (e) => { if (e.target === $("pokedex")) closeDex(); }); // click the dim scrim, not the device
+document.addEventListener("keydown", (e) => { if ((e as KeyboardEvent).key === "Escape") closeDex(); });
 
 export {};
