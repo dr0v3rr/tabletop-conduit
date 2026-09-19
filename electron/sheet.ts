@@ -3,6 +3,7 @@ import { aggregate } from "../src/stats/roll-stats.js"; // pure stats, safe in t
 import { CONDITIONS } from "../src/engine/conditions.js"; // pure data catalog
 import { POKE5E_STATUSES, poke5eStatusName } from "../src/poke5e/status.js"; // poke5e's own status list
 import { buildSheetDto } from "../src/sheet/sheet-pdf.js"; // printable-sheet DTO builder (pure)
+import { expandAttacks } from "../src/compose/index.js"; // fan a FIXED multi-attack move into N cards (pure)
 import { expUntilLevelUp, expProgress, formatExp, MAX_LEVEL } from "../src/poke5e/experience.js"; // EXP maths
 type Ability = "STR" | "DEX" | "CON" | "INT" | "WIS" | "CHA";
 type AdvMode = "normal" | "advantage" | "disadvantage" | "super-advantage" | "super-disadvantage";
@@ -566,6 +567,21 @@ function setStatus(msg: string, err = false) {
   const s = $("status");
   s.textContent = msg;
   s.className = "status" + (err ? " err" : "");
+}
+
+// A prominent, self-dismissing banner for reminders that shouldn't get lost in the muted status line
+// (e.g. the once-per-target STAB note on a multi-attack move). Pass null to clear it.
+let stabNoteTimer: ReturnType<typeof setTimeout> | null = null;
+function showStabNote(msg: string | null) {
+  const el = document.getElementById("stabNote");
+  if (!el) return;
+  if (stabNoteTimer) { clearTimeout(stabNoteTimer); stabNoteTimer = null; }
+  if (!msg) { el.hidden = true; return; }
+  const txt = el.querySelector(".sn-txt");
+  if (txt) txt.textContent = msg;
+  el.hidden = false;
+  el.classList.remove("show"); void (el as HTMLElement).offsetWidth; el.classList.add("show"); // restart the entrance
+  stabNoteTimer = setTimeout(() => { el.hidden = true; }, 9000);
 }
 
 // ---- Session log & statistics -------------------------------------------------
@@ -1643,6 +1659,7 @@ function spellTags(sp: any): string {
   if (sp.castingTime === "bonus") t += `<span class="stag ct" title="Bonus action">BA</span>`;
   else if (sp.castingTime === "reaction") t += `<span class="stag ct" title="Reaction">RXN</span>`;
   if (sp.moveHint) t += `<span class="stag ct" title="${esc(sp.moveHint)}">⏳</span>`; // charge / recharge
+  if (sp.attacks > 1) t += `<span class="stag ct" title="Makes ${sp.attacks} separate attacks — rolls ${sp.attacks} cards">×${sp.attacks}</span>`;
   return t;
 }
 
@@ -1840,8 +1857,13 @@ function applyAbilityMods(sp: any): { eff: any; advantage: AdvMode | null; notes
   const notes: string[] = [];
   for (const m of active) {
     // Only add flat damage to a move that already has a damage roll — never fabricate damage on a
-    // utility/status move (Flare Boost, Competitive, Steelworker all say "damage rolls").
-    if (m.damageAdd && eff.damageDice) eff.damageDice = `${eff.damageDice} + ${m.damageAdd}`;
+    // utility/status move (Flare Boost, Competitive, Steelworker all say "damage rolls"). A per-hit
+    // bonus applies to EVERY hit, so patch the STAB-stripped repeat-damage too (else the 2nd+ cards of
+    // a single-target multi-attack would lose it along with STAB).
+    if (m.damageAdd && eff.damageDice) {
+      eff.damageDice = `${eff.damageDice} + ${m.damageAdd}`;
+      if (eff.damageDiceNoStab) eff.damageDiceNoStab = `${eff.damageDiceNoStab} + ${m.damageAdd}`;
+    }
     if (m.attackAdd && eff.attackBonus != null) eff.attackBonus = eff.attackBonus + m.attackAdd;
     if (m.saveDcAdd && eff.saveDc != null) eff.saveDc = eff.saveDc + m.saveDcAdd;
     if (m.attackAdvantage) adv = true;
@@ -1869,8 +1891,26 @@ async function castSpell(sp: any) {
   // A no-dice poke5e move announcement uses the universal template (the D&D `simple` card is often
   // absent in a Pokémon Roll20 game, which would render the announcement as an empty card).
   if (req && req.kind === "cast" && activeSource === "poke5e") req.templateStyle = "default";
-  if (req) sendRoll(req); // roll immediately — responsive
+  // FIXED multi-attack moves (Bubble = 3) fan into N separate attack cards; single-hit moves stay one.
+  // PP is still spent once (below). Advantage/templateStyle set above are copied into every card.
+  if (req) fireRoll(req); // roll immediately — responsive
   const allNotes = [...notes, ...(sp.moveHint ? [sp.moveHint] : [])]; // ability notes + charge/recharge reminder
+  // Multi-attack reminders as a PROMINENT banner (not buried in the muted status line). Multi-TARGET
+  // moves always remind you can spread the hits across separate targets (true even off-type); STAB
+  // detail is appended when on-type. Single-target moves only need the "STAB once" note (on-type).
+  // Rolling anything else clears any stale banner.
+  let stabNoteMsg: string | null = null;
+  if (sp.attacks > 1 && sp.casting === "attack") {
+    if (sp.multiTarget) {
+      // STAB is only auto-applied to the 1st hit; the player adds it per ADDITIONAL target they hit.
+      stabNoteMsg = `${sp.name}: ${sp.attacks} separate attacks — you can split them across different targets`
+        + (sp.stab > 0 ? `. STAB +${sp.stab} is on the 1st hit only — add +${sp.stab} to the first hit on each other target you strike` : ``)
+        + `.`;
+    } else if (sp.stab > 0) {
+      stabNoteMsg = `${sp.name}: STAB +${sp.stab} counts once — it's on the first hit only; hits 2–${sp.attacks} don't include it.`;
+    }
+  }
+  showStabNote(stabNoteMsg);
   // Negative Bond → obedience check when issuing a command (poke5e /reference/bonds).
   const bond = pokeMeta?.bond?.level ?? 0;
   if (bond <= -3) allNotes.push("⚠ Bond −3: roll a d20 — on ≤10 the Pokémon disobeys this command");
@@ -1918,8 +1958,12 @@ function spellReq(sp: any): any | null {
   // poke5e Pokémon moves are "used", not "cast" — only affects the no-dice announcement verb.
   const verb = activeSource === "poke5e" ? "Uses" : undefined;
   const d = spellDamage(sp);
-  if (sp.casting === "attack")
-    return { kind: "attack", key: sp.name, baseAttackMod: sp.attackBonus ?? 0, baseDamage: d.dice, damageType: d.type, advantage: adv };
+  if (sp.casting === "attack") {
+    // STAB is once per target, first instance. Auto-apply it only to the first hit (always correct);
+    // every 2nd+ hit drops it — the player adds it back per ADDITIONAL target on a multi-target move.
+    const repeat = sp.attacks > 1 && sp.damageDiceNoStab ? sp.damageDiceNoStab : undefined;
+    return { kind: "attack", key: sp.name, baseAttackMod: sp.attackBonus ?? 0, baseDamage: d.dice, baseDamageRepeat: repeat, damageType: d.type, advantage: adv, attacks: sp.attacks };
+  }
   if (sp.casting === "save") {
     // No-damage save spell/move (Bane, Web, Growl …) → announce the DC instead of rolling empty dice.
     if (!d.dice) return { kind: "cast", key: `${sp.name} (${sp.saveAbility} DC ${sp.saveDc} save)`, verb };
@@ -1986,6 +2030,13 @@ async function refreshToggles() {
     }
     box.appendChild(wrap);
   }
+}
+
+// Fire a roll, fanning a FIXED multi-attack (Bubble = 3) into N cards, and remember the PRE-expansion
+// request so Reroll replays the WHOLE move (re-expanding) rather than just the last STAB-stripped card.
+function fireRoll(request: any) {
+  for (const one of expandAttacks(request)) sendRoll(one); // each sub-card overwrites lastRollRequest…
+  lastRollRequest = request;                               // …so restore the full request for Reroll
 }
 
 async function sendRoll(request: any) {
@@ -2495,7 +2546,8 @@ $("whisperToggle").onclick = () => {
   whisperOn = !whisperOn;
   $("whisperToggle").classList.toggle("on", whisperOn);
 };
-$("rerollBtn").onclick = () => { if (lastRollRequest) sendRoll(lastRollRequest); };
+$("rerollBtn").onclick = () => { if (lastRollRequest) fireRoll(lastRollRequest); };
+document.querySelector("#stabNote .sn-x")?.addEventListener("click", () => showStabNote(null));
 
 // Roster dropdown: the ▾ caret (and clicking the name) opens the character/team switcher.
 function toggleRosterMenu(e: Event) {

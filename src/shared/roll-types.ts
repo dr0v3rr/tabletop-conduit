@@ -47,8 +47,15 @@ export interface RollRequest {
   templateStyle?: "sheet" | "default";
   /** For kind:'attack' — base to-hit before effects (weapon/spell engine output). */
   baseAttackMod?: number;
+  /** For kind:'attack' — number of FIXED separate attacks to roll (poke5e multi-attack; default 1).
+   *  Expanded into N single-attack requests by expandAttacks() before compose. */
+  attacks?: number;
   /** For kind:'attack'|'damage' — base damage formula, e.g. "1d8 + 2". */
   baseDamage?: string;
+  /** For a multi-attack (see `attacks`) — the damage formula for the 2nd+ cards, when it differs from the
+   *  first (a single-target move drops STAB after the first hit, since STAB is once per target). Falls
+   *  back to `baseDamage`. Consumed by expandAttacks(). */
+  baseDamageRepeat?: string;
   /** Damage type label, e.g. "Slashing". */
   damageType?: string;
 }

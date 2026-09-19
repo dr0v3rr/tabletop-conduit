@@ -19,6 +19,23 @@ import {
   type ResolvedAdvantage,
 } from '../roll20/format';
 
+/** Fan a FIXED multi-attack request (poke5e Bubble = "Make three ranged attacks") into N independent
+ *  single-attack requests. Neither Roll20 template can show N to-hit / hit-or-miss lines in one card, so
+ *  N attacks are emitted as N cards, each labelled "(i/N)". A non-attack request, or one with attacks ≤ 1,
+ *  passes through unchanged (as a single-element array). Pure — safe to unit-test and reuse in the UI. */
+export function expandAttacks(req: RollRequest): RollRequest[] {
+  const n = req.kind === 'attack' ? (req.attacks ?? 1) : 1;
+  if (!(n > 1)) return [req];
+  const repeat = req.baseDamageRepeat ?? req.baseDamage; // 2nd+ hits may drop STAB (once per target)
+  return Array.from({ length: n }, (_, i) => ({
+    ...req,
+    key: `${req.key ?? ''} (${i + 1}/${n})`,
+    baseDamage: i === 0 ? req.baseDamage : repeat,
+    attacks: undefined,
+    baseDamageRepeat: undefined,
+  }));
+}
+
 /** Optional, non-contract request fields a caller may supply for weapon attacks. */
 export interface AttackExtras {
   /** base to-hit modifier before effects (e.g. STR/DEX + prof + magic). */

@@ -195,6 +195,9 @@ export interface MoveStat {
   type: string;
   casting: "attack" | "save" | "utility";
   attackBonus?: number;
+  attacks?: number; // FIXED multi-attack: this many separate attack+damage rolls (Bubble = 3). undefined = single.
+  multiTarget?: boolean; // a FIXED multi-attack that may spread across separate targets (Dragon Darts, Zing Zap).
+  damageDiceNoStab?: string; // damageDice with the STAB component removed — used for the 2nd+ hits of a multi-attack (STAB is once per target, auto-applied to the first hit only).
   saveAbility?: Ability;
   saveDc?: number;
   damageDice?: string; // full formula, e.g. "2d10 + 3"
@@ -261,6 +264,7 @@ export function moveStat(move: any, pk: any, learned?: any): MoveStat {
 
   const dmg = move.damage;
   let damageDice = "";
+  let damageDiceNoStab = ""; // damageDice minus the STAB component (2nd+ hits of a multi-attack; STAB is once per target)
   let healDice = "";
   let damageType: string | undefined;
   let damageTip = "";
@@ -270,10 +274,17 @@ export function moveStat(move: any, pk: any, learned?: any): MoveStat {
     const isHeal = dtype === "healing"; // STAB is a damage bonus — never added to healing
     const stabVal = computeStab(pk, mod, level); // STAB value regardless of type (for explicit tokens)
     const { flat, parts } = parseDamageFlat(dmg.modifier, { mod, ability: best.ability, level, stab: stabVal, typeMatch: typeMatch && !isHeal });
-    const formula = base ? (flat ? `${base}${flat >= 0 ? " + " + flat : " - " + -flat}` : base) : flat ? String(flat) : "";
+    const mkFormula = (f: number) => (base ? (f ? `${base}${f >= 0 ? " + " + f : " - " + -f}` : base) : f ? String(f) : "");
+    const formula = mkFormula(flat);
     damageTip = [base, ...parts.map((p) => `${signed(p.value)} ${p.label}`)].filter(Boolean).join(" ");
     if (isHeal) healDice = formula;
-    else { damageDice = formula; damageType = dtype && dtype !== "typeless" ? String(dtype) : String(move.type); }
+    else {
+      damageDice = formula;
+      damageType = dtype && dtype !== "typeless" ? String(dtype) : String(move.type);
+      // STAB is a once-per-target bonus; keep every OTHER part (ability mod / flat) which is per-hit.
+      const stabAdded = parts.find((p) => p.label === "STAB")?.value ?? 0;
+      damageDiceNoStab = stabAdded ? mkFormula(flat - stabAdded) : formula;
+    }
   }
 
   const casting: MoveStat["casting"] = move.attack ? "attack" : move.save ? "save" : "utility";
@@ -286,6 +297,25 @@ export function moveStat(move: any, pk: any, learned?: any): MoveStat {
   if (casting === "attack") {
     out.attackBonus = pb + mod;
     out.attackTip = `${signed(pb)} prof${abilBit}`;
+    // FIXED multi-attack moves (Bubble "Make three ranged attacks", Double Kick "two", …). poke5e keeps
+    // the count only in the prose — the structured `attack` object has no number — so recover it here.
+    // Family B ("Make a … attack roll … roll a d4 … hit again") uses the singular "a" and never matches,
+    // and multi-TARGET wording ("up to two creatures") doesn't touch the count word, so it stays exact.
+    const mm = /\bmake (two|three|four|five)\b[^.]*?\battacks?\b/i.exec(wording);
+    const word = mm?.[1]?.toLowerCase();
+    const n = word ? ({ two: 2, three: 3, four: 4, five: 5 } as Record<string, number>)[word] : undefined;
+    if (n && n > 1) {
+      out.attacks = n;
+      // Multi-TARGET moves may spread the hits across separate creatures (Dragon Darts "up to two
+      // creatures", Zing Zap "two unique targets", Twineedle, Dual Chop, Precipice Blades, Gear Grind
+      // "target(s)"). Everything else fires all hits at one target (Bubble "at a target", etc.).
+      out.multiTarget = /(?:up to \w+ (?:creatures|targets)|unique targets|(?:creature|target)\(s\)|any (?:creatures?|targets?)|(?:do(?:es)? ?n['’o]t|need not)[^.]{0,24}target the same|(?:two|three|four|five) (?:creatures|targets)|different (?:creatures?|targets?))/i.test(wording);
+      // STAB is once per target, first instance. The app can't know how the hits are split across
+      // targets, so it only auto-applies STAB where it's ALWAYS correct — the FIRST hit (which lands on
+      // some target). Every 2nd+ hit uses the STAB-stripped damage; the player adds STAB back for each
+      // ADDITIONAL target they hit (multi-target moves). This holds for single- AND multi-target moves.
+      if (damageDiceNoStab && damageDiceNoStab !== damageDice) out.damageDiceNoStab = damageDiceNoStab;
+    }
   }
   if (casting === "save") {
     out.saveDc = 8 + pb + mod;
@@ -386,6 +416,10 @@ export function pokemonToCharacter(
         casting: st.casting,
         type: st.type, // the move's type (Fire, Psychic, …) — for tags + the Display-in-VTT meta line
         attackBonus: st.attackBonus,
+        attacks: st.attacks, // FIXED multi-attack count (Bubble = 3); undefined = single
+        multiTarget: st.multiTarget, // hits may be split across separate targets → prompt to add STAB per extra target
+        damageDiceNoStab: st.damageDiceNoStab, // 2nd+ hit damage for a multi-attack (STAB stripped; kept per-hit mods)
+        stab: st.stab, // this move's STAB value (for the "STAB once per target" reminder)
         attackTip: st.attackTip, // to-hit breakdown (prof / ability) for the hover tooltip
         saveAbility: st.saveAbility,
         saveDc: st.saveDc,

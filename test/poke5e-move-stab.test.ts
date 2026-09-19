@@ -75,3 +75,73 @@ describe("moveStat — STAB + damage-modifier parsing", () => {
     expect(s.saveTip).toBe("8 base +2 prof +1 WIS");
   });
 });
+
+describe("moveStat — FIXED multi-attack count parsed from prose", () => {
+  const atk = (name: string, description: string) =>
+    ({ name, type: "water", power: ["dex"], attack: { scope: "ranged" }, damage: { dice: { "1": "1d4" }, modifier: 0, type: ["water"] }, description });
+
+  it("Bubble → 3 separate attacks", () => {
+    const s = moveStat(atk("Bubble", "You shoot a series of quickly moving bubbles at a target. Make three ranged attacks, doing 1d4 water damage on each successful hit."), ralts());
+    expect(s.attacks).toBe(3);
+    expect(s.casting).toBe("attack");
+    expect(s.damageDice).toBe("1d4"); // per-attack dice unchanged (modifier 0, off-type → no STAB)
+  });
+
+  it("counts two / three / five across the fixed family", () => {
+    expect(moveStat(atk("Double Kick", "You strike twice with two devastating kicks. Make two melee attack rolls, doing 1d6 fighting damage on each successful hit."), ralts()).attacks).toBe(2);
+    expect(moveStat(atk("Surging Strikes", "Make three melee attacks against a single target, dealing damage on each hit."), ralts()).attacks).toBe(3);
+    expect(moveStat(atk("Scale Shot", "Make five ranged attacks against one target, doing 1d4 dragon damage on each hit."), ralts()).attacks).toBe(5);
+  });
+
+  it("multi-TARGET wording does not inflate the count (Dragon Darts stays 2)", () => {
+    expect(moveStat(atk("Dragon Darts", "Make two ranged attacks against up to two creatures in range, each dealing 1d8 dragon damage on hit."), ralts()).attacks).toBe(2);
+  });
+
+  it("VARIABLE 'roll a d4 to continue' moves stay single (Fury Attack)", () => {
+    expect(moveStat(atk("Fury Attack", "Make a ranged attack roll, doing 1d4 damage on a hit. After successfully hitting a target, roll a d4. On a 3 or 4 you may attack again."), ralts()).attacks).toBeUndefined();
+  });
+
+  it("plain single-hit and Struggle stay single", () => {
+    expect(moveStat(atk("Pound", "Make a melee attack roll, doing 1d4 normal damage on a hit."), ralts()).attacks).toBeUndefined();
+    const struggle = { name: "Struggle", type: "typeless", power: ["str", "dex"], attack: { scope: "ranged" }, damage: { dice: {}, modifier: "MOVE + 2", type: ["typeless"] }, description: "Make a melee or ranged attack roll against a creature within range." };
+    expect(moveStat(struggle, ralts()).attacks).toBeUndefined();
+  });
+
+  // On-type users get STAB; STAB is once per target, first instance. Since the app can't know how the
+  // hits split across targets, it auto-applies STAB to the FIRST hit only for EVERY multi-attack (a
+  // STAB-stripped `damageDiceNoStab` drives the 2nd+ hits); a multi-target move just prompts the player
+  // to add STAB back for each additional target they hit.
+  const water = () => ({ level: 1, type: ["water"], strength: 10, dexterity: 14, constitution: 12, intelligence: 10, wisdom: 10, charisma: 10 });
+
+  it("single-target on-type Bubble: STAB on the first hit only", () => {
+    const s = moveStat(atk("Bubble", "You shoot bubbles at a target. Make three ranged attacks, doing 1d4 water damage on each successful hit."), water());
+    expect(s.attacks).toBe(3);
+    expect(s.multiTarget).toBeFalsy();
+    expect(s.damageDice).toBe("1d4 + 2");   // first hit: +2 STAB
+    expect(s.damageDiceNoStab).toBe("1d4"); // 2nd/3rd hits: STAB stripped
+  });
+
+  it("drops ONLY STAB on the 2nd+ hit, keeping the per-hit ability mod (Double Kick on-type)", () => {
+    const fighting = { level: 1, type: ["fighting"], strength: 14, dexterity: 12, constitution: 12, intelligence: 10, wisdom: 10, charisma: 10 };
+    const dk = { name: "Double Kick", type: "fighting", power: ["str"], attack: { scope: "melee" }, damage: { dice: { "1": "1d6" }, modifier: "MOVE", type: ["fighting"] }, description: "Make two melee attack rolls, doing 1d6 + MOVE fighting damage on each successful hit." };
+    const s = moveStat(dk, fighting);
+    expect(s.damageDice).toBe("1d6 + 4");      // +2 STR (MOVE) + 2 STAB
+    expect(s.damageDiceNoStab).toBe("1d6 + 2"); // keep +2 STR, drop +2 STAB
+  });
+
+  it("multi-target on-type still auto-applies STAB to the 1st hit only (add per extra target)", () => {
+    const dragon = { level: 1, type: ["dragon"], strength: 14, dexterity: 12, constitution: 12, intelligence: 10, wisdom: 10, charisma: 10 };
+    const dd = { name: "Dragon Darts", type: "dragon", power: ["str", "dex"], attack: { scope: "ranged" }, damage: { dice: { "1": "1d8" }, modifier: "MOVE", type: ["dragon"] }, description: "Make two ranged attacks against up to two creatures in range, each dealing 1d8 + MOVE dragon damage on hit." };
+    const s = moveStat(dd, dragon);
+    expect(s.attacks).toBe(2);
+    expect(s.multiTarget).toBe(true);
+    expect(s.damageDice).toBe("1d8 + 4");       // 1st hit: +2 STR (MOVE) + 2 STAB
+    expect(s.damageDiceNoStab).toBe("1d8 + 2"); // 2nd hit: keep +2 STR, drop STAB (player adds it per new target)
+  });
+
+  it("off-type multi-attack has no STAB and no no-STAB variant", () => {
+    const s = moveStat(atk("Bubble", "You shoot bubbles at a target. Make three ranged attacks, doing 1d4 water damage on each successful hit."), ralts());
+    expect(s.damageDice).toBe("1d4");
+    expect(s.damageDiceNoStab).toBeUndefined();
+  });
+});

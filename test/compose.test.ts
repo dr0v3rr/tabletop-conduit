@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { computeRollModel } from '../src/engine';
 import type { CharacterData, RollModel } from '../src/engine';
 import type { RollRequest } from '../src/shared/roll-types';
-import { composeRoll, buildRoll20Command } from '../src/compose';
+import { composeRoll, buildRoll20Command, expandAttacks } from '../src/compose';
 import type { AttackExtras } from '../src/compose';
 import fixture from './fixtures/aldric-144074405.json';
 
@@ -266,5 +266,45 @@ describe('composeRoll — confirmed-bug regressions', () => {
       expect(cmd).toContain('{{Damage=[[2d6 + 3]]}}');
       expect(cmd).toContain('{{Crit=[[2d6]]}}');
     });
+  });
+});
+
+describe('expandAttacks — FIXED multi-attack fan-out', () => {
+  const base: RollRequest = { kind: 'attack', key: 'Bubble', baseAttackMod: 3, baseDamage: '1d4', damageType: 'water' };
+
+  it('fans an attacks:3 request into 3 labelled single-attack requests', () => {
+    const out = expandAttacks({ ...base, attacks: 3 });
+    expect(out.length).toBe(3);
+    expect(out.map((r) => r.key)).toEqual(['Bubble (1/3)', 'Bubble (2/3)', 'Bubble (3/3)']);
+    // each is a plain single attack (no nested count) that still carries the attack data
+    expect(out.every((r) => r.kind === 'attack' && r.attacks === undefined && r.baseDamage === '1d4' && r.baseAttackMod === 3)).toBe(true);
+  });
+
+  it('each fanned request composes to a card with its own Attack + Damage roll', () => {
+    for (const r of expandAttacks({ ...base, attacks: 3 })) {
+      const cmd = buildRoll20Command(model, { ...r, templateStyle: 'default' });
+      expect(cmd).toContain('{{Attack=[[');
+      expect(cmd).toContain('{{Damage=[[');
+    }
+  });
+
+  it('passes single-hit and non-attack requests through unchanged', () => {
+    expect(expandAttacks(base)).toEqual([base]);                       // no attacks field → 1
+    expect(expandAttacks({ ...base, attacks: 1 })).toEqual([{ ...base, attacks: 1 }]); // attacks:1 → 1
+    const cast: RollRequest = { kind: 'cast', key: 'Growl', attacks: 3 as any }; // ignored for non-attack
+    expect(expandAttacks(cast)).toEqual([cast]);
+  });
+});
+
+describe('expandAttacks — STAB-once-per-target repeat damage', () => {
+  it('uses baseDamageRepeat for the 2nd+ cards (single-target drops STAB after the first hit)', () => {
+    const out = expandAttacks({ kind: 'attack', key: 'Bubble', baseAttackMod: 2, baseDamage: '1d4 + 2', baseDamageRepeat: '1d4', damageType: 'water', attacks: 3 });
+    expect(out.map((r) => r.baseDamage)).toEqual(['1d4 + 2', '1d4', '1d4']);
+    expect(out.every((r) => r.baseDamageRepeat === undefined && r.attacks === undefined)).toBe(true);
+  });
+
+  it('with no baseDamageRepeat set (e.g. off-type, no STAB) every card keeps the full damage', () => {
+    const out = expandAttacks({ kind: 'attack', key: 'Fury', baseAttackMod: 2, baseDamage: '1d8 + 2', damageType: 'normal', attacks: 2 });
+    expect(out.map((r) => r.baseDamage)).toEqual(['1d8 + 2', '1d8 + 2']);
   });
 });
