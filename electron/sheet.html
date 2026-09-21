@@ -72,6 +72,13 @@
         </div>
       </div>
 
+      <!-- Always-expanded, non-collapsible: a spellcaster's slots in the most prominent spot —
+           directly above the Roll (advantage/disadvantage) controls, always in view. NOT a
+           .section-head, so the collapse wiring skips it; renderSlotBar hides it for non-casters. -->
+      <section class="card slots-card" data-section="slots" hidden>
+        <div class="slots-row"><span class="section-title">Spell Slots</span><div id="slotBar" class="slot-tracker"></div></div>
+      </section>
+
       <div class="controls">
         <div class="adv-row">
           <span class="adv-label">Roll</span>

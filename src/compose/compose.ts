@@ -24,7 +24,9 @@ import {
  *  N attacks are emitted as N cards, each labelled "(i/N)". A non-attack request, or one with attacks ≤ 1,
  *  passes through unchanged (as a single-element array). Pure — safe to unit-test and reuse in the UI. */
 export function expandAttacks(req: RollRequest): RollRequest[] {
-  const n = req.kind === 'attack' ? (req.attacks ?? 1) : 1;
+  // Fan an attack OR a guaranteed-hit damage roll (autoHit multi-hit moves like Swift come through as
+  // kind:'damage') into N cards.
+  const n = req.kind === 'attack' || req.kind === 'damage' ? (req.attacks ?? 1) : 1;
   if (!(n > 1)) return [req];
   const repeat = req.baseDamageRepeat ?? req.baseDamage; // 2nd+ hits may drop STAB (once per target)
   return Array.from({ length: n }, (_, i) => ({

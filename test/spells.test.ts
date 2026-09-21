@@ -335,3 +335,17 @@ describe('computeSpells — healing spells roll dice (Cure Wounds etc.)', () => 
     expect(cw.healDice).toMatch(/\dd\d/); // e.g. "2d8 + 4"
   });
 });
+
+describe('computeSpells — up-cast increment (higherLevelDice)', () => {
+  it('Heat Metal (2d8, +1d8 per slot level) exposes higherLevelDice "1d8"', () => {
+    const hm = find('Heat Metal')!;
+    expect(hm).toBeTruthy();
+    expect(hm.level).toBe(2);
+    expect(hm.scalesWithLevel).toBe(true);
+    expect(hm.higherLevelDice).toBe('1d8');
+  });
+  it('a cantrip never carries higherLevelDice (it scales on character level, not slots)', () => {
+    const cantrip = info.spells.find((s) => s.isCantrip && s.damageDice);
+    if (cantrip) expect(cantrip.higherLevelDice).toBeUndefined();
+  });
+});

@@ -5,6 +5,7 @@ import { POKE5E_STATUSES, poke5eStatusName } from "../src/poke5e/status.js"; // 
 import { buildSheetDto } from "../src/sheet/sheet-pdf.js"; // printable-sheet DTO builder (pure)
 import { expandAttacks } from "../src/compose/index.js"; // fan a FIXED multi-attack move into N cards (pure)
 import { expUntilLevelUp, expProgress, formatExp, MAX_LEVEL } from "../src/poke5e/experience.js"; // EXP maths
+import { scaleDamageDice } from "../src/engine/upcast.js"; // up-cast damage scaling (pure, tested)
 type Ability = "STR" | "DEX" | "CON" | "INT" | "WIS" | "CHA";
 type AdvMode = "normal" | "advantage" | "disadvantage" | "super-advantage" | "super-disadvantage";
 type NotebookPage = { id: string; emoji: string; title: string; html: string; updated: number };
@@ -1675,10 +1676,13 @@ function spellRow(sp: any): HTMLElement {
   if (depleted) b.title = outOfPp ? "No PP left" : `No level ${lvl} spell slots left`;
   let right = "";
   const sd = spellDamage(sp); // full damage incl. any secondary component
+  // Reflect the chosen up-cast level in the shown damage (Fireball at a 9th slot reads "14d6").
+  const extraLevels = castLevelFor(sp) - (sp.isCantrip ? 0 : sp.level);
+  const upDice = extraLevels > 0 && sp.higherLevelDice ? scaleDamageDice(sd.dice || "", sp.higherLevelDice, extraLevels) : (sd.dice || "");
   // Hover tooltips break a bonus down into where it comes from (prof / ability / STAB / flat).
   const tip = (t?: string) => (t ? ` title="${esc(t)}"` : "");
-  if (sp.casting === "attack") right = `<span class="mod"${tip(sp.attackTip)}>${sgn(sp.attackBonus)}</span><span class="dmg"${tip(sp.damageTip)}>${esc(sd.dice || "")} ${esc(sd.type || "")}</span>`;
-  else if (sp.casting === "save") right = `<span class="dmg"${tip([sp.saveTip, sp.damageTip].filter(Boolean).join(" · "))}>${esc(sp.saveAbility || "")} DC ${esc(sp.saveDc)} · ${esc(sd.dice || "—")}</span>`;
+  if (sp.casting === "attack") right = `<span class="mod"${tip(sp.attackTip)}>${sgn(sp.attackBonus)}</span><span class="dmg"${tip(sp.damageTip)}>${esc(upDice)} ${esc(sd.type || "")}</span>`;
+  else if (sp.casting === "save") right = `<span class="dmg"${tip([sp.saveTip, sp.damageTip].filter(Boolean).join(" · "))}>${esc(sp.saveAbility || "")} DC ${esc(sp.saveDc)} · ${esc(upDice || "—")}</span>`;
   else if (sp.healDice) right = `<span class="dmg heal"${tip(sp.damageTip)}>heal ${esc(sp.healDice)}</span>`;
   else if (sp.autoHit && sp.damageDice) right = `<span class="dmg"${tip(sp.damageTip)}>${esc(sp.damageDice)} ${esc(sp.damageType || "")}</span>`; // guaranteed-hit damage
   else if (sp.rollDie) right = `<span class="dmg">roll ${esc(sp.rollDie)}</span>`; // OHKO / prose die
@@ -1688,10 +1692,82 @@ function spellRow(sp: any): HTMLElement {
   b.onclick = () => castSpell(sp);
   const meta = [sp.type || sp.school, sp.casting, sp.range, sp.pp && sp.pp.max ? `${sp.pp.current}/${sp.pp.max} PP` : null].filter(Boolean).join(" · ");
   const display = makeDisplayBtn({ name: sp.name, description: sp.description, meta, label: pokeMeta ? "Move" : "Spell" });
-  return rowWithActions(b, [display]);
+  return rowWithActions(b, [upcastControl(sp) as any, display]);
+}
+
+// --- Up-casting: cast a spell using a higher-level slot for scaled damage ---
+const upcastSel: Record<string, number> = {}; // spell key -> chosen slot level (only when > base)
+function spellKey(sp: any): string { return `${sp.name}|${sp.level}`; }
+const ORD = ["", "1st", "2nd", "3rd", "4th", "5th", "6th", "7th", "8th", "9th"];
+function ordLvl(n: number): string { return ORD[n] ?? `${n}th`; }
+
+/** Distinct slot levels (any track) at or above `base`, ascending — the levels a base-`base` spell
+ *  can be cast in (its own level, or higher via up-casting). */
+function slotLevelsFrom(base: number): number[] {
+  return [...new Set(spellSlots.map((s) => s.level as number))].filter((L) => L >= base).sort((a, b) => a - b);
+}
+
+/** The slot level a spell will be cast at: the chosen up-cast level, else the spell's own level. */
+function castLevelFor(sp: any): number {
+  if (sp.isCantrip) return 0;
+  const base = sp.level as number;
+  const sel = upcastSel[spellKey(sp)];
+  return sel && sel > base ? sel : base;
+}
+
+/** Slot pips for a specific slot entry (so overlapping tracks — e.g. a Vancian L2 and a Pact L2 —
+ *  each render their own total). Clicks still spend by level via wirePips. */
+function slotPipsFor(slot: any): string {
+  const rem = remaining[slot.level] ?? 0;
+  let html = `<span class="pips" data-level="${slot.level}">`;
+  for (let i = 0; i < slot.total; i++) html += `<span class="pip ${i < rem ? "full" : ""}" data-level="${slot.level}" data-i="${i}"></span>`;
+  html += `</span>`;
+  return html;
+}
+
+/** An up-cast selector for a leveled damage spell — offers every slot level from the spell's own
+ *  level up to the highest slot the character has, previewing the scaled damage. Null when the
+ *  spell doesn't scale on a damage die, or there's no higher slot to choose. */
+function upcastControl(sp: any): HTMLElement | null {
+  if (sp.isCantrip || !sp.higherLevelDice) return null;
+  const base = sp.level as number;
+  const levels = slotLevelsFrom(base);
+  if (levels.length <= 1) return null; // only the base slot exists — nothing to up-cast into
+  const sel = document.createElement("select");
+  sel.className = "upcast";
+  sel.title = "Cast using a higher-level slot (up-cast)";
+  const chosen = castLevelFor(sp);
+  const primary = spellDamage(sp).dice || "";
+  for (const L of levels) {
+    const opt = document.createElement("option");
+    opt.value = String(L);
+    opt.textContent = L === base ? `${ordLvl(L)} (base)` : `${ordLvl(L)} · ${scaleDamageDice(primary, sp.higherLevelDice, L - base)}`;
+    if ((remaining[L] ?? 0) <= 0) opt.disabled = true;
+    if (L === chosen) opt.selected = true;
+    sel.appendChild(opt);
+  }
+  sel.onclick = (e) => e.stopPropagation();
+  sel.onchange = (e) => { e.stopPropagation(); upcastSel[spellKey(sp)] = Number(sel.value); renderSpells(); };
+  return sel;
+}
+
+/** The persistent slot bar: the full slot ladder (every level + pact) in its own always-visible
+ *  card above the Spells section, so slots stay on screen even when Spells is collapsed. Separate
+ *  from the per-group pips inside the spell list, which remain for per-level context. */
+function renderSlotBar() {
+  const sec = sectionEl("slots");
+  const bar = $("slotBar");
+  if (pokeMeta || !spellSlots.length) { sec.hidden = true; bar.innerHTML = ""; return; }
+  sec.hidden = false;
+  bar.innerHTML = [...spellSlots]
+    .sort((a, b) => (a.pact ? 1 : 0) - (b.pact ? 1 : 0) || a.level - b.level)
+    .map((s) => `<span class="slot-cell${s.pact ? " pact" : ""}"><span class="slot-lbl">${s.pact ? "Pact " : ""}L${s.level}</span>${slotPipsFor(s)}</span>`)
+    .join("");
+  wirePips();
 }
 
 function renderSpells() {
+  renderSlotBar(); // keep the persistent slot bar in sync on every (re)render / slot change
   const sec = sectionEl("spells");
   const box = $("spells");
   box.innerHTML = "";
@@ -1748,7 +1824,7 @@ function applyFilter() {
 }
 
 function wirePips() {
-  document.querySelectorAll<HTMLElement>("#spells .pip").forEach((pip) => {
+  document.querySelectorAll<HTMLElement>("#slotBar .pip, #spells .pip").forEach((pip) => {
     pip.onclick = async (e) => {
       e.stopPropagation();
       const lvl = Number(pip.dataset.level);
@@ -1876,7 +1952,8 @@ function applyAbilityMods(sp: any): { eff: any; advantage: AdvMode | null; notes
 }
 
 async function castSpell(sp: any) {
-  const lvl = sp.isCantrip ? 0 : sp.level;
+  const base = sp.isCantrip ? 0 : sp.level;
+  const lvl = castLevelFor(sp); // the slot level actually consumed (base, or higher when up-cast)
   const usesSlot = lvl > 0 && spellSlots.some((s) => s.level === lvl);
   // Instant, local-only guard (no network): don't cast when you can already see there are no
   // slots left. Beyond that we trust the local count and stay responsive.
@@ -1886,7 +1963,20 @@ async function castSpell(sp: any) {
   if (tracksPp && sp.pp.current <= 0) { setStatus(`${sp.name}: no PP left`, true); return; }
   // Apply any Pokémon-ability modifiers whose condition (HP% / status) currently holds.
   const { eff, advantage, notes } = applyAbilityMods(sp);
-  const req = spellReq(eff);
+  // Up-cast: cast in a slot above the spell's own level → add the per-level increment to the damage
+  // and label the card with the slot used. Clone first (applyAbilityMods may return `sp` itself) so
+  // the sheet's own spell object is never mutated.
+  let cast = eff;
+  if (lvl > base && sp.higherLevelDice) {
+    const extra = lvl - base;
+    cast = { ...eff };
+    if (cast.damageDice) cast.damageDice = scaleDamageDice(cast.damageDice, sp.higherLevelDice, extra);
+    if (Array.isArray(cast.damages) && cast.damages[0]?.dice) {
+      cast.damages = cast.damages.map((d: any, i: number) => (i === 0 ? { ...d, dice: scaleDamageDice(d.dice, sp.higherLevelDice, extra) } : d));
+    }
+    cast.name = `${sp.name} (${ordLvl(lvl)})`;
+  }
+  const req = spellReq(cast);
   if (req && advantage && req.kind === "attack") req.advantage = advantage;
   // A no-dice poke5e move announcement uses the universal template (the D&D `simple` card is often
   // absent in a Pokémon Roll20 game, which would render the announcement as an empty card).
@@ -1910,7 +2000,11 @@ async function castSpell(sp: any) {
       stabNoteMsg = `${sp.name}: STAB +${sp.stab} counts once — it's on the first hit only; hits 2–${sp.attacks} don't include it.`;
     }
   }
-  showStabNote(stabNoteMsg);
+  // A move-mechanics rule note (mechanics the engine can't auto-apply) shares the prominent banner with
+  // the STAB reminder. Prefix the move name if the note doesn't already lead with it.
+  const mech = sp.mechanicNote ? (String(sp.mechanicNote).startsWith(sp.name) ? sp.mechanicNote : `${sp.name}: ${sp.mechanicNote}`) : null;
+  const noteParts = [mech, stabNoteMsg].filter(Boolean) as string[];
+  showStabNote(noteParts.length ? noteParts.join("  ·  ") : null);
   // Negative Bond → obedience check when issuing a command (poke5e /reference/bonds).
   const bond = pokeMeta?.bond?.level ?? 0;
   if (bond <= -3) allNotes.push("⚠ Bond −3: roll a d20 — on ≤10 the Pokémon disobeys this command");
@@ -1971,8 +2065,9 @@ function spellReq(sp: any): any | null {
   }
   // Healing spells (Cure Wounds, Healing Word …) → roll the healing dice.
   if (sp.healDice) return { kind: "damage", key: `${sp.name} (heal)`, baseDamage: sp.healDice };
-  // Guaranteed-hit damage move (Swift, Aura Sphere, Magical Leaf …) — roll damage, no to-hit.
-  if (sp.autoHit && sp.damageDice) return { kind: "damage", key: sp.name, baseDamage: sp.damageDice, damageType: sp.damageType };
+  // Guaranteed-hit damage move (Swift, Aura Sphere, Magical Leaf …) — roll damage, no to-hit. A fixed
+  // multi-hit autoHit move (Swift ×2, Hyperspace Fury ×3) carries `attacks` so it fans into N cards.
+  if (sp.autoHit && sp.damageDice) return { kind: "damage", key: sp.name, baseDamage: sp.damageDice, baseDamageRepeat: sp.attacks > 1 && sp.damageDiceNoStab ? sp.damageDiceNoStab : undefined, damageType: sp.damageType, attacks: sp.attacks };
   // Prose "roll a d20/d100/…" move (Sheer Cold & the OHKO moves, Metronome, Acupressure) — roll it.
   if (sp.rollDie) return { kind: "damage", key: `${sp.name} — roll ${sp.rollDie}`, baseDamage: sp.rollDie };
   return { kind: "cast", key: sp.name, verb };

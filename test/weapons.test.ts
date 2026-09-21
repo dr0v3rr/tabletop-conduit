@@ -164,7 +164,7 @@ describe('computeWeapons — Aldric L11 (Artificer 11) support-action guard', ()
 // ---- Regression: synthetic minimal-model unit tests (Bugs 2, 3, 4) ----
 
 /** Minimal RollModel exercising only the fields computeWeapons reads. */
-function makeModel(mods: Partial<Record<'STR' | 'DEX' | 'INT', number>>, profBonus = 3): RollModel {
+function makeModel(mods: Partial<Record<'STR' | 'DEX' | 'INT' | 'CHA', number>>, profBonus = 3): RollModel {
   const ab = (mod: number) => ({ score: 10 + mod * 2, mod });
   return {
     abilities: {
@@ -173,11 +173,55 @@ function makeModel(mods: Partial<Record<'STR' | 'DEX' | 'INT', number>>, profBon
       CON: ab(0),
       INT: ab(mods.INT ?? 0),
       WIS: ab(0),
-      CHA: ab(0),
+      CHA: ab(mods.CHA ?? 0),
     },
     profBonus,
   } as unknown as RollModel;
 }
+
+// A proficient (simple-weapon) finesse dagger + an optional replace-weapon-ability modifier.
+function hexbladeChar(replaceCharisma: boolean): CharacterData {
+  return {
+    inventory: [{ definition: { name: 'Dagger', filterType: 'Weapon', damage: { diceString: '1d4' }, damageType: 'Piercing', attackType: 1, categoryId: 1, properties: [{ name: 'Finesse' }] } }],
+    modifiers: {
+      class: [
+        { type: 'proficiency', subType: 'simple-weapons' },
+        ...(replaceCharisma ? [{ type: 'replace-weapon-ability', subType: 'charisma-score' }] : []),
+      ],
+    },
+  } as unknown as CharacterData;
+}
+
+describe('computeWeapons — Hex Warrior / Pact of the Blade (replace-weapon-ability)', () => {
+  const dagger = (data: CharacterData, model: RollModel) => computeWeapons(data, model).find((w) => w.name === 'Dagger')!;
+
+  it('uses Charisma for a proficient weapon when the replace-weapon-ability modifier is present and CHA is better', () => {
+    const w = dagger(hexbladeChar(true), makeModel({ DEX: 3, CHA: 4, STR: -1 }, 5));
+    expect(w.attackAbility).toBe('CHA');
+    expect(w.attackMod).toBe(9);   // CHA +4 + prof +5
+    expect(w.damageMod).toBe(4);   // CHA +4
+  });
+
+  it('never downgrades — keeps the weapon\'s better normal ability if it beats the replacement', () => {
+    const w = dagger(hexbladeChar(true), makeModel({ DEX: 5, CHA: 2 }, 5));
+    expect(w.attackAbility).toBe('DEX'); // DEX +5 > CHA +2
+    expect(w.attackMod).toBe(10);
+  });
+
+  it('does NOT substitute without the modifier (plain finesse weapon)', () => {
+    const w = dagger(hexbladeChar(false), makeModel({ DEX: 3, CHA: 4 }, 5));
+    expect(w.attackAbility).toBe('DEX'); // no Hex Warrior → finesse default
+    expect(w.attackMod).toBe(8);
+  });
+
+  it('does not apply the replacement to a weapon the character is NOT proficient with', () => {
+    const data = { inventory: [{ definition: { name: 'Greatsword', filterType: 'Weapon', damage: { diceString: '2d6' }, damageType: 'Slashing', attackType: 1, categoryId: 2, properties: [] } }],
+      modifiers: { class: [{ type: 'replace-weapon-ability', subType: 'charisma-score' }] } } as unknown as CharacterData;
+    const w = computeWeapons(data, makeModel({ STR: 0, CHA: 5 }, 5)).find((x) => x.name === 'Greatsword')!;
+    expect(w.proficient).toBe(false);
+    expect(w.attackAbility).toBe('STR'); // not proficient → no CHA substitution
+  });
+});
 
 describe('computeWeapons — synthetic regressions', () => {
   it('Bug 2: an action with fixedToHit returns that exact to-hit (override, not additive)', () => {

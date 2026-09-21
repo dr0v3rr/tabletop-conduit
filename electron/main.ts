@@ -338,7 +338,19 @@ function setupPersistentSession(): string {
     if (flushTimer) clearTimeout(flushTimer);
     flushTimer = setTimeout(() => { flushTimer = null; s.cookies.flushStore().catch(() => {}); }, 1500);
   };
-  app.on("before-quit", () => { s.cookies.flushStore().catch(() => {}); });
+  // Flush the cookie store to disk BEFORE the process exits — blocking, so a login made moments before
+  // quit (or a Set-Cookie still inside the debounce window) can't be lost. Electron would otherwise
+  // tear down while the async flush is still in flight. A `flushing` guard + safety timeout make sure
+  // the quit always proceeds even if flushStore stalls.
+  let flushing = false;
+  app.on("before-quit", (e) => {
+    if (flushing) return; // second pass (after our flush) — let the quit through
+    flushing = true;
+    e.preventDefault();
+    const proceed = () => app.quit();
+    const guard = setTimeout(proceed, 800); // never hang the quit
+    s.cookies.flushStore().catch(() => {}).finally(() => { clearTimeout(guard); proceed(); });
+  });
   s.webRequest.onHeadersReceived((details, cb) => {
     const headers = details.responseHeaders ?? {};
     const key = Object.keys(headers).find((k) => k.toLowerCase() === "set-cookie");

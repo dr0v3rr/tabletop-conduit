@@ -93,6 +93,12 @@ export interface Spell {
   damages?: SpellDamage[];
   scalesWithLevel?: boolean;
   atHigherLevels?: string;
+  /**
+   * Per-slot-level damage increment for an up-cast (e.g. "1d6" for Fireball). Casting a spell in a
+   * slot above its base level adds this die once per level above base. Only set for leveled spells
+   * whose higher-level scaling is a damage die (not extra targets / duration, which can't be rolled).
+   */
+  higherLevelDice?: string;
   isCantrip: boolean;
   /** requires Concentration to maintain. */
   concentration?: boolean;
@@ -437,6 +443,13 @@ export function computeSpells(data: CharacterData, model: RollModel): Spellcasti
     }
     if (scalesWithLevel) spell.scalesWithLevel = true;
     if (atHigherLevels) spell.atHigherLevels = atHigherLevels;
+    // Structured up-cast increment: the per-slot-level damage die (Fireball → "1d6"). Only when the
+    // scaling is a rollable damage die — extra-target / duration scaling has no `dice` and is left to
+    // the reminder text. Cantrips scale on character level, not slots, so they never carry this.
+    if (scalesWithLevel && !isCantrip && dmg) {
+      const inc = dieString(dmg.atHigherLevels?.higherLevelDefinitions?.[0]?.dice);
+      if (inc) spell.higherLevelDice = inc;
+    }
     const anyDef = def as unknown as { concentration?: boolean; ritual?: boolean; activation?: { activationType?: number } };
     if (anyDef.concentration) spell.concentration = true;
     if (anyDef.ritual) spell.ritual = true;

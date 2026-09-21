@@ -11,6 +11,7 @@ import type { AbilityMod } from "./abilities-engine";
 import { moveFeatMods } from "./feats-engine";
 import { primarySpeed, type SpeedMode } from "./speed";
 import { specSkillBonus } from "./specializations";
+import { patchMoveData, moveFix } from "./move-mechanics";
 
 // poke5e status conditions that alter the Pokémon's OWN move rolls (from /reference/status-conditions).
 // Rendered/applied via the existing ability-mod machinery (cond:{status} is evaluated live against the
@@ -207,6 +208,7 @@ export interface MoveStat {
   rollDie?: string; // a utility move whose prose is "roll a d20/d100/…" (OHKO moves, Metronome, …)
   note?: string; // a per-move reminder (charge / recharge, from the move's `time`)
   castingTime?: "action" | "bonus" | "reaction"; // action economy, from the move's `time` field
+  mechanicNote?: string; // rule the engine can't auto-apply (from the move-mechanics overlay), shown on use
   pp?: { current: number; max: number };
   isCantrip: boolean;
   level: number;
@@ -254,6 +256,8 @@ function computeStab(pk: any, moveMod: number, level: number): number {
 }
 
 export function moveStat(move: any, pk: any, learned?: any): MoveStat {
+  move = patchMoveData(move); // overlay: deterministic re-render/damage/heal fixes for known gap moves
+  const fix = moveFix(move.id); // overlay metadata (noStab / attacks / autoHit / note)
   const level = Number(pk.level) || 1;
   const pb = profFor(level);
   const best = bestPowerAbility(pk, move.power);
@@ -273,7 +277,7 @@ export function moveStat(move: any, pk: any, learned?: any): MoveStat {
     const dtype = Array.isArray(dmg.type) ? dmg.type[0] : dmg.type;
     const isHeal = dtype === "healing"; // STAB is a damage bonus — never added to healing
     const stabVal = computeStab(pk, mod, level); // STAB value regardless of type (for explicit tokens)
-    const { flat, parts } = parseDamageFlat(dmg.modifier, { mod, ability: best.ability, level, stab: stabVal, typeMatch: typeMatch && !isHeal });
+    const { flat, parts } = parseDamageFlat(dmg.modifier, { mod, ability: best.ability, level, stab: stabVal, typeMatch: typeMatch && !isHeal && !fix?.noStab });
     const mkFormula = (f: number) => (base ? (f ? `${base}${f >= 0 ? " + " + f : " - " + -f}` : base) : f ? String(f) : "");
     const formula = mkFormula(flat);
     damageTip = [base, ...parts.map((p) => `${signed(p.value)} ${p.label}`)].filter(Boolean).join(" ");
@@ -343,6 +347,19 @@ export function moveStat(move: any, pk: any, learned?: any): MoveStat {
   if (/recharge/.test(time)) out.note = "must recharge — no move on your next turn";
   else if (/charge/.test(time)) out.note = "charges now — fires on your next turn (keep concentration)";
   if (learned) out.pp = { current: Number(learned.pp_cur) || 0, max: Number(learned.pp_max) || 0 };
+  // Move-mechanics overlay (post-compute): a fixed multi-hit count, a guaranteed-hit flag, and the
+  // rule-note the engine can't auto-apply. The damage/heal/re-render side already happened via the patch.
+  if (fix) {
+    if (fix.attacks && fix.attacks > 1) {
+      out.attacks = fix.attacks;
+      // Carry the STAB-once-per-target logic to overlay multi-hits too (Population Bomb, Swift): the
+      // 1st hit keeps STAB, the rest use the STAB-stripped damage. Without this on-type users would
+      // over-apply STAB on every card (and Population Bomb's card would contradict its own banner).
+      if (damageDiceNoStab && damageDiceNoStab !== damageDice) out.damageDiceNoStab = damageDiceNoStab;
+    }
+    if (fix.autoHit && (out.damageDice || out.healDice)) out.autoHit = true;
+    if (fix.note) out.mechanicNote = fix.note;
+  }
   return out;
 }
 
@@ -432,6 +449,7 @@ export function pokemonToCharacter(
         rollDie: st.rollDie, // OHKO / prose "roll a dN" moves
         castingTime: st.castingTime, // action / bonus action / reaction → BA / RXN tags
         moveHint: st.note, // charge / recharge reminder
+        mechanicNote: st.mechanicNote, // rule the engine can't auto-apply — shown prominently on use
         description: st.description, // full move wording — for "Display in VTT"
         range: st.range, // move range (e.g. "40ft") — for the Display-in-VTT meta line
         pp: st.pp,

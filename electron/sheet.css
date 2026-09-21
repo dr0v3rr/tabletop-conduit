@@ -322,6 +322,16 @@ button { cursor: pointer; font: inherit; }
 .pip.full { background: var(--accent2); }
 .pip:hover { outline: 1px solid var(--ink); outline-offset: 1px; }
 .spell-group .roll-line { padding-left: 12px; }
+/* Persistent, always-expanded "Spell Slots" card (no twistie) — shown only for casters, in a
+ * prominent spot above the spell list. Every slot level incl. ones with no known spell. */
+.slots-card .slots-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; padding: 8px 10px; }
+.slot-tracker { display: flex; flex-wrap: wrap; gap: 7px 14px; }
+.slot-cell { display: inline-flex; align-items: center; gap: 5px; }
+.slot-lbl { font-size: 10px; font-weight: 700; color: var(--muted); letter-spacing: .02em; }
+.slot-cell.pact .slot-lbl { color: var(--accent2); }
+/* Up-cast slot picker on a leveled spell row. */
+select.upcast { font: inherit; font-size: 10px; color: var(--ink); background: var(--panel2); border: 1px solid var(--line); border-radius: 4px; padding: 1px 4px; max-width: 108px; cursor: pointer; }
+select.upcast:hover { border-color: var(--accent2); }
 
 .stats table { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 8px; }
 .stats th { text-align: right; color: var(--muted); font-weight: 500; font-size: 10px; text-transform: uppercase; letter-spacing: .04em; padding: 2px 4px; border-bottom: 1px solid var(--line); }

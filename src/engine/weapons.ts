@@ -111,6 +111,27 @@ function weaponProficiencySet(data: CharacterData): Set<string> {
   return set;
 }
 
+const ABILITY_SCORE_SUBTYPE: Record<string, Ability> = {
+  'strength-score': 'STR', 'dexterity-score': 'DEX', 'constitution-score': 'CON',
+  'intelligence-score': 'INT', 'wisdom-score': 'WIS', 'charisma-score': 'CHA',
+};
+
+/** Abilities the character may substitute for a weapon's normal STR/DEX. D&D Beyond encodes this as a
+ *  `replace-weapon-ability` modifier whose subType names the ability score — it's how the Hexblade's
+ *  **Hex Warrior** / **Pact of the Blade** (and Kensei, etc.) "use Charisma for weapon attacks" feature
+ *  is represented. Reading the modifier (rather than the feature by name) makes this work for ANY such
+ *  source generically. Usually a single ability (e.g. CHA), but returned as a list for completeness. */
+function weaponAbilityReplacements(data: CharacterData): Ability[] {
+  const out: Ability[] = [];
+  for (const m of allModifiers(data)) {
+    if (m.type === 'replace-weapon-ability' && typeof m.subType === 'string') {
+      const ab = ABILITY_SCORE_SUBTYPE[m.subType];
+      if (ab && !out.includes(ab)) out.push(ab);
+    }
+  }
+  return out;
+}
+
 interface FightingStyles {
   archery: boolean;
   dueling: boolean;
@@ -209,17 +230,22 @@ function itemMagicBonus(def: Record<string, unknown>): number {
   return 0;
 }
 
-/** Pick the attack ability for an inventory weapon per 5e rules. */
+/** Pick the attack ability for an inventory weapon per 5e rules. `replace` holds any abilities a
+ *  feature lets the character use instead (Hex Warrior / Pact of the Blade → CHA); the best-modifier
+ *  ability among the weapon's normal choice and those replacements wins, which is what D&D Beyond does
+ *  ("you can use your Charisma instead" — never a downgrade). */
 function weaponAbility(
   isRanged: boolean,
   isFinesse: boolean,
   model: RollModel,
+  replace: Ability[] = [],
 ): Ability {
-  if (isFinesse) {
-    // Finesse: use whichever of STR/DEX has the higher modifier.
-    return model.abilities.DEX.mod >= model.abilities.STR.mod ? 'DEX' : 'STR';
-  }
-  return isRanged ? 'DEX' : 'STR';
+  const normal: Ability = isFinesse
+    ? model.abilities.DEX.mod >= model.abilities.STR.mod ? 'DEX' : 'STR' // Finesse: higher of STR/DEX
+    : isRanged ? 'DEX' : 'STR';
+  let best: Ability = normal;
+  for (const ab of replace) if (model.abilities[ab].mod > model.abilities[best].mod) best = ab;
+  return best;
 }
 
 function rangeString(range: unknown, longRange: unknown): string | undefined {
@@ -236,6 +262,7 @@ function computeInventoryWeapons(data: CharacterData, model: RollModel): Weapon[
   const inventory = (data as unknown as { inventory?: unknown[] }).inventory ?? [];
   const profSet = weaponProficiencySet(data);
   const styles = detectFightingStyles(data);
+  const replaceAbilities = weaponAbilityReplacements(data); // Hex Warrior / Pact of the Blade → CHA, etc.
   const out: Weapon[] = [];
 
   for (const rawItem of inventory) {
@@ -262,9 +289,6 @@ function computeInventoryWeapons(data: CharacterData, model: RollModel): Weapon[
       hasProp(properties, 'Ammunition') ||
       hasProp(properties, 'Range');
 
-    const ability = weaponAbility(isRanged, isFinesse, model);
-    const abilityMod = model.abilities[ability].mod;
-
     // Proficiency: weapon-category match, firearm match, or specific weapon name.
     const categoryProf = CATEGORY_ID_TO_PROF[Number(def.categoryId)];
     const rawName = String(def.name ?? '');
@@ -280,6 +304,11 @@ function computeInventoryWeapons(data: CharacterData, model: RollModel): Weapon[
       (categoryProf != null && profSet.has(categoryProf)) ||
       (looksFirearm && profSet.has('firearms')) ||
       [...nameKebabs].some((nk) => profSet.has(nk));
+
+    // A weapon-ability replacement (Hex Warrior / Pact of the Blade CHA) only applies to a weapon the
+    // character is proficient with, so compute the ability AFTER proficiency.
+    const ability = weaponAbility(isRanged, isFinesse, model, proficient ? replaceAbilities : []);
+    const abilityMod = model.abilities[ability].mod;
 
     const magicBonus = itemMagicBonus(def);
 
