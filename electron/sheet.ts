@@ -6,6 +6,8 @@ import { buildSheetDto } from "../src/sheet/sheet-pdf.js"; // printable-sheet DT
 import { expandAttacks } from "../src/compose/index.js"; // fan a FIXED multi-attack move into N cards (pure)
 import { expUntilLevelUp, expProgress, formatExp, MAX_LEVEL } from "../src/poke5e/experience.js"; // EXP maths
 import { scaleDamageDice } from "../src/engine/upcast.js"; // up-cast damage scaling (pure, tested)
+import { matchInline, matchBlock, isHrLine, blockTag } from "../src/notebook/markdown.js"; // notebook md shortcuts (pure, tested)
+import { sanitizeNoteHtml } from "../src/notebook/sanitize.js"; // strip unsafe/remote content from note HTML
 type Ability = "STR" | "DEX" | "CON" | "INT" | "WIS" | "CHA";
 type AdvMode = "normal" | "advantage" | "disadvantage" | "super-advantage" | "super-disadvantage";
 type NotebookPage = { id: string; emoji: string; title: string; html: string; updated: number };
@@ -57,6 +59,7 @@ declare global {
       notebookLoad(): Promise<{ ok: boolean; campaign: string; name: string | null; data: { pages?: NotebookPage[]; activeId?: string | null } }>;
       notebookSave(campaign: string, doc: NotebookDoc): Promise<{ ok: boolean; campaign?: string; error?: string }>;
       notebookView(open: boolean): Promise<{ ok: boolean }>;
+      captureRoll20(): Promise<{ ok: boolean; dataUrl?: string; error?: string }>;
       notebookOpen(): Promise<{ ok: boolean; dir: string; error?: string }>;
       roll20Scrape(): Promise<any[]>;
       roll20Say(message: string, speakingAs?: string): Promise<{ ok: boolean; error?: string }>;
@@ -3252,6 +3255,128 @@ function renderNbPages() {
   });
 }
 
+// ---- Notebook: images (paste / capture) + markdown shortcuts -------------------------------------
+
+// Downscale a pasted image to a sane width and JPEG-encode it, so the data URI embedded in the note
+// stays small (a raw screenshot can be several MB; this yields a few hundred KB). We decode straight
+// from the Blob via createImageBitmap — no blob:/object URL, which the note's CSP img-src wouldn't allow.
+async function nbScaleImage(blob: Blob, maxW = 1600, quality = 0.85): Promise<string> {
+  const bmp = await createImageBitmap(blob);
+  const scale = bmp.width > maxW ? maxW / bmp.width : 1;
+  const w = Math.max(1, Math.round(bmp.width * scale)), h = Math.max(1, Math.round(bmp.height * scale));
+  const cv = document.createElement("canvas"); cv.width = w; cv.height = h;
+  const ctx = cv.getContext("2d");
+  try {
+    if (!ctx) throw new Error("no canvas context");
+    ctx.drawImage(bmp, 0, 0, w, h);
+    return cv.toDataURL("image/jpeg", quality);
+  } finally {
+    bmp.close?.();
+  }
+}
+
+/** Insert a node (or fragment) at the caret in the editor — deterministic (execCommand("insertHTML")
+ *  is unreliable in this webview). Falls back to appending when the caret isn't in the editor. */
+function nbInsertNodeAtCaret(body: HTMLElement, node: Node) {
+  const last = node.nodeType === 11 ? (node as DocumentFragment).lastChild : node; // capture before insert
+  const sel = window.getSelection();
+  const inEditor = !!(sel && sel.rangeCount && body.contains(sel.getRangeAt(0).commonAncestorContainer));
+  if (inEditor) { const r = sel!.getRangeAt(0); r.deleteContents(); r.insertNode(node); }
+  else body.appendChild(node);
+  if (last) { const rr = document.createRange(); rr.setStartAfter(last); rr.collapse(true); sel?.removeAllRanges(); sel?.addRange(rr); }
+}
+
+/** Insert an image (a self-generated data URL) at the caret. */
+function nbInsertImage(body: HTMLElement, dataUrl: string) {
+  const img = document.createElement("img");
+  img.className = "nb-img"; img.src = dataUrl; img.alt = "note image";
+  nbInsertNodeAtCaret(body, img);
+}
+
+/** Insert ALREADY-SANITIZED HTML at the caret. Caller must pass sanitizeNoteHtml() output. */
+function nbInsertHtmlSafe(body: HTMLElement, safeHtml: string) {
+  const tmp = document.createElement("div");
+  tmp.innerHTML = safeHtml; // sanitized by the caller
+  const frag = document.createDocumentFragment();
+  while (tmp.firstChild) frag.appendChild(tmp.firstChild);
+  nbInsertNodeAtCaret(body, frag);
+}
+
+/** Resolve the collapsed caret to a text node + the line text up to it. Robust to the caret sitting
+ *  on an element container (common in a fresh contenteditable): descend to the text node before it. */
+function nbCaretInfo(): { node: Text; offset: number; prefix: string } | null {
+  const sel = window.getSelection();
+  if (!sel || !sel.rangeCount || !sel.isCollapsed) return null;
+  const r = sel.getRangeAt(0);
+  let node: Node = r.startContainer;
+  let offset = r.startOffset;
+  if (node.nodeType === Node.ELEMENT_NODE) {
+    const prev = node.childNodes[offset - 1]; // the node just before the caret
+    if (prev && prev.nodeType === Node.TEXT_NODE) { node = prev; offset = (prev.textContent || "").length; }
+    else return null;
+  }
+  if (node.nodeType !== Node.TEXT_NODE) return null;
+  return { node: node as Text, offset, prefix: (node.textContent || "").slice(0, offset) };
+}
+
+/** Nearest block-level ancestor of a node within the editor (else null → text is a bare root child). */
+function nbBlockOf(node: Node, root: HTMLElement): HTMLElement | null {
+  let n: Node | null = node;
+  while (n && n !== root) {
+    if (n.nodeType === Node.ELEMENT_NODE && /^(DIV|P|H[1-6]|LI|BLOCKQUOTE|PRE)$/.test((n as Element).tagName)) return n as HTMLElement;
+    n = n.parentNode;
+  }
+  return null;
+}
+
+/** Markdown shortcuts on Space: block markers (#/-/1./>) via execCommand, inline (**bold**, _italic_,
+ *  `code`) via deterministic DOM surgery (execCommand("insertHTML") is unreliable in this webview). */
+function nbApplyMdSpace(body: HTMLElement): boolean {
+  const c = nbCaretInfo();
+  if (!c) return false;
+  const blk = matchBlock(c.prefix);
+  if (blk) {
+    c.node.textContent = (c.node.textContent || "").slice(c.offset); // strip the marker
+    const sel = window.getSelection()!; const r = document.createRange();
+    r.setStart(c.node, 0); r.collapse(true); sel.removeAllRanges(); sel.addRange(r);
+    body.focus();
+    if (blk.kind === "ul") document.execCommand("insertUnorderedList", false);
+    else if (blk.kind === "ol") document.execCommand("insertOrderedList", false);
+    else document.execCommand("formatBlock", false, blockTag(blk)); // heading / blockquote
+    return true;
+  }
+  const inl = matchInline(c.prefix);
+  if (inl) {
+    const full = c.node.textContent || "";
+    const frag = document.createDocumentFragment();
+    const before = full.slice(0, c.offset - inl.remove);
+    if (before) frag.appendChild(document.createTextNode(before));
+    const el = document.createElement(inl.tag); el.textContent = inl.text; frag.appendChild(el);
+    const tail = document.createTextNode(" " + full.slice(c.offset)); frag.appendChild(tail); // the typed space
+    c.node.parentNode!.replaceChild(frag, c.node);
+    const sel = window.getSelection()!; const r = document.createRange();
+    r.setStart(tail, 1); r.collapse(true); sel.removeAllRanges(); sel.addRange(r); // caret after the space
+    return true;
+  }
+  return false;
+}
+
+/** `---` / `***` / `___` alone on a line, then Enter → a horizontal rule (deterministic DOM). */
+function nbApplyMdEnter(body: HTMLElement): boolean {
+  const c = nbCaretInfo();
+  if (!c) return false;
+  const line = (c.node.textContent || "").trim();
+  if (!isHrLine(c.prefix.trim()) || c.prefix.trim() !== line) return false;
+  const hr = document.createElement("hr");
+  const nl = document.createElement("div"); nl.appendChild(document.createElement("br"));
+  const block = nbBlockOf(c.node, body);
+  if (block && block !== body) { block.replaceWith(hr); hr.after(nl); }
+  else { c.node.textContent = ""; c.node.after(hr); hr.after(nl); }
+  const sel = window.getSelection()!; const r = document.createRange();
+  r.setStart(nl, 0); r.collapse(true); sel.removeAllRanges(); sel.addRange(r);
+  return true;
+}
+
 function renderNbEditor() {
   const host = $("nbEditor");
   const p = nbActivePage();
@@ -3267,6 +3392,7 @@ function renderNbEditor() {
       `<button class="nb-fmt" data-cmd="italic" title="Italic"><i>I</i></button>` +
       `<button class="nb-fmt" data-cmd="insertUnorderedList" title="Bullet list">•</button>` +
       `<button class="nb-fmt" data-cmd="formatBlock:H2" title="Heading">H</button>` +
+      `<button id="nbCapture" class="nb-fmt" title="Capture the Roll20 view into this note (you can also paste any image, e.g. a screenshot)">📷</button>` +
       `<span id="nbSaveState" class="nb-save">Saved ✓</span>` +
       `<button id="nbDel" class="nb-del" title="Delete this page">🗑</button>` +
     `</div>` +
@@ -3276,11 +3402,41 @@ function renderNbEditor() {
   const title = $("nbTitle") as HTMLInputElement;
   const body = $("nbContent");
   title.value = p.title || "";
-  body.innerHTML = p.html || "";
+  body.innerHTML = sanitizeNoteHtml(p.html || ""); // never render unsanitized stored HTML
   nbSetSaved(true);
   title.addEventListener("input", () => { p.title = title.value; nbQueueSave(); });
   body.addEventListener("input", () => { p.html = body.innerHTML; nbQueueSave(); });
-  host.querySelectorAll<HTMLElement>(".nb-fmt").forEach((btn) => {
+  // Paste handling. Images (OS screenshot / Roll20 "Copy Image") → downscale + embed as a data URI
+  // (the canvas re-encode also discards any embedded payload). Rich text/HTML → sanitize before
+  // inserting (strip scripts, handlers, remote resources). Plain text → let the browser insert it.
+  body.addEventListener("paste", async (e) => {
+    const cd = (e as ClipboardEvent).clipboardData;
+    if (!cd) return;
+    const imgItem = [...cd.items].find((i) => i.kind === "file" && i.type.startsWith("image/"));
+    if (imgItem) {
+      e.preventDefault();
+      const blob = imgItem.getAsFile();
+      if (!blob) return;
+      try { const url = await nbScaleImage(blob); body.focus(); nbInsertImage(body, url); p.html = body.innerHTML; nbQueueSave(); }
+      catch { setStatus("Couldn't paste that image", true); }
+      return;
+    }
+    const html = cd.getData("text/html");
+    if (html && html.trim()) {
+      e.preventDefault();
+      body.focus();
+      nbInsertHtmlSafe(body, sanitizeNoteHtml(html));
+      p.html = body.innerHTML; nbQueueSave();
+    }
+    // else: plain text — inert, let the default paste insert it verbatim
+  });
+  // Markdown shortcuts: block rules (#/-/1./>) + inline (**bold**, _italic_, `code`) on Space; --- → hr on Enter.
+  body.addEventListener("keydown", (e) => {
+    const ev = e as KeyboardEvent;
+    if (ev.key === " " && nbApplyMdSpace(body)) { ev.preventDefault(); p.html = body.innerHTML; nbQueueSave(); }
+    else if (ev.key === "Enter" && !ev.shiftKey && nbApplyMdEnter(body)) { ev.preventDefault(); p.html = body.innerHTML; nbQueueSave(); }
+  });
+  host.querySelectorAll<HTMLElement>(".nb-fmt[data-cmd]").forEach((btn) => {
     btn.addEventListener("mousedown", (e) => e.preventDefault()); // don't steal the editor selection
     btn.onclick = () => {
       const cmd = btn.getAttribute("data-cmd")!;
@@ -3290,6 +3446,22 @@ function renderNbEditor() {
       p.html = body.innerHTML; nbQueueSave();
     };
   });
+  // 📷 Capture the live Roll20 view into the note.
+  const cap = $("nbCapture");
+  cap.addEventListener("mousedown", (e) => e.preventDefault()); // keep the editor caret where it is
+  cap.onclick = async () => {
+    setStatus("Capturing Roll20…");
+    const r = await window.api.captureRoll20().catch(() => ({ ok: false } as any));
+    if (!r?.ok || !r.dataUrl) { setStatus(r?.error || "Couldn't capture Roll20", true); return; }
+    body.focus();
+    // If the caret isn't inside the editor yet, drop the image at the end.
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount || !body.contains(sel.getRangeAt(0).commonAncestorContainer)) {
+      const rg = document.createRange(); rg.selectNodeContents(body); rg.collapse(false); sel?.removeAllRanges(); sel?.addRange(rg);
+    }
+    nbInsertImage(body, r.dataUrl); p.html = body.innerHTML; nbQueueSave();
+    setStatus("Captured Roll20 into the note ✓");
+  };
   ($("nbDel") as HTMLElement).onclick = () => {
     nbPages = nbPages.filter((x) => x.id !== p.id);
     nbActiveId = nbPages[0]?.id ?? null;

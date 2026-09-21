@@ -37,6 +37,7 @@ contextBridge.exposeInMainWorld("api", {
   notebookLoad: () => ipcRenderer.invoke("notebook-load"),
   notebookSave: (campaign: string, doc: unknown) => ipcRenderer.invoke("notebook-save", campaign, doc),
   notebookView: (open: boolean) => ipcRenderer.invoke("notebook-view", open),
+  captureRoll20: () => ipcRenderer.invoke("capture-roll20"),
   notebookOpen: () => ipcRenderer.invoke("notebook-open"),
   roll20Scrape: () => ipcRenderer.invoke("roll20-scrape"),
   roll20Say: (message: string, speakingAs?: string) => ipcRenderer.invoke("roll20-say", message, speakingAs),

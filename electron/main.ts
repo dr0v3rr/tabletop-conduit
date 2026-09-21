@@ -1535,6 +1535,20 @@ ipcMain.handle("notebook-view", (_e, open: boolean) => {
   raiseRightPane(); // sheet pane on top, covering the window (same model as the Pokédex tab)
   return { ok: true };
 });
+// Screenshot the Roll20 view into a note. capturePage grabs the live VTT pane; we downscale wide
+// captures and JPEG-encode so the data URI stays small (the notebook autosaves the whole page HTML).
+ipcMain.handle("capture-roll20", async () => {
+  try {
+    if (!roll20View) return { ok: false, error: "Roll20 isn't open yet" };
+    const img = await roll20View.webContents.capturePage();
+    if (img.isEmpty()) return { ok: false, error: "Nothing to capture from Roll20" };
+    const scaled = img.getSize().width > 1600 ? img.resize({ width: 1600 }) : img;
+    const jpeg = scaled.toJPEG(82);
+    return { ok: true, dataUrl: `data:image/jpeg;base64,${jpeg.toString("base64")}` };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+});
 // A manual, persisted dex flag: "seen" (encounter the DM confirms) or "caught" (marked by hand,
 // e.g. after an inventory Poké Ball throw). Team membership is layered on top as caught at read time.
 ipcMain.handle("pokedex-mark", (_e, id: string, state: "seen" | "caught" | null) => {
