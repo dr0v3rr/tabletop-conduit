@@ -222,7 +222,9 @@ export async function fetchItemsCatalog(): Promise<{ id: string; name: string; t
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-// The 18 poke5e skills, in add_pokemon's `_rank_<skill>` param spelling (underscored).
+// The 18 poke5e skills, in add_pokemon's `_prof_<skill>` param spelling (underscored). poke5e
+// renamed these from `_rank_<skill>` (int) to `_prof_<skill>` (bool) — the same `_prof_*` columns
+// the update RPCs use — so a stale `_rank_*` param set no longer matches the function (PostgREST 404).
 const ADD_SKILLS = ["athletics", "acrobatics", "sleight_of_hand", "stealth", "arcana", "history", "investigation", "nature", "religion", "animal_handling", "insight", "medicine", "perception", "survival", "deception", "intimidation", "performance", "persuasion"];
 
 export interface AddPokemonSpecies {
@@ -244,25 +246,23 @@ export function scaledHp(e: AddPokemonSpecies, level: number): number {
  *  without a live write (which would add a real Pokémon to the trainer). */
 export function buildAddPokemonParams(writeKey: string, e: AddPokemonSpecies, level: number): Record<string, unknown> {
   const hp = scaledHp(e, level);
+  // Param set MUST match poke5e's live add_pokemon signature exactly (PostgREST resolves the
+  // function by argument names). No `_type` (species implies type) and no `_abilities` param — the
+  // ability is set on poke5e after the add, like the site's own flow.
   const params: Record<string, unknown> = {
     _write_key: writeKey,
     _nickname: e.name,
     _species: e.id,
     _nature: "Hardy",
-    _type: e.types,
     _level: level,
     _gender: "male",
     _strength: e.stats.STR, _dexterity: e.stats.DEX, _constitution: e.stats.CON,
     _intelligence: e.stats.INT, _wisdom: e.stats.WIS, _charisma: e.stats.CHA,
     _ac: e.ac, _hp_cur: hp, _hp_max: hp, _hit_dice_cur: level, _hit_dice_max: level,
     _ability: null,
-    _abilities: (() => {
-      const a = e.abilities.find((x) => !x.hidden) || e.abilities[0];
-      return a ? [{ referenceId: a.id }] : [];
-    })(),
   };
   const prof = new Set(e.skillIds.map((s) => s.replace(/-/g, "_")));
-  for (const s of ADD_SKILLS) params[`_rank_${s}`] = prof.has(s) ? 1 : 0;
+  for (const s of ADD_SKILLS) params[`_prof_${s}`] = prof.has(s); // boolean `_prof_*` (was int `_rank_*`)
   const saves = new Set(e.saves.map((s) => s.toLowerCase()));
   for (const ab of ["str", "dex", "con", "int", "wis", "cha"]) params[`_save_${ab}`] = saves.has(ab);
   return params;

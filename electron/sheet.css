@@ -300,6 +300,8 @@ button { cursor: pointer; font: inherit; }
 .stag.conc { color: #e0a24a; border-color: #5a4a2e; background: rgba(224,162,74,.12); }
 .stag.rit { color: #7c9fe0; border-color: #2e3a5a; }
 .stag.ct { color: #a98fe0; border-color: #3a2e5a; }
+/* Bonus-action moves get a distinct, filled badge so they're easy to spot while scanning the list. */
+.stag.ba { color: #08130f; background: #43c9a0; border-color: #43c9a0; font-weight: 800; letter-spacing: .02em; }
 
 .roll-line .lvl { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; font-size: 10px; border-radius: 4px; background: var(--panel2); color: var(--muted); flex: none; }
 .roll-line.spell.attack .lvl { background: var(--accent); color: #fff; }

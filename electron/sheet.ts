@@ -1530,8 +1530,9 @@ function renderInventory() {
       const plus = mkMini("+", () => adjustItemQty(it, +1), "Increase quantity on D&D Beyond");
       ctl.append(minus, count, plus);
       if (String(it.itemType || "").toLowerCase() === "pokeball") {
-        // A Poké Ball → open the Catch card with this ball preset (pick a target + roll to catch).
-        const th = mkMini("Throw", () => openCatch({ ballItemId: it.itemId }), "Throw this ball — opens the Catch card to pick a target and roll");
+        // A Poké Ball → throw it directly: roll the Animal Handling catch check to Roll20 and
+        // decrement THIS ball. (The Pokédex "Catch…" flow still uses the full card to record a species.)
+        const th = mkMini("Throw", () => throwBallFromBag(it), "Throw this ball — rolls Animal Handling to Roll20 and uses one");
         th.classList.add("use-btn");
         if (it.quantity <= 0) (th as HTMLButtonElement).disabled = true;
         ctl.appendChild(th);
@@ -1657,7 +1658,7 @@ function spellTags(sp: any): string {
   let t = "";
   if (sp.concentration) t += `<span class="stag conc" title="Concentration">C</span>`;
   if (sp.ritual) t += `<span class="stag rit" title="Ritual">R</span>`;
-  if (sp.castingTime === "bonus") t += `<span class="stag ct" title="Bonus action">BA</span>`;
+  if (sp.castingTime === "bonus") t += `<span class="stag ba" title="Bonus action — costs your bonus action this turn">BA</span>`;
   else if (sp.castingTime === "reaction") t += `<span class="stag ct" title="Reaction">RXN</span>`;
   if (sp.moveHint) t += `<span class="stag ct" title="${esc(sp.moveHint)}">⏳</span>`; // charge / recharge
   if (sp.attacks > 1) t += `<span class="stag ct" title="Makes ${sp.attacks} separate attacks — rolls ${sp.attacks} cards">×${sp.attacks}</span>`;
@@ -3832,6 +3833,32 @@ function consumeBall(ball: any) {
   if (Array.isArray(ball.entries) && ball.entries[0]) ball.entries[0].quantity = q;
   window.api.poke5eItemQty({ rowId: ball.rowId, itemId: ball.itemId, name: ball.name, customName: ball.customName, note: ball.note }, q).catch(() => {});
   renderInventory();
+}
+
+// Inventory Poké Ball "Throw" — the direct path (no target picker): roll the Animal Handling catch
+// check straight to Roll20 (honoring the current Roll advantage mode) and decrement THIS specific
+// ball. The GM adjudicates against their hidden DC; mark the catch afterwards from the Pokédex.
+function throwBallFromBag(it: any) {
+  const ball = it; // the exact bag row the button belongs to — so the right item is decremented
+  if (!ball || (ball.quantity ?? 0) <= 0) { setStatus(`No ${ball?.name || "ball"} left`, true); return; }
+  const eff = ballEffect(ball.itemId);
+  consumeBall(ball); // decrements this specific item (poke5e write + local), re-renders
+  if (eff.auto) { // Master Ball
+    window.api.roll20Say(`&{template:default} {{name=Catch}} {{Ball=${tclean(ball.name)}}} {{Result=Automatic catch}}`, model?.name).catch(() => {});
+    setStatus(`Threw a ${ball.name} — automatic catch`);
+    return;
+  }
+  const ahMod = model?.skills?.["animal-handling"]?.mod ?? 0;
+  const die = adv === "advantage" ? "2d20kh1" : adv === "disadvantage" ? "2d20kl1" : "1d20";
+  const modStr = ahMod ? (ahMod >= 0 ? ` + ${ahMod}` : ` - ${Math.abs(ahMod)}`) : "";
+  // Safari/Friend/Sport carry a sheet-derived DC reduction the GM can't compute — post it; other balls
+  // the GM already knows, so only the ball name goes (they apply their hidden-DC reduction).
+  let ballField = "";
+  if (eff.skill) { const skMod = -eff.flat; if (skMod !== 0) ballField = ` {{Ball effect=${sgn(-skMod)} to DC (your ${tclean(SKILL_NAMES[eff.skill] || cap(eff.skill))} ${sgn(skMod)})}}`; }
+  const advField = adv === "advantage" ? ` {{Advantage=yes}}` : adv === "disadvantage" ? ` {{Disadvantage=yes}}` : ``;
+  const card = `&{template:default} {{name=Catch}} {{Ball=${tclean(ball.name)}}}${ballField} {{Animal Handling=[[${die}${modStr}]]}}${advField}`;
+  window.api.roll20Say(card, model?.name).catch(() => {});
+  setStatus(`Threw a ${ball.name} — Animal Handling catch roll sent to Roll20`);
 }
 
 function doThrow() {

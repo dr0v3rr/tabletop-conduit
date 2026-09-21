@@ -78,22 +78,24 @@ describe('poke5e add_pokemon params (catch → add to team)', () => {
     expect(scaledHp(ralts, 1)).toBe(16);      // at min level = base
     expect(scaledHp(ralts, 5)).toBe(16 + 4 * 4); // d6 avg 4 + CON mod 0 = 4/level
   });
-  it('maps species, level, stats, types, and the caught level into add_pokemon params', () => {
+  it('maps species, level, stats, and the caught level into add_pokemon params', () => {
     const p = buildAddPokemonParams('WKEY', ralts, 5);
     expect(p._write_key).toBe('WKEY');
     expect(p._species).toBe('ralts');
     expect(p._level).toBe(5);
-    expect(p._type).toEqual(['psychic', 'fairy']);
     expect(p._hp_max).toBe(32);
     expect(p._hit_dice_max).toBe(5);
     expect(p._strength).toBe(9);
+    // poke5e's live signature has no `_type` (species implies type) and no `_abilities`.
+    expect(p._type).toBeUndefined();
+    expect(p._abilities).toBeUndefined();
   });
-  it('sets proficient skills/saves to the species defaults and picks the non-hidden ability', () => {
+  it('sets proficient skills/saves to the species defaults as booleans (`_prof_*`, not `_rank_*`)', () => {
     const p = buildAddPokemonParams('WKEY', ralts, 3);
-    expect(p._rank_insight).toBe(1);
-    expect(p._rank_athletics).toBe(0);
+    expect(p._prof_insight).toBe(true);
+    expect(p._prof_athletics).toBe(false);
+    expect(p._rank_insight).toBeUndefined(); // old param name is gone
     expect(p._save_wis).toBe(true);
     expect(p._save_str).toBe(false);
-    expect(p._abilities).toEqual([{ referenceId: 'synchronize' }]); // non-hidden preferred over Telepathy
   });
 });
