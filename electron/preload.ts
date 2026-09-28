@@ -84,6 +84,7 @@ contextBridge.exposeInMainWorld("api", {
   poke5eGmRoster: (extraKeys: string[]) => ipcRenderer.invoke("poke5e-gm-roster", extraKeys),
   loadPoke5ePokemon: (pokemonId: number) => ipcRenderer.invoke("load-poke5e-pokemon", pokemonId),
   poke5eSetHp: (curHp: number, maxHp: number) => ipcRenderer.invoke("poke5e-set-hp", curHp, maxHp),
+  poke5eSetMoney: (money: number) => ipcRenderer.invoke("poke5e-set-money", money),
   poke5eSetPp: (learnedId: number, moveId: string, ppCur: number, ppMax: number, notes?: string) => ipcRenderer.invoke("poke5e-set-pp", learnedId, moveId, ppCur, ppMax, notes),
   poke5eKeys: () => ipcRenderer.invoke("poke5e-keys"),
   searchMonsters: (query: string) => ipcRenderer.invoke("search-monsters", query),

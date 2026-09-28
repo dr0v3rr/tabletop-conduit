@@ -22,6 +22,7 @@ declare global {
       poke5eGmRoster(extraKeys: string[]): Promise<{ ok: boolean; trainers: { readKey: string; name: string; writable: boolean; team: { id: number; name: string }[] }[]; error?: string }>;
       loadPoke5ePokemon(pokemonId: number): Promise<{ ok: boolean; model?: any; error?: string; [k: string]: any }>;
       poke5eSetHp(curHp: number, maxHp: number): Promise<{ ok: boolean; error?: string }>;
+      poke5eSetMoney(money: number): Promise<{ ok: boolean; money?: number; error?: string }>;
       poke5eSetPp(learnedId: number, moveId: string, ppCur: number, ppMax: number, notes?: string): Promise<{ ok: boolean; error?: string }>;
       poke5eKeys(): Promise<{ ok: boolean; name?: string; readKey?: string; writeKey?: string; error?: string }>;
       getConfig(): Promise<{ source: string; vtt: string }>;
@@ -120,6 +121,7 @@ let hitDice: any = null; // { pools: [{die,total,used}], conMod }
 let hitRemaining: Record<number, number> = {}; // die size -> remaining hit dice
 let hitPending: Record<number, number> = {}; // die size -> hit dice spent this short rest, awaiting DDB commit
 let inventory: any[] = []; // rollable + magic items (potions, offensive consumables, magic gear)
+let pokeMoney = 0; // poke5e trainer's money (₽); shown/edited in the Inventory section, syncs on change
 let hp: { current: number; max: number; temp: number; removed: number } | null = null;
 let defenses: { resist: string[]; immune: string[]; vulnerable: string[] } = { resist: [], immune: [], vulnerable: [] };
 let concentrating: { name: string } | null = null; // active concentration spell, if any
@@ -450,6 +452,7 @@ function applyCharacter(res: any, ref: string) {
   for (const s of spellSlots) remaining[s.level] = s.total - s.used;
   hitDice = res.hitDice || null;
   inventory = res.inventory || [];
+  pokeMoney = Number((res as any).money) || 0;
   hp = res.hp || null;
   writable = res.writable ?? true;
   defenses = res.defenses || { resist: [], immune: [], vulnerable: [] };
@@ -1480,21 +1483,47 @@ function renderFeats() {
   }
 }
 
+// The trainer's money (₽) control for the Inventory section. Editable when we hold the write key;
+// commits on change to poke5e via update_trainer (optimistic, reverts on failure). Trainer-level only.
+function moneyControl(): HTMLElement {
+  const row = document.createElement("div");
+  row.className = "money-row";
+  row.innerHTML = `<span class="money-label">Money</span><span class="money-amt"><span class="cur">₽</span><input id="moneyInput" class="money-input" type="number" min="0" step="1" aria-label="Trainer money"${writable ? "" : " disabled"} /></span>`;
+  const input = row.querySelector("#moneyInput") as HTMLInputElement;
+  input.value = String(pokeMoney);
+  if (writable) {
+    input.addEventListener("change", async () => {
+      const val = Math.max(0, Math.round(Number(input.value) || 0));
+      input.value = String(val);
+      if (val === pokeMoney) return;
+      const prev = pokeMoney;
+      pokeMoney = val; // optimistic
+      const r = await window.api.poke5eSetMoney(val).catch(() => ({ ok: false } as any));
+      if (r?.ok) setStatus(`Money set to ₽${val.toLocaleString()} ✓`);
+      else { pokeMoney = prev; input.value = String(prev); setStatus(r?.error || "Couldn't save money to poke5e", true); }
+    });
+  }
+  return row;
+}
+
 function renderInventory() {
   const sec = sectionEl("items");
   const box = $("items");
   box.innerHTML = "";
   // The DDB inventory manager is DDB-only; the poke5e "Add item" picker shows for owned trainers.
   const canAddPoke = activeSource === "poke5e" && writable;
+  // Money is a TRAINER-level field (not per-Pokémon), shown/edited here to mirror poke5e's Inventory tab.
+  const isTrainer = activeSource === "poke5e" && !activeRef.startsWith("pmon:");
   ($("manageItems") as HTMLElement).hidden = activeSource !== "ddb";
   ($("addPokeItem") as HTMLElement).hidden = !canAddPoke;
-  // Keep the section (and its Add button) visible for owned poke5e trainers even with an empty bag —
-  // otherwise there's no way to re-add an item that was fully removed.
-  if (!inventory.length && !canAddPoke) { sec.hidden = true; return; }
+  // Keep the section visible for a poke5e trainer even with an empty bag — for the money control and
+  // (when owned) the Add button; otherwise there's no way to re-add a fully-removed item.
+  if (!inventory.length && !canAddPoke && !isTrainer) { sec.hidden = true; return; }
   sec.hidden = false;
+  if (isTrainer) box.appendChild(moneyControl()); // ₽ at the top of the bag
   if (!inventory.length) {
     ($("itemMeta") as HTMLElement).textContent = "";
-    box.innerHTML = `<div class="empty-note">No items in the bag yet — use ＋ Add item.</div>`;
+    box.insertAdjacentHTML("beforeend", `<div class="empty-note">No items in the bag yet${canAddPoke ? " — use ＋ Add item." : "."}</div>`);
     return;
   }
   const rollableCount = inventory.filter((it) => it.kind === "heal" || it.kind === "damage").length;

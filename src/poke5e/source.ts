@@ -133,7 +133,24 @@ export async function fetchTrainer(readKey: string): Promise<any | null> {
 
 const PROF = ["_prof_athletics", "_prof_acrobatics", "_prof_sleight_of_hand", "_prof_stealth", "_prof_arcana", "_prof_history", "_prof_investigation", "_prof_nature", "_prof_religion", "_prof_animal_handling", "_prof_insight", "_prof_medicine", "_prof_perception", "_prof_survival", "_prof_deception", "_prof_intimidation", "_prof_performance", "_prof_persuasion"];
 const SAVES = ["_save_str", "_save_dex", "_save_con", "_save_int", "_save_wis", "_save_cha"];
-const TRAINER_PARAMS = ["_name", "_level", "_ac", "_hp_cur", "_hp_max", "_hit_dice_cur", "_hit_dice_max", "_strength", "_dexterity", "_constitution", "_intelligence", "_wisdom", "_charisma", ...PROF, ...SAVES];
+// The 18 skills as update_trainer spells them: `_rank_<skill>` (an int rank), NOT the pokemon RPC's
+// `_prof_<skill>`. get_trainer returns the matching `rank_*` columns.
+const RANK = ["_rank_athletics", "_rank_acrobatics", "_rank_sleight_of_hand", "_rank_stealth", "_rank_arcana", "_rank_history", "_rank_investigation", "_rank_nature", "_rank_religion", "_rank_animal_handling", "_rank_insight", "_rank_medicine", "_rank_perception", "_rank_survival", "_rank_deception", "_rank_intimidation", "_rank_performance", "_rank_persuasion"];
+const SPECIAL = ["_special_normal", "_special_fighting", "_special_flying", "_special_poison", "_special_ground", "_special_rock", "_special_bug", "_special_ghost", "_special_steel", "_special_fire", "_special_water", "_special_grass", "_special_electric", "_special_psychic", "_special_ice", "_special_dragon", "_special_dark", "_special_fairy"];
+const PATH_PARAMS = ["_path_name", "_path_resource", "_path_rank_1_name", "_path_rank_1_desc", "_path_rank_2_name", "_path_rank_2_desc", "_path_rank_3_name", "_path_rank_3_desc", "_path_rank_4_name", "_path_rank_4_desc"];
+// poke5e's current update_trainer is a FULL-ROW upsert (it mirrors the whole get_trainer row, the same
+// call poke5e's own site makes). We echo every column from the cached row and override only what we
+// change (HP or money). Omitting a column would 404 — which fails the write safely rather than blanking
+// anything. Includes `_money` (the ₽ shown in poke5e's Inventory section) and `_description`.
+export const TRAINER_PARAMS = [
+  "_name", "_description", "_level",
+  "_strength", "_dexterity", "_constitution", "_intelligence", "_wisdom", "_charisma",
+  "_ac", "_hp_cur", "_hp_max", "_hit_dice_cur", "_hit_dice_max",
+  ...RANK, ...SAVES,
+  "_species", "_gender", "_age", "_home_region", "_background", "_money",
+  ...SPECIAL, ...PATH_PARAMS,
+  "_tags", "_hit_dice_size", "_token_color", "_token_crop_x", "_token_crop_y", "_token_crop_size",
+];
 const POKEMON_PARAMS = ["_id", "_species", "_nickname", "_type", "_nature", "_level", "_gender", "_strength", "_dexterity", "_constitution", "_intelligence", "_wisdom", "_charisma", "_ac", "_hp_cur", "_hp_max", "_hit_dice_cur", "_hit_dice_max", ...PROF, ...SAVES, "_ability", "_notes", "_tera_type", "_exp", "_status", "_held_item", "_is_shiny"];
 
 function buildParams(names: string[], row: any, overrides: Record<string, unknown>): Record<string, unknown> {
@@ -142,11 +159,23 @@ function buildParams(names: string[], row: any, overrides: Record<string, unknow
   return p;
 }
 
-/** Read the write key poke5e stores locally for a read key ("write:<readKey>"); needs the pane. */
+// update_trainer may return the updated row (pgrst object) or an affected-count — treat a numeric as a
+// count (>0 = success) and any non-null object as success. poke5eRpc already throws on an HTTP error.
+const wrote = (r: any): boolean => (typeof r === "number" || typeof r === "bigint" ? Number(r) > 0 : r != null);
+
+/** The trainer's current money (₽) from a get_trainer row. */
+export function trainerMoney(row: any): number { return Number(row?.money) || 0; }
+
+/** Re-upsert the whole trainer row with new HP (full-row update, per poke5e's current update_trainer). */
 export async function updateTrainerHp(writeKey: string, row: any, curHp: number, maxHp: number): Promise<boolean> {
   const params = { _write_key: writeKey, ...buildParams(TRAINER_PARAMS, row, { _hp_cur: curHp, _hp_max: maxHp }) };
-  const r = await poke5eRpc("update_trainer", params);
-  return Number(r) > 0;
+  return wrote(await poke5eRpc("update_trainer", params));
+}
+
+/** Set the trainer's money (₽) on poke5e — full-row upsert overriding only `_money`. */
+export async function updateTrainerMoney(writeKey: string, row: any, money: number): Promise<boolean> {
+  const params = { _write_key: writeKey, ...buildParams(TRAINER_PARAMS, row, { _money: Math.max(0, Math.round(money)) }) };
+  return wrote(await poke5eRpc("update_trainer", params));
 }
 
 export async function updatePokemonHp(writeKey: string, pk: any, curHp: number, maxHp: number): Promise<boolean> {
@@ -361,18 +390,22 @@ let itemsCache: Record<string, { name: string; type?: string; description?: stri
 async function itemsMap(): Promise<Record<string, { name: string; type?: string; description?: string }>> {
   if (itemsCache) return itemsCache;
   try {
-    const r = await fetch("https://poke5e.app/items.json");
+    // poke5e moved this file under /data/ (the old root /items.json now 404s). Its `data/abilities.json`
+    // already lives there; moves.json is still at the root. Structure is unchanged: { items: [...] }.
+    const r = await fetch("https://poke5e.app/data/items.json");
+    if (!r.ok) return {}; // don't cache a failure — a 404/blip would otherwise turn every item "(unnamed)"
     const j: any = await r.json();
-    const arr: any[] = j.items || j.values || [];
+    const arr: any[] = Array.isArray(j.items) ? j.items : Array.isArray(j.values) ? j.values : Array.isArray(j) ? j : [];
+    if (!arr.length) return {}; // empty/unexpected payload → let a later call retry rather than caching {}
     const map: Record<string, { name: string; type?: string; description?: string }> = {};
     for (const it of arr) {
-      if (!it.id) continue;
+      if (!it || !it.id) continue;
       const description = Array.isArray(it.description) ? it.description.join(" ") : it.description;
       map[it.id] = { name: it.name, type: it.type, description };
     }
     itemsCache = map;
   } catch {
-    itemsCache = {};
+    return {}; // transient (offline / parse) — don't poison the cache; retry next time
   }
   return itemsCache;
 }

@@ -14,7 +14,7 @@ import { buildSendExpression } from "../src/roll20/inject.js";
 import { displayCard } from "../src/roll20/format.js";
 import { r20TokenExpr } from "../src/roll20/token.js";
 import { ddbSlotsExpr, ddbHitDiceExpr, ddbInventoryExpr, ddbFetchCharExpr } from "../src/ddb/inject.js";
-import { extractReadKey, fetchTrainer, trainerToRollModel, trainerExtras, buildInventory, fetchTrainerFeats, updateTrainerHp, updatePokemonHp, updatePokemonStatus, updatePokemonExp, updateMovePp, updateInventoryItem, addInventoryItem, fetchItemsCatalog, addPokemonToTeam, removePokemon, evolvePokemon, deleteTrainer, setPoke5eCredentials, getPoke5eCredentials } from "../src/poke5e/source.js";
+import { extractReadKey, fetchTrainer, trainerToRollModel, trainerExtras, buildInventory, fetchTrainerFeats, updateTrainerHp, updateTrainerMoney, trainerMoney, updatePokemonHp, updatePokemonStatus, updatePokemonExp, updateMovePp, updateInventoryItem, addInventoryItem, fetchItemsCatalog, addPokemonToTeam, removePokemon, evolvePokemon, deleteTrainer, setPoke5eCredentials, getPoke5eCredentials } from "../src/poke5e/source.js";
 import { buildPokedex } from "../src/poke5e/pokedex.js";
 import type { DexEntry } from "../src/poke5e/pokedex.js";
 import { isNewer } from "../src/update/version.js";
@@ -823,6 +823,20 @@ ipcMain.handle("poke5e-set-hp", async (_e, curHp: number, maxHp: number) => {
   }
 });
 
+/** Set the trainer's money (₽) on poke5e (full-row update_trainer; needs write key). Money is a
+ *  trainer-level field, so this always targets the trainer row (never a Pokémon). */
+ipcMain.handle("poke5e-set-money", async (_e, money: number) => {
+  if (!poke5eCtx?.writeKey) return { ok: false, error: "This trainer is read-only (no write key)" };
+  const amount = Math.max(0, Math.round(Number(money) || 0));
+  try {
+    const ok = await updateTrainerMoney(poke5eCtx.writeKey, poke5eCtx.trainerRow, amount);
+    if (ok) { poke5eCtx.trainerRow.money = amount; schedulePoke5ePaneRefresh(); }
+    return ok ? { ok: true, money: amount } : { ok: false, error: "poke5e rejected the write (check your write key)" };
+  } catch (err) {
+    return { ok: false, error: "Couldn't reach poke5e: " + String(err) };
+  }
+});
+
 /** Write a Pokémon move's remaining PP back to poke5e (targeted update_move; needs write key). */
 ipcMain.handle("poke5e-set-pp", async (_e, learnedId: number, moveId: string, ppCur: number, ppMax: number, notes?: string) => {
   if (!poke5eCtx?.writeKey) return { ok: false, error: "read-only" };
@@ -939,6 +953,7 @@ ipcMain.handle("load-poke5e", async (_e, input: string) => {
       defenses: { resist: [], immune: [], vulnerable: [] },
       writable: !!writeKey, // read/write if we hold this trainer's write key, else read-only
       ac: typeof (row as any).ac === "number" ? (row as any).ac : undefined,
+      money: trainerMoney(row), // ₽ shown/edited in the Inventory section (syncs via update_trainer)
       readKey: key, // resolved key, so the app can remember it for the auto-load picker
       feats,
       roster,
