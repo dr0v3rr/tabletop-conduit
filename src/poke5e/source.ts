@@ -151,7 +151,7 @@ export const TRAINER_PARAMS = [
   ...SPECIAL, ...PATH_PARAMS,
   "_tags", "_hit_dice_size", "_token_color", "_token_crop_x", "_token_crop_y", "_token_crop_size",
 ];
-const POKEMON_PARAMS = ["_id", "_species", "_nickname", "_type", "_nature", "_level", "_gender", "_strength", "_dexterity", "_constitution", "_intelligence", "_wisdom", "_charisma", "_ac", "_hp_cur", "_hp_max", "_hit_dice_cur", "_hit_dice_max", ...PROF, ...SAVES, "_ability", "_notes", "_tera_type", "_exp", "_status", "_held_item", "_is_shiny"];
+export const POKEMON_PARAMS = ["_id", "_species", "_nickname", "_type", "_nature", "_level", "_gender", "_strength", "_dexterity", "_constitution", "_intelligence", "_wisdom", "_charisma", "_ac", "_hp_cur", "_hp_max", "_hit_dice_cur", "_hit_dice_max", ...PROF, ...SAVES, "_ability", "_notes", "_tera_type", "_exp", "_status", "_held_item", "_is_shiny"];
 
 function buildParams(names: string[], row: any, overrides: Record<string, unknown>): Record<string, unknown> {
   const p: Record<string, unknown> = {};
@@ -297,10 +297,23 @@ export function buildAddPokemonParams(writeKey: string, e: AddPokemonSpecies, le
   return params;
 }
 
-/** Add a caught Pokémon (from its Pokédex entry) to the trainer's team via add_pokemon, at the given
- *  wild level. */
-export async function addPokemonToTeam(writeKey: string, e: AddPokemonSpecies, level: number): Promise<boolean> {
+/** Add a caught Pokémon (from its Pokédex entry) to the trainer's team via add_pokemon, then set its
+ *  type. add_pokemon does NOT accept a `_type` param — poke5e's own flow sets the type in a follow-up
+ *  step — so without this the new Pokémon is left with `type: []`, which poke5e's app can't open. We
+ *  find the freshly-created row and set its type via update_pokemon (which does take `_type`). */
+export async function addPokemonToTeam(writeKey: string, e: AddPokemonSpecies, level: number, trainerId: string): Promise<boolean> {
   await poke5eRpc("add_pokemon", buildAddPokemonParams(writeKey, e, level));
+  if (Array.isArray(e.types) && e.types.length && trainerId) {
+    try {
+      const rows = await poke5eRpc("get_pokemon", { _trainer_id: trainerId });
+      const list: any[] = Array.isArray(rows) ? rows : [];
+      // The row we just made: same species, still-empty type, newest id.
+      const added = list
+        .filter((p) => p.species === e.id && (!Array.isArray(p.type) || p.type.length === 0))
+        .sort((a, b) => Number(b.id) - Number(a.id))[0];
+      if (added) await poke5eRpc("update_pokemon", { _write_key: writeKey, ...buildParams(POKEMON_PARAMS, added, { _type: e.types }) });
+    } catch { /* the Pokémon is added; the type-set is best-effort and can be fixed on poke5e */ }
+  }
   return true;
 }
 

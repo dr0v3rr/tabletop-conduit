@@ -1873,7 +1873,7 @@ ipcMain.handle("poke5e-add-team", async (_e, speciesId: string, level: number) =
   const entry = (pokedexCache || []).find((p) => p.id === speciesId);
   if (!entry) return { ok: false, error: "Unknown species" };
   try {
-    await addPokemonToTeam(poke5eCtx.writeKey, entry, Math.max(1, Number(level) || entry.minLevel || 1));
+    await addPokemonToTeam(poke5eCtx.writeKey, entry, Math.max(1, Number(level) || entry.minLevel || 1), poke5eCtx.trainerId);
     // Refresh the cached team so the dex immediately shows it as caught.
     const team = await fetchPokemon(poke5eCtx.trainerId).catch(() => null);
     if (Array.isArray(team)) poke5eCtx.team = new Map(team.map((p: any) => [p.id, p]));

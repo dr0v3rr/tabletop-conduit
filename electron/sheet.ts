@@ -8,6 +8,7 @@ import { expUntilLevelUp, expProgress, formatExp, MAX_LEVEL } from "../src/poke5
 import { scaleDamageDice } from "../src/engine/upcast.js"; // up-cast damage scaling (pure, tested)
 import { matchInline, matchBlock, isHrLine, blockTag } from "../src/notebook/markdown.js"; // notebook md shortcuts (pure, tested)
 import { sanitizeNoteHtml } from "../src/notebook/sanitize.js"; // strip unsafe/remote content from note HTML
+import { POKE_TYPES, typeMultiplier, effectivenessLabel } from "../src/poke5e/type-chart.js"; // Pokémon damage types + effectiveness
 type Ability = "STR" | "DEX" | "CON" | "INT" | "WIS" | "CHA";
 type AdvMode = "normal" | "advantage" | "disadvantage" | "super-advantage" | "super-disadvantage";
 type NotebookPage = { id: string; emoji: string; title: string; html: string; updated: number };
@@ -482,6 +483,11 @@ function applyCharacter(res: any, ref: string) {
   if (res.readKey) { addPoke5eKey(res.readKey); poke5eTrainerKey = res.readKey; } // remember trainer + track the active one
   buildRosterFrom(res, ref);
   ($("sheet") as HTMLElement).hidden = false;
+  // Rest buttons are poke5e-only (DDB sheets use the dedicated Rests section with Hit Dice + slots).
+  const isPoke = activeSource === "poke5e";
+  ($("longRestBtn") as HTMLElement).hidden = !isPoke;
+  ($("shortRestBtn") as HTMLElement).hidden = !isPoke;
+  populateDamageTypes(); // poke5e → 18 Pokémon types; DDB/monster → 5e damage types
   render();
   refreshToggles();
   // VTT-side syncing applies to every source.
@@ -1310,9 +1316,18 @@ async function applyHp(kind: "damage" | "heal") {
   let d = raw;
   let effect = "";
   if (type) {
-    if (defenses.immune.includes(type)) { d = 0; effect = ` — immune to ${cap(type)}`; }
-    else if (defenses.resist.includes(type)) { d = Math.floor(d / 2); effect = ` — ${cap(type)} resisted (halved)`; }
-    else if (defenses.vulnerable.includes(type)) { d = d * 2; effect = ` — vulnerable to ${cap(type)} (doubled)`; }
+    if (activeSource === "poke5e") {
+      // Pokémon type effectiveness (standard chart) vs the defender's type(s). A Pokémon has types
+      // (super-effective ×2/×4, resisted ×½/×¼, immune ×0); a trainer is typeless → ×1 (no change).
+      const mult = typeMultiplier(type, pokeMeta?.types ?? []);
+      d = Math.floor(d * mult);
+      const lbl = effectivenessLabel(mult);
+      if (lbl) effect = ` — ${cap(type)}: ${lbl}`;
+    } else {
+      if (defenses.immune.includes(type)) { d = 0; effect = ` — immune to ${cap(type)}`; }
+      else if (defenses.resist.includes(type)) { d = Math.floor(d / 2); effect = ` — ${cap(type)} resisted (halved)`; }
+      else if (defenses.vulnerable.includes(type)) { d = d * 2; effect = ` — vulnerable to ${cap(type)} (doubled)`; }
+    }
   }
   const dmgTaken = d; // post-defense damage actually taken — drives the concentration DC
   if (temp > 0) { const absorbed = Math.min(temp, d); temp -= absorbed; d -= absorbed; } // temp HP soaks first
@@ -2245,6 +2260,27 @@ async function restorePokemonPp() {
   }
   setStatus(failed ? `Long rest — PP restored (${failed} not saved to poke5e)` : "Long rest — all PP restored ✓", failed > 0);
 }
+
+// poke5e rests (top controls, by the Init button). Per poke5e's Fainting/Resting/Healing rules:
+//  • Long rest → refresh ALL health, statuses, and PP (full HP + every move's PP + status cured).
+//  • Short rest → recover HP via Hit Dice (spend them with the HP heal control); PP is NOT restored
+//    and status is NOT cured. We announce it and leave the Hit-Dice HP spend to the player.
+async function poke5eLongRest() {
+  if (activeSource !== "poke5e") return;
+  const pk = isPoke5ePokemon();
+  if (hp) commitHp(0, hp.temp); // HP → full (writes back to poke5e + syncs the Roll20 token)
+  if (pk) {
+    await restorePokemonPp();                          // every move's PP → max
+    if (pokeMeta?.status) await setPoke5eStatus(null);  // cure status
+  }
+  window.api.roll20Say(`&{template:default} {{name=Long Rest}} {{${tclean(model?.name || "Trainer")}=Full HP${pk ? ", all PP restored, status cured" : ""}}}`, model?.name).catch(() => {});
+  setStatus(`Long rest — ${pk ? "HP, PP and status restored" : "HP restored"} ✓`);
+}
+function poke5eShortRest() {
+  if (activeSource !== "poke5e") return;
+  window.api.roll20Say(`&{template:default} {{name=Short Rest}} {{${tclean(model?.name || "Trainer")}=Recover HP by spending Hit Dice}} {{PP=not recovered}}`, model?.name).catch(() => {});
+  setStatus("Short rest — spend Hit Dice to recover HP (via the HP controls); PP is not recovered");
+}
 $("shortRest").onclick = async () => {
   const pools: any[] = hitDice?.pools ?? [];
   const pendingTotal = Object.values(hitPending).reduce((a, b) => a + b, 0);
@@ -2655,6 +2691,8 @@ $("advSeg").querySelectorAll("button").forEach((b) => {
     adv = (b.getAttribute("data-adv") as AdvMode) || "normal";
   });
 });
+$("longRestBtn").onclick = () => poke5eLongRest();
+$("shortRestBtn").onclick = () => poke5eShortRest();
 document.querySelectorAll<HTMLElement>('[data-kind="initiative"]').forEach((b) => {
   b.onclick = () => doRoll({ kind: "initiative" });
 });
@@ -2843,12 +2881,17 @@ $("evolveBtn").onclick = () => openEvoWizard();
 $("deleteTrainerBtn").onclick = () => deleteCurrentTrainer();
 
 // ---- Hit points ----
-// Fill the damage-type dropdown once (used to apply resistances/immunities/vulnerabilities).
-for (const dt of DAMAGE_TYPES) {
-  const o = document.createElement("option");
-  o.value = dt; o.textContent = cap(dt);
-  ($("hpDamageType") as HTMLSelectElement).appendChild(o);
+// Fill the damage-type dropdown for the active source: poke5e uses the 18 Pokémon types (for type
+// effectiveness), D&D / monsters use the 5e damage types (for resistances). Refilled on each load.
+function populateDamageTypes() {
+  const sel = $("hpDamageType") as HTMLSelectElement;
+  const cur = sel.value;
+  const list: readonly string[] = activeSource === "poke5e" ? POKE_TYPES : DAMAGE_TYPES;
+  sel.innerHTML = `<option value="">untyped</option>`;
+  for (const dt of list) { const o = document.createElement("option"); o.value = dt; o.textContent = cap(dt); sel.appendChild(o); }
+  if ([...sel.options].some((o) => o.value === cur)) sel.value = cur;
 }
+populateDamageTypes();
 $("hpDamage").onclick = () => applyHp("damage");
 $("hpHeal").onclick = () => applyHp("heal");
 $("bindToken").onclick = () => toggleBindToken();
@@ -3696,7 +3739,7 @@ function renderDexDetail() {
       markState(p.id, "caught"); setStatus(`Marked ${p.name} as caught`);
     };
     const co = document.getElementById("dexCatchOpen");
-    if (co) co.onclick = () => openCatch({ species: p });
+    if (co) co.onclick = () => catchSpeciesRoll(p); // just roll, like the inventory Poké Ball throw
     return;
   }
 
@@ -3738,7 +3781,7 @@ function renderDexDetail() {
       <button class="dd-btn primary" id="dexCatchOpen">🎯 Catch…</button>
       <button class="dd-btn" id="dexDisplaySpecies">📖 Display species</button>
     </div>
-    <div class="note">Pick a Poké Ball and throw — your Animal Handling roll (plus advantage) posts to Roll20 with the ball's name; the GM applies the ball's effect and adjudicates the catch.</div></div>`;
+    <div class="note">Rolls your Animal Handling to Roll20 (with your first Poké Ball's name; throw a specific ball from the bag's Inventory). The GM adjudicates; then mark it Caught.</div></div>`;
 
   D.innerHTML = h;
 
@@ -3784,7 +3827,7 @@ function renderDexDetail() {
   }
   // catch actions
   const catchOpen = document.getElementById("dexCatchOpen");
-  if (catchOpen) catchOpen.onclick = () => openCatch({ species: p });
+  if (catchOpen) catchOpen.onclick = () => catchSpeciesRoll(p); // just roll, like the inventory Poké Ball throw
   const dispSp = document.getElementById("dexDisplaySpecies");
   if (dispSp) dispSp.onclick = () => {
     const body = `${p.types.map(cap).join("/")} · SR ${p.sr} · AC ${p.ac} · HP ${p.hp} (${p.hitDice}). Abilities: ${p.abilities.map((a: any) => a.name).join(", ")}. ${p.region ? "Native to " + p.region + "." : ""}`;
@@ -4039,28 +4082,39 @@ function consumeBall(ball: any) {
 // Inventory Poké Ball "Throw" — the direct path (no target picker): roll the Animal Handling catch
 // check straight to Roll20 (honoring the current Roll advantage mode) and decrement THIS specific
 // ball. The GM adjudicates against their hidden DC; mark the catch afterwards from the Pokédex.
-function throwBallFromBag(it: any) {
-  const ball = it; // the exact bag row the button belongs to — so the right item is decremented
-  if (!ball || (ball.quantity ?? 0) <= 0) { setStatus(`No ${ball?.name || "ball"} left`, true); return; }
-  const eff = ballEffect(ball.itemId);
-  consumeBall(ball); // decrements this specific item (poke5e write + local), re-renders
-  if (eff.auto) { // Master Ball
-    window.api.roll20Say(`&{template:default} {{name=Catch}} {{Ball=${tclean(ball.name)}}} {{Result=Automatic catch}}`, model?.name).catch(() => {});
-    setStatus(`Threw a ${ball.name} — automatic catch`);
-    return;
-  }
+// The one catch dice mechanic, shared by the inventory Poké Ball "Throw" and the Pokédex "Catch…":
+// roll 1d20 + Animal Handling (honoring the Roll adv/dis mode) to Roll20, with the ball's name and —
+// for Safari/Friend/Sport — the sheet-derived DC reduction the GM can't compute, and decrement the
+// ball. `speciesName` labels the card when catching a specific species from the Pokédex. With no ball
+// (empty bag), it still rolls the check so the GM can adjudicate.
+function rollCatch(ball: any | null, speciesName?: string) {
+  const title = speciesName ? `Catch — ${tclean(speciesName)}` : "Catch";
   const ahMod = model?.skills?.["animal-handling"]?.mod ?? 0;
   const die = adv === "advantage" ? "2d20kh1" : adv === "disadvantage" ? "2d20kl1" : "1d20";
   const modStr = ahMod ? (ahMod >= 0 ? ` + ${ahMod}` : ` - ${Math.abs(ahMod)}`) : "";
-  // Safari/Friend/Sport carry a sheet-derived DC reduction the GM can't compute — post it; other balls
-  // the GM already knows, so only the ball name goes (they apply their hidden-DC reduction).
-  let ballField = "";
-  if (eff.skill) { const skMod = -eff.flat; if (skMod !== 0) ballField = ` {{Ball effect=${sgn(-skMod)} to DC (your ${tclean(SKILL_NAMES[eff.skill] || cap(eff.skill))} ${sgn(skMod)})}}`; }
   const advField = adv === "advantage" ? ` {{Advantage=yes}}` : adv === "disadvantage" ? ` {{Disadvantage=yes}}` : ``;
-  const card = `&{template:default} {{name=Catch}} {{Ball=${tclean(ball.name)}}}${ballField} {{Animal Handling=[[${die}${modStr}]]}}${advField}`;
-  window.api.roll20Say(card, model?.name).catch(() => {});
-  setStatus(`Threw a ${ball.name} — Animal Handling catch roll sent to Roll20`);
+  if (ball) {
+    if ((ball.quantity ?? 0) <= 0) { setStatus(`No ${ball.name || "ball"} left`, true); return; }
+    const eff = ballEffect(ball.itemId);
+    consumeBall(ball); // decrement this ball (poke5e write + local), re-render
+    if (eff.auto) { // Master Ball
+      window.api.roll20Say(`&{template:default} {{name=${title}}} {{Ball=${tclean(ball.name)}}} {{Result=Automatic catch}}`, model?.name).catch(() => {});
+      setStatus(`Threw a ${ball.name} — automatic catch`);
+      return;
+    }
+    let ballField = "";
+    if (eff.skill) { const skMod = -eff.flat; if (skMod !== 0) ballField = ` {{Ball effect=${sgn(-skMod)} to DC (your ${tclean(SKILL_NAMES[eff.skill] || cap(eff.skill))} ${sgn(skMod)})}}`; }
+    window.api.roll20Say(`&{template:default} {{name=${title}}} {{Ball=${tclean(ball.name)}}}${ballField} {{Animal Handling=[[${die}${modStr}]]}}${advField}`, model?.name).catch(() => {});
+    setStatus(`Threw a ${ball.name} — Animal Handling catch roll sent to Roll20`);
+  } else {
+    window.api.roll20Say(`&{template:default} {{name=${title}}} {{Animal Handling=[[${die}${modStr}]]}}${advField}`, model?.name).catch(() => {});
+    setStatus("Animal Handling catch roll sent to Roll20");
+  }
 }
+// Inventory Poké Ball "Throw": roll with THIS specific ball. Pokédex "Catch…": roll at a species,
+// using the first ball in the bag (if any) — same dice as the inventory throw, no multi-field card.
+function throwBallFromBag(it: any) { rollCatch(it); }
+function catchSpeciesRoll(p: any) { rollCatch(bagBalls()[0] ?? null, p?.name); }
 
 function doThrow() {
   const sp = catchCtx.species; if (!sp) return;

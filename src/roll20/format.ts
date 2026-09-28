@@ -217,6 +217,10 @@ export interface DefaultRollOptions {
   formula: string;
   whisper?: boolean;
   speakingAs?: string;
+  /** When adv/disadv, the roll field is labelled so the mode is visible on the plain default card
+   *  (which — unlike the D&D 5e `simple` template — shows a single total, so a `2d20kl1` roll would
+   *  otherwise read as one die). The formula still auto-keeps the right die. */
+  advantage?: ResolvedAdvantage;
 }
 
 /** `&{template:atkdmg}` damage-only — a standalone damage/heal roll (e.g. a save-based
@@ -240,7 +244,12 @@ export function defaultRoll(o: DefaultRollOptions): string {
   const parts: string[] = [];
   if (o.whisper) parts.push('/w gm');
   parts.push('&{template:default}');
-  parts.push(`{{name=${o.name}}}`);  parts.push(`{{Roll=[[${o.formula}]]}}`);
+  parts.push(`{{name=${o.name}}}`);
+  const label =
+    o.advantage === 'advantage' || o.advantage === 'super-advantage' ? 'Roll (Advantage — keep highest)'
+    : o.advantage === 'disadvantage' || o.advantage === 'super-disadvantage' ? 'Roll (Disadvantage — keep lowest)'
+    : 'Roll';
+  parts.push(`{{${label}=[[${o.formula}]]}}`);
   return parts.join(' ');
 }
 

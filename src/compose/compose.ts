@@ -350,7 +350,7 @@ export function composeRoll(model: RollModel, request: RollRequest): ComposedRol
         notes, command: p.join(' ') };
     }
     if (request.kind !== 'damage') {
-      const command = defaultRoll({ name, formula: d20Formula, whisper, speakingAs });
+      const command = defaultRoll({ name, formula: d20Formula, whisper, speakingAs, advantage });
       return { template: 'default', name, whisper, advantage, d20Mod, critRange, d20BonusDice, notes, command };
     }
     // 'damage' falls through — it already uses defaultRoll below.
