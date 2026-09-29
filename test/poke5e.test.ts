@@ -1,5 +1,27 @@
 import { describe, it, expect } from 'vitest';
-import { extractReadKey, trainerToRollModel, trainerExtras, buildAddPokemonParams, scaledHp } from '../src/poke5e/source';
+import { extractReadKey, trainerToRollModel, trainerExtras, buildAddPokemonParams, scaledHp, buildParams, POKEMON_PARAMS } from '../src/poke5e/source';
+
+describe('poke5e buildParams _status coercion', () => {
+  // poke5e crashes its trainer page on a Pokémon whose _status is "" (empty string) — it must be a
+  // real status id or null. Every full-row update_pokemon write carries the row's status through, so
+  // buildParams must never let "" (or any blank) reach the wire.
+  it('coerces an empty-string status to null', () => {
+    const p = buildParams(POKEMON_PARAMS, { status: '' }, {});
+    expect(p._status).toBeNull();
+  });
+  it('coerces a null/undefined status to null', () => {
+    expect(buildParams(POKEMON_PARAMS, { status: null }, {})._status).toBeNull();
+    expect(buildParams(POKEMON_PARAMS, {}, {})._status).toBeNull();
+  });
+  it('preserves a real status id from the row', () => {
+    expect(buildParams(POKEMON_PARAMS, { status: 'Poisoned' }, {})._status).toBe('Poisoned');
+  });
+  it('coerces an empty override to null and preserves a real override', () => {
+    expect(buildParams(POKEMON_PARAMS, { status: 'Burned' }, { _status: '' })._status).toBeNull();
+    expect(buildParams(POKEMON_PARAMS, { status: '' }, { _status: 'Paralysis' })._status).toBe('Paralysis');
+    expect(buildParams(POKEMON_PARAMS, { status: 'Burned' }, { _status: null })._status).toBeNull();
+  });
+});
 
 describe('poke5e extractReadKey', () => {
   it('pulls id from a share URL', () => {

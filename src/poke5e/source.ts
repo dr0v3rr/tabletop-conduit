@@ -153,9 +153,15 @@ export const TRAINER_PARAMS = [
 ];
 export const POKEMON_PARAMS = ["_id", "_species", "_nickname", "_type", "_nature", "_level", "_gender", "_strength", "_dexterity", "_constitution", "_intelligence", "_wisdom", "_charisma", "_ac", "_hp_cur", "_hp_max", "_hit_dice_cur", "_hit_dice_max", ...PROF, ...SAVES, "_ability", "_notes", "_tera_type", "_exp", "_status", "_held_item", "_is_shiny"];
 
-function buildParams(names: string[], row: any, overrides: Record<string, unknown>): Record<string, unknown> {
+export function buildParams(names: string[], row: any, overrides: Record<string, unknown>): Record<string, unknown> {
   const p: Record<string, unknown> = {};
   for (const n of names) p[n] = n in overrides ? overrides[n] : row[n.slice(1)];
+  // poke5e's `_status` column must be a real status id or null — an empty string ("") gets stored
+  // verbatim and then CRASHES poke5e's own trainer/party page, which maps the value to a status
+  // object and reads `.name` off it (`p("").name` → undefined.name). null and valid ids render
+  // fine; "" does not. add_pokemon and some existing rows leave status "", so any full-row Pokémon
+  // write (HP, EXP, status, type-repair) would otherwise faithfully re-emit that "". Never send it.
+  if ("_status" in p && !p._status) p._status = null;
   return p;
 }
 
