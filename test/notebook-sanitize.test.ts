@@ -1,12 +1,31 @@
 import { describe, it, expect } from 'vitest';
 import {
-  isAllowedTag, isDroppedTag, isSafeHref, isSafeImgSrc, keptClasses,
+  isAllowedTag, isDroppedTag, isSafeHref, isSafeImgSrc, keptClasses, isSafeImgDim,
 } from '../src/notebook/sanitize';
 
 // The sanitizer is an ALLOWLIST: it keeps only known-good tags and a validated handful of
 // attributes, so there is no code-execution sink to smuggle a string into. These tests pin the
 // security-critical decisions (the DOM walk is thin glue over them). Obfuscation / string-concat
 // bypasses target blocklist filters; they can't defeat "reject everything not explicitly allowed".
+
+describe('sanitizer — image dimension allowlist (drag-resize persistence)', () => {
+  it('keeps a plain positive-integer width/height so a resized image survives reload', () => {
+    expect(isSafeImgDim('320')).toBe(true);
+    expect(isSafeImgDim('1')).toBe(true);
+    expect(isSafeImgDim('9999')).toBe(true);
+    expect(isSafeImgDim('  480 ')).toBe(true); // trimmed
+  });
+  it('rejects anything non-numeric — units, percent, calc, expressions, zero/negatives', () => {
+    expect(isSafeImgDim('320px')).toBe(false);
+    expect(isSafeImgDim('50%')).toBe(false);
+    expect(isSafeImgDim('calc(100% - 4px)')).toBe(false);
+    expect(isSafeImgDim('-5')).toBe(false);
+    expect(isSafeImgDim('0')).toBe(false);
+    expect(isSafeImgDim('1e3')).toBe(false);
+    expect(isSafeImgDim('')).toBe(false);
+    expect(isSafeImgDim('99999')).toBe(false); // >4 digits
+  });
+});
 
 describe('sanitizer — link scheme allowlist (obfuscation-resistant)', () => {
   it('accepts http/https/mailto only', () => {

@@ -20,6 +20,12 @@ export interface DexMove {
   level: string; // display label: "Start" / "L6" …
   sleep: boolean;
   description: string; // flattened wording — for the row + 📖 Display in VTT
+  // Richer detail for the hover tooltip (all optional — absent on moves that don't specify them).
+  time?: string; // action cost, e.g. "1 action" / "1 bonus action"
+  range?: string;
+  duration?: string;
+  pp?: number;
+  higherLevels?: string; // how the move scales with level
 }
 
 export interface DexEvoStep {
@@ -163,6 +169,11 @@ export function normalizeSpecies(p: any, movesById: Record<string, any>, byId: R
         level: label,
         sleep: SLEEP_MOVES.has(mid),
         description: moveWording(m.description),
+        time: m.time ? String(m.time) : undefined,
+        range: m.range ? String(m.range) : undefined,
+        duration: m.duration ? String(m.duration) : undefined,
+        pp: typeof m.pp === "number" ? m.pp : undefined,
+        higherLevels: m.higherLevels ? String(m.higherLevels) : undefined,
       });
     }
   }

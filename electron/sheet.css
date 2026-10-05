@@ -619,14 +619,26 @@ select.upcast:hover { border-color: var(--accent2); }
 .dd-abil .h { font-size: 9px; color: var(--accent2); border: 1px solid var(--accent2); border-radius: 8px; padding: 0 5px; margin-left: 6px; text-transform: uppercase; letter-spacing: .04em; }
 .dd-abil .disp { flex: none; background: var(--panel2); border: 1px solid var(--line); color: var(--muted); border-radius: 6px; padding: 1px 7px; font-size: 12px; cursor: pointer; }
 .dd-abil .disp:hover { color: var(--ink); border-color: var(--accent2); }
-.dd-move { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); margin-bottom: 5px; }
+/* Move row: a header line (dot · name · level · type · 📖) over a full-width, wrapping description —
+   long move wording wraps instead of being clipped to one line with an ellipsis. */
+.dd-move { display: flex; flex-direction: column; gap: 4px; padding: 6px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); margin-bottom: 5px; }
+.dd-move-head { display: flex; align-items: center; gap: 8px; }
 .dd-move .mt { width: 8px; height: 8px; border-radius: 50%; flex: none; }
-.dd-move .mn { font-weight: 600; font-size: 12.5px; flex: none; }
-.dd-move .mlvl { font-family: ui-monospace, Menlo, monospace; font-size: 9.5px; color: var(--muted); flex: none; }
-.dd-move .md { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dd-move .mn { font-weight: 600; font-size: 12.5px; }
+.dd-move .mlvl { font-family: ui-monospace, Menlo, monospace; font-size: 9.5px; color: var(--muted); }
 .dd-move .mrt { margin-left: auto; font-size: 9px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); flex: none; }
+.dd-move .md { color: var(--muted); font-size: 11px; line-height: 1.45; white-space: normal; overflow-wrap: anywhere; }
 .dd-move .disp { flex: none; background: var(--panel2); border: 1px solid var(--line); color: var(--muted); border-radius: 6px; padding: 1px 7px; font-size: 12px; cursor: pointer; }
 .dd-move .disp:hover { color: var(--ink); border-color: var(--accent2); }
+
+/* Shared hover tooltip — full move/ability/weapon wording shown on hover, without pushing to Roll20. */
+.hovertip { position: fixed; z-index: 120; max-width: 360px; background: var(--panel2); border: 1px solid var(--accent2); border-radius: 10px; padding: 9px 11px; box-shadow: 0 12px 34px rgba(0,0,0,.5); pointer-events: none; font-size: 12px; line-height: 1.45; }
+.hovertip[hidden] { display: none; }
+.hovertip .ht-name { font-weight: 700; color: var(--ink); font-size: 12.5px; margin-bottom: 2px; }
+.hovertip .ht-meta { color: var(--accent2); font-size: 10.5px; text-transform: capitalize; margin-bottom: 5px; }
+.hovertip .ht-body { color: var(--ink); white-space: pre-wrap; overflow-wrap: anywhere; }
+.hovertip .ht-higher { margin-top: 6px; color: var(--muted); font-size: 11px; }
+.hovertip .ht-higher span { color: var(--ink); font-weight: 600; }
 .dd-sleep { color: #a58bef; font-weight: 700; }
 .dd-evo { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
 .dd-evo .stage { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 5px 9px; font-size: 12px; }
@@ -692,7 +704,13 @@ body.nb-open #loader, body.nb-open #sheet { display: none !important; }
 .nb-content h1 { font-size: 24px; text-transform: none; letter-spacing: 0; color: var(--ink); margin: .9em 0 .3em; }
 .nb-content h3 { font-size: 16px; text-transform: none; letter-spacing: 0; color: var(--ink); margin: 1em 0 .3em; }
 .nb-content ol { padding-left: 1.4em; margin: .4em 0; }
-.nb-content img, .nb-content .nb-img { max-width: 100%; height: auto; display: block; margin: 8px 0; border-radius: 6px; border: 1px solid var(--line); }
+.nb-content img, .nb-content .nb-img { max-width: 100%; height: auto; display: block; margin: 8px 0; border-radius: 6px; border: 1px solid var(--line); cursor: pointer; }
+/* Drag-to-resize overlay for a selected note image (lives on <body>, outside the editor). */
+.nb-rz { position: fixed; z-index: 70; pointer-events: none; box-shadow: 0 0 0 1.5px var(--accent2); border-radius: 6px; }
+.nb-rz[hidden] { display: none; }
+.nb-rz-h { position: absolute; width: 12px; height: 12px; background: var(--accent2); border: 2px solid #fff; border-radius: 50%; pointer-events: auto; box-shadow: 0 1px 4px rgba(0,0,0,.5); }
+.nb-rz-h.tr { right: -7px; top: -7px; cursor: nesw-resize; }
+.nb-rz-h.br { right: -7px; bottom: -7px; cursor: nwse-resize; }
 .nb-content blockquote { border-left: 3px solid var(--accent2); margin: .5em 0; padding: 2px 12px; color: var(--muted); }
 .nb-content code { background: var(--panel2); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .92em; }
 .nb-content hr { border: none; border-top: 1px solid var(--line); margin: 12px 0; }

@@ -1407,6 +1407,59 @@ function doDisplay(name: string, body: string, meta?: string, label?: string) {
     .catch(() => setStatus(`Couldn't display ${name}`, true));
 }
 
+// --- Hover detail tooltip -------------------------------------------------------------------------
+// Shows a move/ability/weapon's full wording on hover, so it can be read in the app WITHOUT pushing it
+// to Roll20. One shared floating card, re-pointed at whatever row is hovered and flipped above/below
+// to stay on-screen. pointer-events:none keeps it from stealing the hover (mouseleave of the row hides
+// it); it also hides on scroll so it never floats detached from its row.
+let tipEl: HTMLDivElement | null = null;
+function tipNode(): HTMLDivElement {
+  if (!tipEl) {
+    tipEl = document.createElement("div");
+    tipEl.className = "hovertip";
+    tipEl.hidden = true;
+    document.body.appendChild(tipEl);
+    window.addEventListener("scroll", hideTip, true);
+    // Any click means the user is acting (e.g. casting, which rebuilds the row under a stationary
+    // cursor) — drop the hover card so it can't linger with stale content.
+    document.addEventListener("click", hideTip, true);
+  }
+  return tipEl;
+}
+function hideTip() { if (tipEl) tipEl.hidden = true; }
+function showTipFor(anchor: HTMLElement, html: string) {
+  const t = tipNode();
+  t.innerHTML = html;
+  t.hidden = false;
+  const pad = 8;
+  const r = anchor.getBoundingClientRect();
+  const tw = t.offsetWidth, th = t.offsetHeight;
+  const left = Math.min(Math.max(pad, r.left), Math.max(pad, window.innerWidth - tw - pad));
+  let top = r.bottom + 6; // below the row by default…
+  if (top + th + pad > window.innerHeight && r.top - th - 6 > pad) top = r.top - th - 6; // …flip above if tight
+  t.style.left = `${Math.round(left)}px`;
+  t.style.top = `${Math.round(top)}px`;
+}
+/** Attach a rich hover tooltip (HTML) to an element. No-op when there's nothing to show. */
+function attachTip(el: HTMLElement, html: string) {
+  if (!html) return;
+  el.addEventListener("mouseenter", () => showTipFor(el, html));
+  el.addEventListener("mouseleave", hideTip);
+}
+/** Build tooltip HTML for a move/spell/ability: bold name, a muted meta line, the full wording, and
+ *  (optionally) how it scales at higher levels. Returns "" when there's no wording/meta to show. */
+function detailTipHtml(d: { name: string; meta?: string; description?: string; higher?: string }): string {
+  const body = (d.description || "").trim();
+  const meta = (d.meta || "").trim();
+  const higher = (d.higher || "").trim();
+  if (!body && !meta && !higher) return "";
+  let h = `<div class="ht-name">${esc(d.name)}</div>`;
+  if (meta) h += `<div class="ht-meta">${esc(meta)}</div>`;
+  if (body) h += `<div class="ht-body">${esc(body)}</div>`;
+  if (higher) h += `<div class="ht-higher"><span>Higher levels:</span> ${esc(higher)}</div>`;
+  return h;
+}
+
 /** A compact 📖 button that displays a thing's wording — or null when there's no wording to show. */
 function makeDisplayBtn(thing: { name: string; description?: string; meta?: string; label?: string }): HTMLButtonElement | null {
   const body = (thing.description || "").trim();
@@ -1433,6 +1486,7 @@ function rowWithActions(primary: HTMLElement, extras: (HTMLButtonElement | null)
 }
 
 function renderAttacks() {
+  hideTip(); // rebuilding rows drops their mouseleave handlers; dismiss any leftover tooltip
   const sec = sectionEl("attacks");
   const box = $("attacks");
   box.innerHTML = "";
@@ -1459,6 +1513,7 @@ function renderAttacks() {
     }
     const meta = [w.damageType, w.range].filter(Boolean).join(" · ");
     const display = makeDisplayBtn({ name: w.name, description: w.description, meta, label: "Weapon" });
+    attachTip(b, detailTipHtml({ name: w.name, meta, description: w.description }));
     box.appendChild(rowWithActions(b, [two, display]));
   }
 }
@@ -1740,6 +1795,8 @@ function spellRow(sp: any): HTMLElement {
   b.onclick = () => castSpell(sp);
   const meta = [sp.type || sp.school, sp.casting, sp.range, sp.pp && sp.pp.max ? `${sp.pp.current}/${sp.pp.max} PP` : null].filter(Boolean).join(" · ");
   const display = makeDisplayBtn({ name: sp.name, description: sp.description, meta, label: pokeMeta ? "Move" : "Spell" });
+  // Hover the row to read the full wording in-app (no need to push it to Roll20 to see it).
+  attachTip(b, detailTipHtml({ name: sp.name, meta, description: sp.description }));
   return rowWithActions(b, [upcastControl(sp) as any, display]);
 }
 
@@ -1815,6 +1872,7 @@ function renderSlotBar() {
 }
 
 function renderSpells() {
+  hideTip(); // rebuilding rows drops their mouseleave handlers; dismiss any tooltip left over a cast row
   renderSlotBar(); // keep the persistent slot bar in sync on every (re)render / slot change
   const sec = sectionEl("spells");
   const box = $("spells");
@@ -3256,6 +3314,7 @@ function setView(v: "character" | "pokedex" | "notebook") {
   document.body.classList.toggle("nb-open", isNb);
   $("pokedex").hidden = !isDex;
   $("notebook").hidden = !isNb;
+  if (!isNb) nbHideResizer(); // never leave resize handles floating over another view
   window.api.pokedexView(isDex).catch(() => {}); // expand the sheet pane full-width for the dex
   window.api.notebookView(isNb).catch(() => {}); // …and for the notebook
   if (isDex) {
@@ -3365,6 +3424,79 @@ function nbInsertImage(body: HTMLElement, dataUrl: string) {
   nbInsertNodeAtCaret(body, img);
 }
 
+// ---- Notebook: drag-to-resize images -------------------------------------------------------------
+// Pasted/captured images are downscaled to keep the note small, which can leave them hard to read.
+// Click an image to select it → corner handles appear; drag a corner to change its WIDTH (height stays
+// auto, so the aspect ratio is preserved). The size persists as the img's `width` ATTRIBUTE — the note
+// sanitizer strips inline styles but keeps a numeric width, so it survives save/reload. The handle
+// overlay lives on document.body (outside the editor), so it never becomes part of the saved note.
+let nbRz: HTMLDivElement | null = null;      // the handle overlay (singleton)
+let nbRzImg: HTMLImageElement | null = null; // the image currently selected for resize
+let nbRzBody: HTMLElement | null = null;     // the editor that image lives in (for save-on-resize)
+
+function nbResizerNode(): HTMLDivElement {
+  if (nbRz) return nbRz;
+  nbRz = document.createElement("div");
+  nbRz.className = "nb-rz";
+  nbRz.hidden = true;
+  // Note images are left-aligned blocks (margin-left:0), so only the RIGHT edge can move — handles live
+  // on the right corners and always grow the image rightward. (Left handles would detach from the
+  // cursor since the left edge is pinned.)
+  for (const pos of ["tr", "br"]) {
+    const h = document.createElement("div");
+    h.className = `nb-rz-h ${pos}`;
+    h.addEventListener("mousedown", (e) => nbRzStart(e));
+    nbRz.appendChild(h);
+  }
+  document.body.appendChild(nbRz);
+  window.addEventListener("scroll", nbLayoutResizer, true); // track the image as the note scrolls
+  window.addEventListener("resize", nbLayoutResizer);
+  return nbRz;
+}
+/** Re-point the overlay at the selected image's current on-screen box. */
+function nbLayoutResizer() {
+  if (!nbRz || nbRz.hidden || !nbRzImg) return;
+  if (!nbRzImg.isConnected) { nbHideResizer(); return; } // image was deleted / page re-rendered
+  const r = nbRzImg.getBoundingClientRect();
+  nbRz.style.left = `${Math.round(r.left)}px`;
+  nbRz.style.top = `${Math.round(r.top)}px`;
+  nbRz.style.width = `${Math.round(r.width)}px`;
+  nbRz.style.height = `${Math.round(r.height)}px`;
+}
+function nbSelectImage(img: HTMLImageElement, body: HTMLElement) {
+  nbRzImg = img; nbRzBody = body;
+  nbResizerNode().hidden = false;
+  nbLayoutResizer();
+}
+function nbHideResizer() { if (nbRz) nbRz.hidden = true; nbRzImg = null; nbRzBody = null; }
+
+/** Begin a drag on a right-edge handle. The image's left edge is pinned, so dragging right widens it
+ *  and dragging left narrows it, with the handle tracking the moving right edge. Width is clamped to
+ *  [40px, editor width]; height stays auto so the ratio is kept. */
+function nbRzStart(e: MouseEvent) {
+  if (!nbRzImg) return;
+  e.preventDefault(); e.stopPropagation(); // no caret move / text selection while dragging
+  const img = nbRzImg, body = nbRzBody;
+  const startX = e.clientX;
+  const startW = img.getBoundingClientRect().width;
+  const maxW = Math.max(60, body ? body.clientWidth : 800);
+  const onMove = (me: MouseEvent) => {
+    const dx = me.clientX - startX;
+    const w = Math.max(40, Math.min(Math.round(startW + dx), maxW));
+    img.setAttribute("width", String(w));
+    img.removeAttribute("height"); // defer to CSS height:auto → aspect ratio preserved
+    nbLayoutResizer();
+  };
+  const onUp = () => {
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+    const p = nbActivePage();
+    if (p && body) { p.html = body.innerHTML; nbQueueSave(); } // persist the new width attribute
+  };
+  document.addEventListener("mousemove", onMove);
+  document.addEventListener("mouseup", onUp);
+}
+
 /** Insert ALREADY-SANITIZED HTML at the caret. Caller must pass sanitizeNoteHtml() output. */
 function nbInsertHtmlSafe(body: HTMLElement, safeHtml: string) {
   const tmp = document.createElement("div");
@@ -3451,6 +3583,7 @@ function nbApplyMdEnter(body: HTMLElement): boolean {
 
 function renderNbEditor() {
   const host = $("nbEditor");
+  nbHideResizer(); // drop any resize selection from the page we're leaving
   const p = nbActivePage();
   if (!p) {
     host.innerHTML = `<div class="nb-empty"><div class="nb-empty-ico">📓</div><div>No page yet for this campaign.</div><button id="nbEmptyNew" class="mini-btn">＋ New page</button></div>`;
@@ -3477,7 +3610,13 @@ function renderNbEditor() {
   body.innerHTML = sanitizeNoteHtml(p.html || ""); // never render unsanitized stored HTML
   nbSetSaved(true);
   title.addEventListener("input", () => { p.title = title.value; nbQueueSave(); });
-  body.addEventListener("input", () => { p.html = body.innerHTML; nbQueueSave(); });
+  body.addEventListener("input", () => { nbHideResizer(); p.html = body.innerHTML; nbQueueSave(); });
+  // Click an image to show resize handles; click anything else (or type) to dismiss them.
+  body.addEventListener("click", (e) => {
+    const t = e.target as HTMLElement;
+    if (t && t.tagName === "IMG") nbSelectImage(t as HTMLImageElement, body);
+    else nbHideResizer();
+  });
   // Paste handling. Images (OS screenshot / Roll20 "Copy Image") → downscale + embed as a data URI
   // (the canvas re-encode also discards any embedded payload). Rich text/HTML → sanitize before
   // inserting (strip scripts, handlers, remote resources). Plain text → let the browser insert it.
@@ -3817,12 +3956,22 @@ function renderDexDetail() {
   const mv = D.querySelector("#dexMoves")!;
   for (const m of p.moves) {
     const el = document.createElement("div"); el.className = "dd-move";
-    el.innerHTML = `<span class="mt" style="background:var(--t-${m.type})"></span>` +
+    // Header line, then the full wording on its own wrapping line (no longer clipped to one line).
+    el.innerHTML = `<div class="dd-move-head">` +
+      `<span class="mt" style="background:var(--t-${m.type})"></span>` +
       `<span class="mn">${esc(m.name)}</span>` +
-      `<span class="mlvl">${esc(m.level)}</span><span class="md">${esc(m.description || "")}</span>` +
-      `<span class="mrt">${esc(m.type)}</span>` + (m.description ? `<button class="disp" title="Display in VTT">📖</button>` : "");
+      `<span class="mlvl">${esc(m.level)}</span>` +
+      `<span class="mrt">${esc(m.type)}</span>` +
+      (m.description ? `<button class="disp" title="Display in VTT">📖</button>` : "") +
+      `</div>` +
+      (m.description ? `<div class="md">${esc(m.description)}</div>` : "");
     const db = el.querySelector<HTMLButtonElement>(".disp");
     if (db) db.onclick = () => doDisplay(m.name, m.description, `${cap(m.type)} · ${m.level}`, "Move");
+    // Hover shows the richer meta (action/range/duration/PP) and level-scaling that aren't shown inline.
+    const tipMeta = [cap(m.type), m.level, m.time, m.range,
+      m.duration && m.duration.toLowerCase() !== "instantaneous" ? m.duration : null,
+      m.pp ? `${m.pp} PP` : null].filter(Boolean).join(" · ");
+    attachTip(el, detailTipHtml({ name: m.name, meta: tipMeta, description: m.description, higher: m.higherLevels }));
     mv.appendChild(el);
   }
   // catch actions

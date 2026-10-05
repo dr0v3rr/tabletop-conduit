@@ -32,6 +32,9 @@ export function isDroppedTag(tag: string): boolean { return DROP.has(tag.toUpper
 export function isSafeHref(value: string): boolean { return /^(https?:|mailto:)/i.test(value.trim()); }
 /** An image src we keep — inline `data:image/…` only, never a remote URL (a tracking beacon). */
 export function isSafeImgSrc(value: string): boolean { return /^data:image\//i.test(value.trim()); }
+/** A numeric image dimension (width/height) we keep — a plain positive integer. Inline styles are
+ *  stripped, so the width ATTRIBUTE is how a drag-resized note image keeps its size across reloads. */
+export function isSafeImgDim(value: string): boolean { return /^[1-9]\d{0,3}$/.test(value.trim()); }
 /** The subset of a class attribute we keep (only our own known class). */
 export function keptClasses(value: string): string {
   return value.split(/\s+/).filter((c) => c === 'nb-img').join(' ');
@@ -84,6 +87,8 @@ function scrubAttributes(el: Element): void {
       if (!isSafeImgSrc(value)) el.removeAttribute(attr.name); // inline images only — never remote
     } else if (name === 'alt' && tag === 'IMG') {
       // harmless; keep
+    } else if ((name === 'width' || name === 'height') && tag === 'IMG') {
+      if (!isSafeImgDim(value)) el.removeAttribute(attr.name); // keep a plain numeric size; drop anything else
     } else if (name === 'class') {
       const kept = keptClasses(value); // only our own known class
       if (kept) el.setAttribute('class', kept); else el.removeAttribute('class');
