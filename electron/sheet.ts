@@ -8,7 +8,7 @@ import { expUntilLevelUp, expProgress, formatExp, MAX_LEVEL } from "../src/poke5
 import { scaleDamageDice } from "../src/engine/upcast.js"; // up-cast damage scaling (pure, tested)
 import { matchInline, matchBlock, isHrLine, blockTag } from "../src/notebook/markdown.js"; // notebook md shortcuts (pure, tested)
 import { sanitizeNoteHtml } from "../src/notebook/sanitize.js"; // strip unsafe/remote content from note HTML
-import { POKE_TYPES, typeMultiplier, effectivenessLabel } from "../src/poke5e/type-chart.js"; // Pokémon damage types + effectiveness
+import { POKE_TYPES, typeMultiplier, effectivenessLabel, typeMatchup } from "../src/poke5e/type-chart.js"; // Pokémon damage types + effectiveness
 type Ability = "STR" | "DEX" | "CON" | "INT" | "WIS" | "CHA";
 type AdvMode = "normal" | "advantage" | "disadvantage" | "super-advantage" | "super-disadvantage";
 type NotebookPage = { id: string; emoji: string; title: string; html: string; updated: number };
@@ -998,15 +998,41 @@ function renderHp() {
   updateHpMeta();
 }
 
-// Show the character's damage resistances / immunities / vulnerabilities (from D&D Beyond).
+// Defenses block. A poke5e Pokémon shows its TYPE MATCHUP (weak/resist/immune derived from its own
+// type(s) via the type chart); a D&D Beyond / monster sheet shows its damage resistances / immunities
+// / vulnerabilities. Both use the same chip language so the two systems read consistently.
 function renderDefenses() {
   const el = $("defenses");
+  const monTypes = (pokeMeta?.types ?? []).filter(Boolean);
+  if (isPoke5ePokemon() && monTypes.length) {
+    el.innerHTML = typeMatchupHtml(monTypes);
+    el.hidden = !el.innerHTML;
+    return;
+  }
   const parts: string[] = [];
   if (defenses.immune.length) parts.push(`<span class="def immune" title="No damage">Immune: ${defenses.immune.map(cap).join(", ")}</span>`);
   if (defenses.resist.length) parts.push(`<span class="def resist" title="Half damage">Resist: ${defenses.resist.map(cap).join(", ")}</span>`);
   if (defenses.vulnerable.length) parts.push(`<span class="def vuln" title="Double damage">Vulnerable: ${defenses.vulnerable.map(cap).join(", ")}</span>`);
   el.innerHTML = parts.join("");
   el.hidden = !parts.length;
+}
+
+// Build the poke5e type-matchup chips (Weak ×4/×2 · Resist ×½/×¼ · Immune ×0) with type-colour dots.
+// The types come from the fixed 18-type set (typeMatchup only emits POKE_TYPES), so the `var(--t-…)`
+// dot and chip text are never attacker-controlled.
+function typeMatchupHtml(types: string[]): string {
+  const m = typeMatchup(types);
+  const chip = (t: string, mult: string, cls: string) =>
+    `<span class="def ${cls}"><span class="tdot" style="background:var(--t-${t})"></span>${cap(t)} <span class="mx">${mult}</span></span>`;
+  const grp = (label: string, title: string, tiers: Array<[string[], string, string]>) => {
+    const chips = tiers.flatMap(([list, mult, cls]) => list.map((t) => chip(t, mult, cls))).join("");
+    return chips ? `<span class="def-grp" title="${title}"><span class="def-lab">${label}</span>${chips}</span>` : "";
+  };
+  return [
+    grp("Weak", "Takes extra damage", [[m.x4, "×4", "weak4"], [m.x2, "×2", "weak"]]),
+    grp("Resist", "Takes reduced damage", [[m.half, "×½", "resist"], [m.quarter, "×¼", "resist"]]),
+    grp("Immune", "Takes no damage", [[m.immune, "×0", "immune"]]),
+  ].filter(Boolean).join("");
 }
 
 // Concentration chip — set when you cast a concentration spell; click to drop.
@@ -3085,6 +3111,28 @@ async function usePpItem() {
   renderPpWizard();
 }
 
+// Defenses rows for the printable sheet — mirrors the on-screen Defenses block: a poke5e Pokémon's
+// type matchup (Weak ×4/×2 · Resist ×½/×¼ · Immune), else DDB's resist/immune/vulnerable.
+function sheetDefenseRows(): { tier: string; detail: string }[] {
+  const rows: { tier: string; detail: string }[] = [];
+  const monTypes = (pokeMeta?.types ?? []).filter(Boolean);
+  if (isPoke5ePokemon() && monTypes.length) {
+    const m = typeMatchup(monTypes);
+    const join = (tiers: Array<[string[], string]>) => tiers.flatMap(([list, mult]) => list.map((t) => `${cap(t)} ${mult}`)).join(" · ");
+    const weak = join([[m.x4, "×4"], [m.x2, "×2"]]);
+    const res = join([[m.half, "×½"], [m.quarter, "×¼"]]);
+    const imm = m.immune.map(cap).join(" · ");
+    if (weak) rows.push({ tier: "Weak", detail: weak });
+    if (res) rows.push({ tier: "Resist", detail: res });
+    if (imm) rows.push({ tier: "Immune", detail: imm });
+    return rows;
+  }
+  if (defenses.immune.length) rows.push({ tier: "Immune", detail: defenses.immune.map(cap).join(", ") });
+  if (defenses.resist.length) rows.push({ tier: "Resist", detail: defenses.resist.map(cap).join(", ") });
+  if (defenses.vulnerable.length) rows.push({ tier: "Vulnerable", detail: defenses.vulnerable.map(cap).join(", ") });
+  return rows;
+}
+
 // Build the printable-sheet DTO from the live sheet state and hand it to the main process to render
 // → print → save as a PDF (D&D-Beyond-style layout).
 async function exportSheetPdf() {
@@ -3100,6 +3148,7 @@ async function exportSheetPdf() {
     hitDice: hd,
     weapons, spellcasting, spellSlots, inventory, feats,
     imageUrl: pokeMeta?.sprite || "", // Pokémon art (main embeds it into the PDF)
+    defenses: sheetDefenseRows(), // DDB resist/immune/vuln, or a poke5e Pokémon's type matchup
   });
   const btn = $("exportPdfBtn") as HTMLButtonElement;
   btn.disabled = true;

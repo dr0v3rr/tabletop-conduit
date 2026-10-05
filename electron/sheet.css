@@ -409,10 +409,17 @@ select.upcast:hover { border-color: var(--accent2); }
 /* Damage defenses summary */
 .defenses { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .defenses[hidden] { display: none; }
-.def { font-size: 10px; padding: 2px 7px; border-radius: 10px; border: 1px solid var(--line); }
+.def { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; padding: 2px 7px; border-radius: 10px; border: 1px solid var(--line); }
 .def.immune { color: #cbb3ff; border-color: #5a4a8a; }
 .def.resist { color: #8fd3ff; border-color: #2e4a5a; }
 .def.vuln { color: #ff9a8a; border-color: #5a2e2e; }
+/* poke5e type-matchup chips (weak = warm, ×4 brighter; resist = blue; immune = purple) */
+.def.weak { color: #ff9a8a; border-color: #5a2e2e; }
+.def.weak4 { color: #ffce85; border-color: #6b4a1f; }
+.def .tdot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.def .mx { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 8.5px; color: var(--muted); }
+.def-grp { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.def-lab { font-size: 9px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 700; }
 
 /* Concentration chip */
 .conc-chip { display: flex; align-items: center; gap: 6px; margin-top: 8px; font-size: 12px; color: var(--ink); background: var(--panel); border: 1px solid var(--accent2); border-radius: 8px; padding: 4px 8px; }

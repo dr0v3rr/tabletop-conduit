@@ -91,6 +91,11 @@ describe("buildSheetDto", () => {
     expect(bare.spells).toEqual([]);
     expect(bare.spellMeta).toBe("");
   });
+  it("carries defenses rows, defaulting to [] when none given", () => {
+    expect(buildSheetDto(sampleInput()).defenses).toEqual([]);
+    const dto = buildSheetDto(sampleInput({ defenses: [{ tier: "Weak", detail: "Fire ×4 · Rock ×4" }, { tier: "Immune", detail: "Dragon" }] }));
+    expect(dto.defenses).toEqual([{ tier: "Weak", detail: "Fire ×4 · Rock ×4" }, { tier: "Immune", detail: "Dragon" }]);
+  });
 });
 
 describe("renderSheetHtml", () => {
@@ -101,6 +106,13 @@ describe("renderSheetHtml", () => {
     expect(html).toContain("Mira");
     expect(html).toContain("Fire Bolt");
     expect(html).toContain("Dagger");
+  });
+  it("renders a Defenses section only when there are rows", () => {
+    const withDef = renderSheetHtml(buildSheetDto(sampleInput({ defenses: [{ tier: "Weak", detail: "Fire ×4 · Rock ×4" }] })));
+    expect(withDef).toContain("<h2>Defenses</h2>");
+    expect(withDef).toContain("Fire ×4 · Rock ×4");
+    const noDef = renderSheetHtml(buildSheetDto(sampleInput({ defenses: [] })));
+    expect(noDef).not.toContain("<h2>Defenses</h2>");
   });
 
   it("escapes HTML in user-controlled values", () => {

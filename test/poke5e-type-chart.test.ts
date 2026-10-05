@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { typeFactor, typeMultiplier, effectivenessLabel, POKE_TYPES } from '../src/poke5e/type-chart';
+import { typeFactor, typeMultiplier, effectivenessLabel, typeMatchup, POKE_TYPES } from '../src/poke5e/type-chart';
 
 describe('poke5e type chart', () => {
   it('has the 18 Pokémon types', () => {
@@ -26,6 +26,27 @@ describe('poke5e type chart', () => {
   it('is case-insensitive and neutral on empty defenders', () => {
     expect(typeFactor('FIRE', 'GRASS')).toBe(2);
     expect(typeMultiplier('fire', [])).toBe(1);
+  });
+  it('builds a defensive type matchup, bucketed by multiplier', () => {
+    const s = (a: string[]) => [...a].sort();
+    const snom = typeMatchup(['ice', 'bug']); // Snom — famously ×4 to Fire and Rock
+    expect(s(snom.x4)).toEqual(['fire', 'rock']);
+    expect(s(snom.x2)).toEqual(['flying', 'steel']);
+    expect(s(snom.half)).toEqual(['grass', 'ground', 'ice']);
+    expect(snom.quarter).toEqual([]);
+    expect(snom.immune).toEqual([]);
+
+    const ralts = typeMatchup(['psychic', 'fairy']);
+    expect(ralts.immune).toEqual(['dragon']);   // Fairy → immune to Dragon
+    expect(ralts.quarter).toEqual(['fighting']); // Psychic ½ × Fairy ½
+    expect(ralts.half).toEqual(['psychic']);
+    expect(s(ralts.x2)).toEqual(['ghost', 'poison', 'steel']);
+
+    const geo = typeMatchup(['rock', 'electric']); // Alolan Geodude
+    expect(geo.x4).toEqual(['ground']);
+    expect(geo.quarter).toEqual(['flying']);
+
+    expect(typeMatchup([])).toEqual({ x4: [], x2: [], half: [], quarter: [], immune: [] }); // no types → nothing
   });
   it('labels multipliers', () => {
     expect(effectivenessLabel(2)).toMatch(/super effective/i);

@@ -50,6 +50,9 @@ export interface SheetInput {
   inventory: any[];
   feats: { name: string; description?: string }[];
   imageUrl?: string; // optional creature art (Pokémon); main embeds it as a data URI before printing
+  // Pre-formatted defenses rows (DDB: resist/immune/vulnerable; poke5e: the Pokémon's type matchup).
+  // The renderer builds these (it owns the type chart + defenses state); the DTO just carries them.
+  defenses?: { tier: string; detail: string }[];
 }
 
 export interface SheetDto {
@@ -71,6 +74,7 @@ export interface SheetDto {
   spells: { level: string; name: string; detail: string }[];
   features: { name: string; text: string }[];
   equipment: { name: string; qty: string }[];
+  defenses: { tier: string; detail: string }[];
 }
 
 function attackFrom(w: any): { name: string; hit: string; damage: string } {
@@ -151,6 +155,7 @@ export function buildSheetDto(input: SheetInput): SheetDto {
       name: String(it.name || ""),
       qty: it.quantity && Number(it.quantity) > 1 ? `×${it.quantity}` : "",
     })),
+    defenses: (input.defenses ?? []).map((d) => ({ tier: String(d.tier || ""), detail: String(d.detail || "") })),
   };
 }
 
@@ -243,6 +248,12 @@ export function renderSheetHtml(dto: SheetDto): string {
   // Listed items, then a few blank ruled rows to hand-write extras on the printed sheet.
   const blankRows = (n: number) => Array.from({ length: n }, () => `<div class="blankline"></div>`).join("");
   const equipment = `${dto.equipment.length ? `<div class="equip">${dto.equipment.map((e) => `<div>${esc(e.name)} ${esc(e.qty)}</div>`).join("")}</div>` : ""}${blankRows(5)}`;
+  // Defenses — DDB resist/immune/vulnerable, or a poke5e Pokémon's type matchup (tier + detail).
+  const defenses = dto.defenses.length
+    ? `<div class="list">${dto.defenses
+        .map((d) => `<div class="row"><span class="n" style="flex:0 0 66px;font-weight:600">${esc(d.tier)}</span><span style="flex:1;color:var(--muted)">${esc(d.detail)}</span></div>`)
+        .join("")}</div>`
+    : "";
   const photo = dto.image ? `<div class="box photo"><img src="${esc(dto.image)}" alt=""></div>` : "";
 
   return `<!doctype html><html><head><meta charset="utf-8">
@@ -267,6 +278,7 @@ export function renderSheetHtml(dto: SheetDto): string {
         <div class="row"><span class="m">${esc(dto.passives.investigation)}</span><span class="n">Investigation</span></div>
         <div class="row"><span class="m">${esc(dto.passives.insight)}</span><span class="n">Insight</span></div>
       </div>
+      ${defenses ? `<div class="box" style="margin-top:10px"><h2>Defenses</h2>${defenses}</div>` : ""}
     </div>
     <div class="right">
       <div class="box"><h2>Attacks</h2>${attacks}</div>

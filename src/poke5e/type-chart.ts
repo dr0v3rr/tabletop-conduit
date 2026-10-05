@@ -49,6 +49,31 @@ export function typeMultiplier(attack: string, defenderTypes: string[]): number 
   return (defenderTypes ?? []).reduce((m, t) => m * typeFactor(attack, t), 1);
 }
 
+/** A Pokémon's defensive type matchup: which attacking types hit it for ×4 / ×2 (weak), ×½ / ×¼
+ *  (resist), or ×0 (immune). Neutral (×1) types are omitted. Each list is in POKE_TYPES order. */
+export interface TypeMatchup {
+  x4: PokeType[];
+  x2: PokeType[];
+  half: PokeType[];    // ×½
+  quarter: PokeType[]; // ×¼
+  immune: PokeType[];  // ×0
+}
+
+/** Bucket all 18 attacking types by their multiplier against a defender's type(s). The only possible
+ *  multipliers (products of 0/½/1/2) are 0, ¼, ½, 1, 2, 4 — everything non-neutral lands in a bucket. */
+export function typeMatchup(defenderTypes: string[]): TypeMatchup {
+  const out: TypeMatchup = { x4: [], x2: [], half: [], quarter: [], immune: [] };
+  for (const atk of POKE_TYPES) {
+    const m = typeMultiplier(atk, defenderTypes);
+    if (m === 0) out.immune.push(atk);
+    else if (m === 4) out.x4.push(atk);
+    else if (m === 2) out.x2.push(atk);
+    else if (m === 0.5) out.half.push(atk);
+    else if (m === 0.25) out.quarter.push(atk);
+  }
+  return out;
+}
+
 /** A short label for a damage multiplier, or null for neutral (1×). */
 export function effectivenessLabel(mult: number): string | null {
   if (mult === 0) return 'immune (×0)';
