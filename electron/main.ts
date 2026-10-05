@@ -14,7 +14,7 @@ import { buildSendExpression } from "../src/roll20/inject.js";
 import { displayCard } from "../src/roll20/format.js";
 import { r20TokenExpr } from "../src/roll20/token.js";
 import { ddbSlotsExpr, ddbHitDiceExpr, ddbInventoryExpr, ddbFetchCharExpr } from "../src/ddb/inject.js";
-import { extractReadKey, fetchTrainer, trainerToRollModel, trainerExtras, buildInventory, fetchTrainerFeats, updateTrainerHp, updateTrainerMoney, trainerMoney, updatePokemonHp, updatePokemonStatus, updatePokemonExp, updateMovePp, updateInventoryItem, addInventoryItem, fetchItemsCatalog, addPokemonToTeam, removePokemon, evolvePokemon, deleteTrainer, setPoke5eCredentials, getPoke5eCredentials } from "../src/poke5e/source.js";
+import { extractReadKey, fetchTrainer, trainerToRollModel, trainerExtras, buildInventory, fetchTrainerFeats, updateTrainerHp, updateTrainerMoney, trainerMoney, updatePokemonHp, updatePokemonStatus, updatePokemonExp, updateMovePp, updateInventoryItem, addInventoryItem, fetchItemsCatalog, fetchHeldItems, addHeldItem, removeHeldItem, addPokemonToTeam, removePokemon, evolvePokemon, deleteTrainer, setPoke5eCredentials, getPoke5eCredentials } from "../src/poke5e/source.js";
 import { buildPokedex } from "../src/poke5e/pokedex.js";
 import type { DexEntry } from "../src/poke5e/pokedex.js";
 import { isNewer } from "../src/update/version.js";
@@ -48,6 +48,15 @@ const pokedexCollection = new Map<string, "seen" | "caught">();
 // A release version the user chose to "Skip" in the update prompt (so we don't nag for it again).
 let updateSkip: string | null = null;
 
+// The last Roll20 page the user was on, PERSISTED so a restart reopens that game/editor instead of the
+// Roll20 home. (The login itself is kept by the persistent cookie store; this only restores WHICH page.)
+let lastRoll20Url: string | null = null;
+const ROLL20_HOME = "https://app.roll20.net/campaigns/"; // logged-in "My Games" dashboard (default landing)
+/** A Roll20 URL worth reopening next launch: an app.roll20.net page that isn't the login flow. */
+function isRestorableRoll20(url: string): boolean {
+  return /^https:\/\/app\.roll20\.net\//i.test(url || "") && !/\/sessions(\/|$|\?)/i.test(url);
+}
+
 // poke5e Pokémon the user has hidden from the roster switcher (a local "show only my working team"
 // filter — poke5e has no team field yet). Keyed by pokemon id.
 const pokeHidden = new Set<string>();
@@ -68,6 +77,7 @@ async function loadStore() {
       if (st === "seen" || st === "caught") pokedexCollection.set(id, st);
     }
     if (typeof data.updateSkip === "string") updateSkip = data.updateSkip;
+    if (typeof data.lastRoll20Url === "string" && isRestorableRoll20(data.lastRoll20Url)) lastRoll20Url = data.lastRoll20Url;
     for (const id of data.pokeHidden ?? []) pokeHidden.add(String(id));
     for (const [id, v] of Object.entries(data.evoAsi ?? {})) {
       if (v && typeof v === "object" && (v as any).toSpecies) evoAsi.set(String(id), v as any);
@@ -97,7 +107,7 @@ function saveStoreSoon() {
   saveTimer = setTimeout(async () => {
     saveTimer = null;
     try {
-      await writeFile(storePath(), JSON.stringify({ records: [...sessionLog.values()], actions: actionLog, campaigns: Object.fromEntries(campaignNames), poke5e: detectedPoke5e, pokedex: Object.fromEntries(pokedexCollection), updateSkip, pokeHidden: [...pokeHidden], evoAsi: Object.fromEntries(evoAsi) }), "utf8");
+      await writeFile(storePath(), JSON.stringify({ records: [...sessionLog.values()], actions: actionLog, campaigns: Object.fromEntries(campaignNames), poke5e: detectedPoke5e, pokedex: Object.fromEntries(pokedexCollection), updateSkip, lastRoll20Url, pokeHidden: [...pokeHidden], evoAsi: Object.fromEntries(evoAsi) }), "utf8");
     } catch {
       /* best-effort */
     }
@@ -607,6 +617,11 @@ function createWindow() {
   hardenView(roll20View, { externalLinks: true });
   hardenView(ddbView, { externalLinks: true });
   hardenView(sheetView, { externalLinks: true, lockToFile: true, ownUi: true });
+  // Remember the Roll20 page across restarts: save the last real app.roll20.net URL it navigates to
+  // (top-level + in-page/SPA), so the next launch reopens that game/editor instead of the home page.
+  const rememberRoll20 = (url: string) => { if (isRestorableRoll20(url)) { lastRoll20Url = url; saveStoreSoon(); } };
+  roll20View.webContents.on("did-navigate", (_e, url) => rememberRoll20(url));
+  roll20View.webContents.on("did-navigate-in-page", (_e, url, isMainFrame) => { if (isMainFrame) rememberRoll20(url); });
   // The sheet view composites with alpha so the Pokédex can float as a transparent popup OVER the
   // VTT. Normally the page paints an opaque body, so this is invisible; only the dex-overlay state
   // makes the body transparent and lets the Roll20 pane (expanded full-window in layout()) show through.
@@ -633,7 +648,9 @@ function createWindow() {
 
   // The VTT can warm up behind the splash; the character-source pane and the sheet UI load at
   // launch (they depend on whether you picked D&D Beyond or poke5e).
-  roll20View.webContents.loadURL("https://app.roll20.net/");
+  // Reopen the last Roll20 page from a previous session (the game/editor the user was in); otherwise
+  // the logged-in "My Games" home. Cookies (restored above) keep the login.
+  roll20View.webContents.loadURL(lastRoll20Url && isRestorableRoll20(lastRoll20Url) ? lastRoll20Url : ROLL20_HOME);
   splashView.webContents.loadFile(join(__dirname, "splash.html"));
 
   // Continuously capture rolls into the persistent store so nothing is lost past Roll20's buffer.
@@ -868,11 +885,12 @@ ipcMain.handle("load-poke5e-pokemon", async (_e, pokemonId: number) => {
   const pk = poke5eCtx.team.get(Number(pokemonId));
   if (!pk) return { ok: false, error: "Pokémon not found on this trainer" };
   try {
-    const [moveset, moves, abilities, pfeats] = await Promise.all([
+    const [moveset, moves, abilities, pfeats, heldItems] = await Promise.all([
       fetchMoveset(Number(pokemonId)),
       movesMap(),
       resolveAbilities(pk),
       fetchPokemonFeats(Number(pokemonId)),
+      fetchHeldItems(Number(pokemonId)).catch(() => []),
     ]);
     const featNames = (Array.isArray(pfeats) ? pfeats : []).map((f: any) => f.name).filter(Boolean);
     // Speed + evolution live on the SPECIES (pokemon.json), not the pokémon row — look them up.
@@ -905,6 +923,8 @@ ipcMain.handle("load-poke5e-pokemon", async (_e, pokemonId: number) => {
       feats, passives,
       poke: { ...pokemonMeta(pk), species: speciesEntry?.name || pk.species || "", sprite: speciesEntry?.art || speciesEntry?.sprite || "" }, // proper-cased name + species art (for the printable sheet)
       trainerName: poke5eCtx.trainerRow?.name || "", // the owning trainer — a real Roll20 speaker for rolls
+      heldItems, // this Pokémon's held items (its own per-Pokémon list, distinct from the trainer bag)
+      teamCount: poke5eCtx.team.size, // # of Pokémon on this trainer (gates the "whole team" rest option)
       evolveTargets,
       evolveFrom: { ac: typeof pk.ac === "number" ? pk.ac : null, hitDie: speciesEntry?.hitDice ?? null, hpMax: Number(pk.hp_max) || null },
       asiPending: evoAsiStatus(String(pokemonId), pk, dex),
@@ -957,6 +977,7 @@ ipcMain.handle("load-poke5e", async (_e, input: string) => {
       readKey: key, // resolved key, so the app can remember it for the auto-load picker
       feats,
       roster,
+      teamCount: poke5eCtx.team.size, // # of Pokémon on this trainer (gates the "whole team" rest option)
     };
   } catch (err) {
     return { ok: false, error: "Couldn't reach poke5e: " + String(err) };
@@ -1366,7 +1387,8 @@ ipcMain.handle("logout", async () => {
     await s.clearStorageData(); // cookies, localStorage, IndexedDB, service workers, cache…
     await s.clearCache();
     current = null;
-    roll20View?.webContents.loadURL("https://app.roll20.net/");
+    lastRoll20Url = null; saveStoreSoon(); // forget the remembered Roll20 page too
+    roll20View?.webContents.loadURL(ROLL20_HOME);
     ddbView?.webContents.loadURL("https://www.dndbeyond.com/");
     return { ok: true };
   } catch (err) {
@@ -1622,6 +1644,61 @@ ipcMain.handle("poke5e-add-item", async (_e, itemId: string, quantity: number = 
   } catch (err) {
     return { ok: false, error: String(err) };
   }
+});
+
+// ---- Held items (per-Pokémon list — add/remove/get, keyed by pokémon id, NOT the trainer bag) ----
+ipcMain.handle("poke5e-held-items", async (_e, pokemonId: number) => {
+  try { return { ok: true, heldItems: await fetchHeldItems(Number(pokemonId)) }; }
+  catch (err) { return { ok: false, error: String(err) }; }
+});
+// Give a Pokémon a standard held item (appended at the end of its list). Returns the rebuilt list.
+ipcMain.handle("poke5e-add-held-item", async (_e, pokemonId: number, itemId: string) => {
+  if (!poke5eCtx?.writeKey) return { ok: false, error: "This trainer is read-only (no write key) — add held items on poke5e." };
+  try {
+    const before = await fetchHeldItems(Number(pokemonId)).catch(() => []);
+    await addHeldItem(poke5eCtx.writeKey, Number(pokemonId), String(itemId), before.length); // rank = append
+    const heldItems = await fetchHeldItems(Number(pokemonId)).catch(() => before);
+    schedulePoke5ePaneRefresh();
+    return { ok: true, heldItems };
+  } catch (err) { return { ok: false, error: String(err) }; }
+});
+// Remove one held item (by its held_items row id). Returns the rebuilt list.
+ipcMain.handle("poke5e-remove-held-item", async (_e, pokemonId: number, rowId: number) => {
+  if (!poke5eCtx?.writeKey) return { ok: false, error: "This trainer is read-only (no write key)" };
+  try {
+    await removeHeldItem(poke5eCtx.writeKey, Number(rowId));
+    const heldItems = await fetchHeldItems(Number(pokemonId)).catch(() => []);
+    schedulePoke5ePaneRefresh();
+    return { ok: true, heldItems };
+  } catch (err) { return { ok: false, error: String(err) }; }
+});
+
+// Long rest the WHOLE team: every Pokémon → full HP, every move's PP → max, status cleared. (The
+// single-Pokémon long rest lives in the renderer; this is the "all Pokémon" option.) Writes each
+// Pokémon via the same RPCs as the single rest; best-effort per write, with a tally of failures.
+ipcMain.handle("poke5e-long-rest-team", async () => {
+  if (!poke5eCtx?.writeKey) return { ok: false, error: "This trainer is read-only (no write key)" };
+  const writeKey = poke5eCtx.writeKey;
+  const team = [...poke5eCtx.team.values()];
+  let rested = 0, failed = 0;
+  for (const pk of team) {
+    const maxHp = Number(pk.hp_max) || 0;
+    try { if (await updatePokemonHp(writeKey, pk, maxHp, maxHp)) pk.hp_cur = maxHp; else failed++; } catch { failed++; }
+    try { if (await updatePokemonStatus(writeKey, pk, null)) pk.status = null; } catch { failed++; }
+    try {
+      const moveset = await fetchMoveset(Number(pk.id)).catch(() => [] as any[]);
+      for (const lm of moveset) {
+        const cur = Number(lm.pp_cur) || 0, max = Number(lm.pp_max) || 0;
+        if (max > 0 && cur < max) {
+          const ok = await updateMovePp(writeKey, Number(lm.id), String(lm.move_id), max, max, (lm as any).notes ?? "").catch(() => false);
+          if (!ok) failed++;
+        }
+      }
+    } catch { failed++; }
+    rested++;
+  }
+  schedulePoke5ePaneRefresh();
+  return { ok: true, rested, failed };
 });
 
 // Forget a trainer's keys in the poke5e web pane's own local list (so its page drops it too).
@@ -2229,13 +2306,25 @@ function autoUpdate(manual = false): void {
 }
 ipcMain.handle("check-update", () => autoUpdate(true)); // manual "Check for updates" action
 
-app.whenReady().then(async () => {
-  installGlobalHardening();
-  await loadStore(); // restore accumulated roll history from previous sessions
-  await loadArchive(); // index the durable per-campaign roll archive (dedupe future appends)
-  createWindow();
-  // Non-blocking launch check (packaged builds only — no dev noise), a few seconds after startup.
-  // Win/Linux get the full download+relaunch flow; macOS/failures fall back to the open-page notifier.
-  if (app.isPackaged) setTimeout(() => autoUpdate(false), 4000);
-});
-app.on("window-all-closed", () => app.quit());
+// Only ONE Conduit per profile. There's no custom userData, so a second instance shares the same
+// cookie/session store — two processes writing it concurrently can stale or clobber the saved Roll20 /
+// D&D Beyond / poke5e login (the "launched again and it's logged out" symptom). Without the lock a
+// second launch also raced the first and could exit blank. If we don't hold the lock, focus the
+// existing window and quit this instance instead of opening a rival one.
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    try { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } } catch { /* window not up yet */ }
+  });
+  app.whenReady().then(async () => {
+    installGlobalHardening();
+    await loadStore(); // restore accumulated roll history from previous sessions
+    await loadArchive(); // index the durable per-campaign roll archive (dedupe future appends)
+    createWindow();
+    // Non-blocking launch check (packaged builds only — no dev noise), a few seconds after startup.
+    // Win/Linux get the full download+relaunch flow; macOS/failures fall back to the open-page notifier.
+    if (app.isPackaged) setTimeout(() => autoUpdate(false), 4000);
+  });
+  app.on("window-all-closed", () => app.quit());
+}

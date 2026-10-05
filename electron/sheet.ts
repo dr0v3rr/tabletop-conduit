@@ -73,6 +73,10 @@ declare global {
       poke5eItemQty(item: unknown, quantity: number): Promise<{ ok: boolean; persisted: boolean; error?: string }>;
       poke5eItemsCatalog(): Promise<{ ok: boolean; items: { id: string; name: string; type: string }[]; error?: string }>;
       poke5eAddItem(itemId: string, quantity?: number): Promise<{ ok: boolean; inventory?: any[]; error?: string }>;
+      poke5eHeldItems(pokemonId: number): Promise<{ ok: boolean; heldItems?: HeldItem[]; error?: string }>;
+      poke5eAddHeldItem(pokemonId: number, itemId: string): Promise<{ ok: boolean; heldItems?: HeldItem[]; error?: string }>;
+      poke5eRemoveHeldItem(pokemonId: number, rowId: number): Promise<{ ok: boolean; heldItems?: HeldItem[]; error?: string }>;
+      poke5eLongRestTeam(): Promise<{ ok: boolean; rested?: number; failed?: number; error?: string }>;
       poke5eAddTeam(speciesId: string, level: number): Promise<{ ok: boolean; error?: string }>;
       poke5eRemoveTrainer(): Promise<{ ok: boolean; readKey?: string; error?: string }>;
       poke5eRemovePokemon(pokemonId: number): Promise<{ ok: boolean; removed?: boolean; canceled?: boolean; pokemonId?: number; error?: string }>;
@@ -123,6 +127,10 @@ let hitRemaining: Record<number, number> = {}; // die size -> remaining hit dice
 let hitPending: Record<number, number> = {}; // die size -> hit dice spent this short rest, awaiting DDB commit
 let inventory: any[] = []; // rollable + magic items (potions, offensive consumables, magic gear)
 let pokeMoney = 0; // poke5e trainer's money (₽); shown/edited in the Inventory section, syncs on change
+// A Pokémon's held items (its own per-Pokémon list, distinct from the trainer bag). Empty for trainers.
+type HeldItem = { rowId: number; itemId: string | null; name: string; type: string; note: string; standard: boolean };
+let heldItems: HeldItem[] = [];
+let pokeTeamCount = 0; // # of Pokémon on the loaded trainer — gates the "whole team" long-rest option
 let hp: { current: number; max: number; temp: number; removed: number } | null = null;
 let defenses: { resist: string[]; immune: string[]; vulnerable: string[] } = { resist: [], immune: [], vulnerable: [] };
 let concentrating: { name: string } | null = null; // active concentration spell, if any
@@ -467,6 +475,8 @@ function applyCharacter(res: any, ref: string) {
   passives = res.passives || [];
   charClassLine = res.className || ""; // subtitle for the printable sheet (DDB sends this)
   pokeMeta = res.poke || null;
+  heldItems = Array.isArray(res.heldItems) ? res.heldItems : [];
+  pokeTeamCount = Number(res.teamCount) || 0;
   evolveTargets = res.evolveTargets || [];
   evolveFrom = res.evolveFrom || null;
   asiPending = res.asiPending || null;
@@ -1580,6 +1590,9 @@ function renderInventory() {
   const sec = sectionEl("items");
   const box = $("items");
   box.innerHTML = "";
+  // Viewing a Pokémon → the "Items" section shows that Pokémon's HELD ITEMS (its own list), not the
+  // trainer bag. (The trainer bag shows here when the trainer is selected.)
+  if (activeSource === "poke5e" && activeRef.startsWith("pmon:")) { renderHeldItems(sec, box); return; }
   // The DDB inventory manager is DDB-only; the poke5e "Add item" picker shows for owned trainers.
   const canAddPoke = activeSource === "poke5e" && writable;
   // Money is a TRAINER-level field (not per-Pokémon), shown/edited here to mirror poke5e's Inventory tab.
@@ -1654,6 +1667,69 @@ function renderInventory() {
 
     box.appendChild(row);
   }
+}
+
+// Held items for the active Pokémon (its own per-Pokémon list). Shown in the "Items" section when a
+// Pokémon is selected; owned trainers get ＋ Add / ✕ remove, read-only viewers just see the list.
+function renderHeldItems(sec: HTMLElement, box: HTMLElement) {
+  const canWrite = activeSource === "poke5e" && writable;
+  ($("manageItems") as HTMLElement).hidden = true;   // DDB-only control
+  ($("addPokeItem") as HTMLElement).hidden = true;    // held items use their own inline Add button
+  if (!heldItems.length && !canWrite) { sec.hidden = true; return; } // read-only + nothing held → hide
+  sec.hidden = false;
+  ($("itemMeta") as HTMLElement).textContent = heldItems.length ? `${heldItems.length} held` : "";
+  if (!heldItems.length) {
+    box.insertAdjacentHTML("beforeend", `<div class="empty-note">No held items${canWrite ? " — use ＋ Add held item." : "."}</div>`);
+  }
+  for (const h of heldItems) {
+    const row = document.createElement("div");
+    row.className = "item-row";
+    const label = document.createElement("div");
+    label.className = "roll-line item noroll";
+    label.innerHTML = `<span class="label">${esc(h.name)}</span><span class="atk-nums"><span class="item-note">${esc(cap(h.type))}</span></span>`;
+    row.appendChild(label);
+    if (canWrite) {
+      const rm = mkMini("✕", () => removeHeldItemUi(h), `Remove ${h.name}`);
+      rm.classList.add("use-btn");
+      row.appendChild(rm);
+    }
+    const disp = makeDisplayBtn({ name: h.name, description: h.note, meta: cap(h.type), label: "Held item" });
+    if (disp) { disp.classList.add("item-mini"); row.appendChild(disp); }
+    attachTip(row, detailTipHtml({ name: h.name, meta: cap(h.type), description: h.note })); // hover for wording
+    box.appendChild(row);
+  }
+  if (canWrite) {
+    const add = document.createElement("button");
+    add.className = "mini-btn add-held";
+    add.textContent = "＋ Add held item";
+    add.onclick = () => openItemPicker("held");
+    box.appendChild(add);
+  }
+}
+
+async function removeHeldItemUi(h: HeldItem) {
+  const pid = pmonId(activeRef); if (!pid) return;
+  setStatus(`Removing ${h.name}…`);
+  const r = await window.api.poke5eRemoveHeldItem(Number(pid), h.rowId).catch(() => null);
+  if (!r?.ok) { setStatus(r?.error || "Couldn't remove held item", true); return; }
+  heldItems = Array.isArray(r.heldItems) ? r.heldItems : heldItems.filter((x) => x.rowId !== h.rowId);
+  renderInventory();
+  setStatus(`Removed ${h.name} ✓`);
+}
+
+async function addHeldItemUi(it: { id: string; name: string }) {
+  if (itemPickerBusy) return;
+  const pid = pmonId(activeRef);
+  if (!pid) { setStatus("Select a Pokémon first", true); return; }
+  itemPickerBusy = true;
+  setStatus(`Giving ${it.name}…`);
+  const r = await window.api.poke5eAddHeldItem(Number(pid), it.id).catch(() => null);
+  itemPickerBusy = false;
+  if (!r?.ok) { setStatus(r?.error || "Couldn't add held item", true); return; }
+  heldItems = Array.isArray(r.heldItems) ? r.heldItems : heldItems;
+  renderInventory();
+  setStatus(`${it.name} is now held ✓ (saved to poke5e)`);
+  closeItemPicker();
 }
 
 function mkMini(text: string, onclick: () => void, title = ""): HTMLButtonElement {
@@ -2339,6 +2415,50 @@ function poke5eShortRest() {
   window.api.roll20Say(`&{template:default} {{name=Short Rest}} {{${tclean(model?.name || "Trainer")}=Recover HP by spending Hit Dice}} {{PP=not recovered}}`, model?.name).catch(() => {});
   setStatus("Short rest — spend Hit Dice to recover HP (via the HP controls); PP is not recovered");
 }
+
+// Long rest the WHOLE team at once (every Pokémon → full HP + all PP + status cleared), via one
+// main-process pass over the trainer's team. Used from the Long Rest scope menu.
+async function longRestTeam() {
+  setStatus("Long rest — resting the whole team…");
+  const r = await window.api.poke5eLongRestTeam().catch(() => ({ ok: false } as any));
+  if (!r?.ok) { setStatus(r?.error || "Couldn't long rest the team", true); return; }
+  window.api.roll20Say(`&{template:default} {{name=Long Rest}} {{${tclean(model?.name || "Trainer")}=Whole team — full HP, all PP restored, status cured}}`, model?.name).catch(() => {});
+  setStatus(r.failed ? `Long rest — team rested (${r.failed} write${r.failed === 1 ? "" : "s"} not saved)` : `Long rest — whole team restored ✓ (${r.rested} Pokémon)`, !!r.failed);
+  await reloadCurrent(); // refresh the active sheet so its HP/PP/status reflect the rest
+}
+
+// Small popover on the Long Rest button offering the rest scope (this Pokémon / this trainer vs. the
+// whole team). Dismisses on selection, outside click, or scroll.
+let longRestMenuEl: HTMLDivElement | null = null;
+let longRestMenuCleanup: (() => void) | null = null;
+function closeLongRestMenu() { longRestMenuEl?.remove(); longRestMenuEl = null; longRestMenuCleanup?.(); longRestMenuCleanup = null; }
+function openLongRestMenu(anchor: HTMLElement) {
+  closeLongRestMenu();
+  const onMon = isPoke5ePokemon();
+  const menu = document.createElement("div");
+  menu.className = "rest-menu";
+  longRestMenuEl = menu;
+  const opts: { label: string; run: () => void }[] = [
+    { label: onMon ? "🌙 This Pokémon" : "🌙 This Trainer (HP)", run: () => poke5eLongRest() },
+    { label: `🌙 Whole team (${pokeTeamCount} Pokémon)`, run: () => longRestTeam() },
+  ];
+  for (const o of opts) {
+    const b = document.createElement("button");
+    b.className = "rest-opt";
+    b.textContent = o.label;
+    b.onclick = () => { closeLongRestMenu(); o.run(); };
+    menu.appendChild(b);
+  }
+  document.body.appendChild(menu);
+  const r = anchor.getBoundingClientRect();
+  menu.style.left = `${Math.round(Math.min(r.left, Math.max(8, window.innerWidth - menu.offsetWidth - 8)))}px`;
+  menu.style.top = `${Math.round(r.bottom + 4)}px`;
+  const onDoc = (ev: Event) => { if (!menu.contains(ev.target as Node)) closeLongRestMenu(); };
+  const onKey = (ev: KeyboardEvent) => { if (ev.key === "Escape") closeLongRestMenu(); };
+  // defer so the click that opened the menu doesn't immediately close it
+  setTimeout(() => { document.addEventListener("mousedown", onDoc); window.addEventListener("scroll", closeLongRestMenu, true); document.addEventListener("keydown", onKey); }, 0);
+  longRestMenuCleanup = () => { document.removeEventListener("mousedown", onDoc); window.removeEventListener("scroll", closeLongRestMenu, true); document.removeEventListener("keydown", onKey); };
+}
 $("shortRest").onclick = async () => {
   const pools: any[] = hitDice?.pools ?? [];
   const pendingTotal = Object.values(hitPending).reduce((a, b) => a + b, 0);
@@ -2749,7 +2869,13 @@ $("advSeg").querySelectorAll("button").forEach((b) => {
     adv = (b.getAttribute("data-adv") as AdvMode) || "normal";
   });
 });
-$("longRestBtn").onclick = () => poke5eLongRest();
+$("longRestBtn").onclick = () => {
+  if (activeSource !== "poke5e") return;
+  // Solo team or read-only → just do the single long rest (no menu). With a team of >1 on an owned
+  // trainer, offer the scope choice: this Pokémon (or the trainer) vs. the whole team.
+  if (!(writable && pokeTeamCount > 1)) { poke5eLongRest(); return; }
+  openLongRestMenu($("longRestBtn"));
+};
 $("shortRestBtn").onclick = () => poke5eShortRest();
 document.querySelectorAll<HTMLElement>('[data-kind="initiative"]').forEach((b) => {
   b.onclick = () => doRoll({ kind: "initiative" });
@@ -4035,6 +4161,7 @@ function ballName(id: string | null): string { return bagBalls().find((b) => b.i
 // item has been fully removed (the ± controls can only touch rows that still exist).
 let itemCatalog: { id: string; name: string; type: string }[] | null = null;
 let itemPickerBusy = false;
+let itemPickerMode: "bag" | "held" = "bag"; // "bag" → trainer inventory; "held" → a Pokémon's held items
 
 function ensureItemPicker(): HTMLElement {
   let ov = document.getElementById("itemPicker");
@@ -4056,10 +4183,13 @@ function ensureItemPicker(): HTMLElement {
 }
 function closeItemPicker() { document.getElementById("itemPicker")?.classList.remove("open"); }
 
-async function openItemPicker() {
+async function openItemPicker(mode: "bag" | "held" = "bag") {
+  itemPickerMode = mode;
   const ov = ensureItemPicker();
+  const nameEl = ov.querySelector(".cm-name"); if (nameEl) nameEl.textContent = mode === "held" ? "Add a held item" : "Add an item";
+  const q0 = ov.querySelector("#ipQ") as HTMLInputElement; q0.placeholder = mode === "held" ? "Search held items — e.g. Leftovers…" : "Search items — e.g. Poké Ball…";
   ov.classList.add("open");
-  const q = ov.querySelector("#ipQ") as HTMLInputElement; q.value = ""; q.focus();
+  q0.value = ""; q0.focus();
   if (!itemCatalog) {
     renderItemHits(""); // shows "Loading…"
     const r = await window.api.poke5eItemsCatalog().catch(() => null);
@@ -4072,14 +4202,16 @@ function renderItemHits(query: string) {
   const list = document.getElementById("ipList"); if (!list) return;
   if (!itemCatalog) { list.innerHTML = `<div class="cm-note">Loading items…</div>`; return; }
   const q = query.trim().toLowerCase();
-  const hits = (q ? itemCatalog.filter((it) => it.name.toLowerCase().includes(q) || (it.type || "").toLowerCase().includes(q)) : itemCatalog).slice(0, 60);
+  // Held-item picker only offers catalogue items of type "held item"; the bag picker offers everything.
+  const pool = itemPickerMode === "held" ? itemCatalog.filter((it) => (it.type || "").toLowerCase() === "held item") : itemCatalog;
+  const hits = (q ? pool.filter((it) => it.name.toLowerCase().includes(q) || (it.type || "").toLowerCase().includes(q)) : pool).slice(0, 60);
   if (!hits.length) { list.innerHTML = `<div class="cm-note">No matching items.</div>`; return; }
   list.innerHTML = "";
   for (const it of hits) {
     const b = document.createElement("button");
     b.className = "ip-hit";
     b.innerHTML = `<span class="label">${esc(it.name)}</span>${it.type ? `<span class="item-note">${esc(cap(it.type))}</span>` : ""}`;
-    b.onclick = () => addPokeItem(it);
+    b.onclick = () => (itemPickerMode === "held" ? addHeldItemUi(it) : addPokeItem(it));
     list.appendChild(b);
   }
 }

@@ -249,6 +249,54 @@ export async function addInventoryItem(writeKey: string, itemId: string, quantit
   return true;
 }
 
+// ---- Held items: a per-Pokémon item list. Its own table + CRUD RPCs (get_held_items / add_held_item
+//      / remove_held_item), the SAME pattern as the trainer bag but keyed by _pokemon_id. A Pokémon
+//      can hold several; held items carry no quantity. (The `held_item` column on the pokemon row is
+//      vestigial — poke5e always writes it null and stores held items in this table instead.) ----
+export interface HeldItemEntry {
+  rowId: number;         // held_items row id (used by remove_held_item)
+  itemId: string | null; // standard item id, or null for a custom item
+  name: string;          // resolved display name
+  type: string;          // catalogue type (e.g. "held item") or "custom"
+  note: string;          // description / wording
+  standard: boolean;     // a catalogue item (vs a custom one)
+}
+
+/** Pure: map one get_held_items row to a display entry using the item catalogue. */
+export function heldItemFromRow(row: any, items: Record<string, { name: string; type?: string; description?: string }>): HeldItemEntry {
+  const standard = !!row?.item_id;
+  const it = standard ? items[row.item_id] : null;
+  return {
+    rowId: Number(row?.id) || 0,
+    itemId: standard ? String(row.item_id) : null,
+    name: standard ? (it?.name || String(row.item_id)) : (row?.custom_name || "Custom item"),
+    type: standard ? (it?.type || "held item") : "custom",
+    note: standard ? (it?.description || "") : (row?.description || ""),
+    standard,
+  };
+}
+
+/** A Pokémon's held items (get_held_items by pokémon id), resolved to names. Public read — no key. */
+export async function fetchHeldItems(pokemonId: number): Promise<HeldItemEntry[]> {
+  const [rows, items] = await Promise.all([
+    rpc("get_held_items", { _pokemon_id: pokemonId }).catch(() => []),
+    itemsMap(),
+  ]);
+  return (Array.isArray(rows) ? rows : []).map((r) => heldItemFromRow(r, items)).filter((h) => h.rowId > 0);
+}
+
+/** Give a Pokémon a standard held item (add_held_item). `rank` orders the list — append at the end. */
+export async function addHeldItem(writeKey: string, pokemonId: number, itemId: string, rank = 0): Promise<boolean> {
+  await poke5eRpc("add_held_item", { _write_key: writeKey, _pokemon_id: pokemonId, _item_id: itemId, _custom_name: null, _description: null, _rank: rank });
+  return true; // poke5eRpc throws on failure
+}
+
+/** Remove a held item from a Pokémon by its held_items row id (remove_held_item). */
+export async function removeHeldItem(writeKey: string, rowId: number): Promise<boolean> {
+  await poke5eRpc("remove_held_item", { _write_key: writeKey, _id: rowId });
+  return true;
+}
+
 /** The poke5e standard-item catalogue (id, name, type), name-sorted, for the "add item" picker. */
 export async function fetchItemsCatalog(): Promise<{ id: string; name: string; type: string }[]> {
   const map = await itemsMap();

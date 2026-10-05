@@ -639,6 +639,13 @@ select.upcast:hover { border-color: var(--accent2); }
 .hovertip .ht-body { color: var(--ink); white-space: pre-wrap; overflow-wrap: anywhere; }
 .hovertip .ht-higher { margin-top: 6px; color: var(--muted); font-size: 11px; }
 .hovertip .ht-higher span { color: var(--ink); font-weight: 600; }
+
+/* Long-rest scope popover (this Pokémon / this trainer vs. whole team). */
+.rest-menu { position: fixed; z-index: 120; background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 4px; box-shadow: 0 12px 34px rgba(0,0,0,.5); display: flex; flex-direction: column; gap: 2px; min-width: 210px; }
+.rest-opt { text-align: left; background: transparent; border: none; color: var(--ink); font: inherit; font-size: 13px; padding: 7px 10px; border-radius: 7px; cursor: pointer; white-space: nowrap; }
+.rest-opt:hover { background: var(--panel); }
+/* "＋ Add held item" button under a Pokémon's held-item list. */
+.add-held { margin-top: 6px; }
 .dd-sleep { color: #a58bef; font-weight: 700; }
 .dd-evo { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
 .dd-evo .stage { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 5px 9px; font-size: 12px; }

@@ -1,5 +1,25 @@
 import { describe, it, expect } from 'vitest';
-import { extractReadKey, trainerToRollModel, trainerExtras, buildAddPokemonParams, scaledHp, buildParams, POKEMON_PARAMS } from '../src/poke5e/source';
+import { extractReadKey, trainerToRollModel, trainerExtras, buildAddPokemonParams, scaledHp, buildParams, POKEMON_PARAMS, heldItemFromRow } from '../src/poke5e/source';
+
+describe('poke5e heldItemFromRow', () => {
+  const items = {
+    leftovers: { name: 'Leftovers', type: 'held item', description: 'Heals a little each turn.' },
+    'focus-sash': { name: 'Focus Sash', type: 'held item' },
+  };
+  it('maps a standard held-item row via the catalogue', () => {
+    const h = heldItemFromRow({ id: 12, item_id: 'leftovers' }, items);
+    expect(h).toMatchObject({ rowId: 12, itemId: 'leftovers', name: 'Leftovers', type: 'held item', standard: true });
+    expect(h.note).toMatch(/each turn/);
+  });
+  it('falls back to the id when the item is not in the catalogue, defaulting the type', () => {
+    const h = heldItemFromRow({ id: 5, item_id: 'mystery-orb' }, items);
+    expect(h).toMatchObject({ rowId: 5, itemId: 'mystery-orb', name: 'mystery-orb', type: 'held item', standard: true, note: '' });
+  });
+  it('maps a custom held item from its own name/description', () => {
+    const h = heldItemFromRow({ id: 7, item_id: null, custom_name: 'Lucky Charm', description: 'A keepsake.' }, items);
+    expect(h).toMatchObject({ rowId: 7, itemId: null, name: 'Lucky Charm', type: 'custom', standard: false, note: 'A keepsake.' });
+  });
+});
 
 describe('poke5e buildParams _status coercion', () => {
   // poke5e crashes its trainer page on a Pokémon whose _status is "" (empty string) — it must be a
