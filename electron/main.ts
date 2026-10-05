@@ -52,9 +52,12 @@ let updateSkip: string | null = null;
 // Roll20 home. (The login itself is kept by the persistent cookie store; this only restores WHICH page.)
 let lastRoll20Url: string | null = null;
 const ROLL20_HOME = "https://app.roll20.net/campaigns/"; // logged-in "My Games" dashboard (default landing)
-/** A Roll20 URL worth reopening next launch: an app.roll20.net page that isn't the login flow. */
+/** A Roll20 URL worth reopening next launch: an app.roll20.net page that isn't the login flow.
+ *  The /sessions exclusion is anchored to the host ROOT so it only drops the login pages
+ *  (app.roll20.net/sessions[/new]) — not a campaign whose slug happens to be "sessions"
+ *  (e.g. app.roll20.net/campaigns/details/123/sessions), which must still be restorable. */
 function isRestorableRoll20(url: string): boolean {
-  return /^https:\/\/app\.roll20\.net\//i.test(url || "") && !/\/sessions(\/|$|\?)/i.test(url);
+  return /^https:\/\/app\.roll20\.net\//i.test(url || "") && !/^https:\/\/app\.roll20\.net\/sessions(\/|$|\?)/i.test(url);
 }
 
 // poke5e Pokémon the user has hidden from the roster switcher (a local "show only my working team"
@@ -1034,7 +1037,7 @@ ipcMain.handle("load-character", async (_e, id: string) => {
           })),
         }
       : null;
-    return { ok: true, model: character.model, weapons: character.weapons, spellcasting: character.spellcasting, spellSlots: character.spellSlots, hitDice: character.hitDice, inventory: character.inventory, hp: character.hp, conditions: character.conditions, defenses: character.defenses, writable, campaign, userId: uid };
+    return { ok: true, model: character.model, weapons: character.weapons, spellcasting: character.spellcasting, spellSlots: character.spellSlots, hitDice: character.hitDice, inventory: character.inventory, hp: character.hp, conditions: character.conditions, defenses: character.defenses, writable, campaign, userId: uid, currencies: ddbCurrencies(data) };
   } catch (err) {
     return { ok: false, error: String(err) };
   }
@@ -1435,6 +1438,66 @@ ipcMain.handle("ddb-set-hp", async (_e, removed: number, temp: number) => {
     removed: confirmed.json?.data?.removedHitPoints ?? r,
     temp: confirmed.json?.data?.temporaryHitPoints ?? t,
   };
+});
+
+/** A character's five coin counts (cp/sp/ep/gp/pp), defaulted to 0, from a character-service row. */
+function ddbCurrencies(data: any): { cp: number; sp: number; ep: number; gp: number; pp: number } {
+  const c = data?.currencies || {};
+  return { cp: Number(c.cp) || 0, sp: Number(c.sp) || 0, ep: Number(c.ep) || 0, gp: Number(c.gp) || 0, pp: Number(c.pp) || 0 };
+}
+
+const DDB_CHARACTER_ENTITY_TYPE = 1581111423; // DDB's entity-type id for a character (currency destination)
+type CoinKey = "cp" | "sp" | "ep" | "gp" | "pp";
+const COIN_KEYS: CoinKey[] = ["cp", "sp", "ep", "gp", "pp"];
+
+/** Change a character's currency on D&D Beyond via its coin-TRANSACTION endpoint (the exact call the
+ *  sheet's own currency control makes): PUT …/inventory/currency/transaction with per-coin DELTAS
+ *  (positive = add, negative = remove) deposited to the character entity. The renderer sends either
+ *  `add` (deltas, for the ± adjuster) or `set` (absolute targets, for the direct-edit fields); we read
+ *  the character's CURRENT coins fresh so a "set" (and the never-go-negative clamp) is exact even if
+ *  the amount drifted on DDB meanwhile, then confirm against a re-GET. */
+ipcMain.handle("ddb-currency", async (_e, op: { set?: Partial<Record<CoinKey, number>>; add?: Partial<Record<CoinKey, number>> }) => {
+  if (!current) return { ok: false, error: "No character loaded" };
+  const token = await mintDdbToken();
+  if (!token) return { ok: false, error: "Not signed in to D&D Beyond" };
+  const cid = Number(current.id);
+  // Fresh current coins (authenticated — works for private sheets) so deltas are exact.
+  const got0 = await ddbApiRequest("GET", `https://character-service.dndbeyond.com/character/v5/character/${cid}`, token);
+  if (!got0.ok) return { ok: false, error: got0.json?.message || got0.error || `Couldn't read current currency (HTTP ${got0.status})` };
+  const cur = ddbCurrencies(got0.json?.data);
+  if (got0.json?.data) current = { ...current, data: got0.json.data as CharacterData };
+  // Build the per-coin delta from `add` (relative) and/or `set` (absolute → target − current), and the
+  // balance we EXPECT afterwards (so a timed-out-but-applied write can be recognised, not re-applied).
+  const body: Record<string, number> = { characterId: cid, destinationEntityId: cid, destinationEntityTypeId: DDB_CHARACTER_ENTITY_TYPE };
+  const expected: Record<CoinKey, number> = { ...cur };
+  let any = false;
+  for (const k of COIN_KEYS) {
+    let d = 0;
+    if (op?.add && typeof op.add[k] === "number") d += Math.trunc(op.add[k]!);
+    if (op?.set && typeof op.set[k] === "number") d += Math.max(0, Math.trunc(op.set[k]!)) - cur[k];
+    if (cur[k] + d < 0) d = -cur[k]; // never drive a coin below zero
+    if (d !== 0) { body[k] = d; expected[k] = cur[k] + d; any = true; }
+  }
+  if (!any) return { ok: true, currencies: cur }; // nothing to change
+  const res = await ddbApiRequest("PUT", "https://character-service.dndbeyond.com/character/v5/inventory/currency/transaction", token, body);
+  // ALWAYS re-read the true balance. The adjuster sends a non-idempotent DELTA and ddbApiRequest's
+  // timeout doesn't abort the request, so a slow PUT can land server-side while reporting failure —
+  // re-reading lets us (a) never show a stale balance under a success message, and (b) recognise a
+  // timed-out-but-applied write so the user isn't told to retry (which would double-apply the delta).
+  const coinsEq = (a: Record<CoinKey, number>, b: Record<CoinKey, number>) => COIN_KEYS.every((k) => a[k] === b[k]);
+  const got = await ddbApiRequest("GET", `https://character-service.dndbeyond.com/character/v5/character/${cid}`, token);
+  if (got.ok && got.json?.data) {
+    current = { ...current, data: got.json.data as CharacterData };
+    const now = ddbCurrencies(got.json.data);
+    scheduleDdbReload();
+    if (res.ok || coinsEq(now, expected)) return { ok: true, currencies: now }; // landed (even if the PUT timed out)
+    return { ok: false, error: res.json?.message || res.error || `D&D Beyond rejected the currency update (HTTP ${res.status})`, currencies: now };
+  }
+  // Couldn't re-read to confirm: trust a PUT that reported success (show the expected balance), but
+  // never claim a save we couldn't verify.
+  scheduleDdbReload();
+  if (res.ok) return { ok: true, currencies: expected };
+  return { ok: false, error: res.error || res.json?.message || "Couldn't reach D&D Beyond to confirm the currency change — try again." };
 });
 
 /** Add/remove a condition on D&D Beyond (PUT to apply, DELETE to clear — the exact calls the

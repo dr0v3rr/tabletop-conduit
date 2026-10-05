@@ -72,6 +72,7 @@ declare global {
       pokedexCaught(): Promise<{ ok: boolean; species: string[] }>;
       poke5eItemQty(item: unknown, quantity: number): Promise<{ ok: boolean; persisted: boolean; error?: string }>;
       poke5eItemsCatalog(): Promise<{ ok: boolean; items: { id: string; name: string; type: string }[]; error?: string }>;
+      ddbCurrency(op: { set?: Partial<Coins>; add?: Partial<Coins> }): Promise<{ ok: boolean; currencies?: Coins; error?: string }>;
       poke5eAddItem(itemId: string, quantity?: number): Promise<{ ok: boolean; inventory?: any[]; error?: string }>;
       poke5eHeldItems(pokemonId: number): Promise<{ ok: boolean; heldItems?: HeldItem[]; error?: string }>;
       poke5eAddHeldItem(pokemonId: number, itemId: string): Promise<{ ok: boolean; heldItems?: HeldItem[]; error?: string }>;
@@ -131,6 +132,9 @@ let pokeMoney = 0; // poke5e trainer's money (₽); shown/edited in the Inventor
 type HeldItem = { rowId: number; itemId: string | null; name: string; type: string; note: string; standard: boolean };
 let heldItems: HeldItem[] = [];
 let pokeTeamCount = 0; // # of Pokémon on the loaded trainer — gates the "whole team" long-rest option
+// D&D Beyond currency (the five coins), shown/edited in the Inventory section for an owned DDB character.
+type Coins = { cp: number; sp: number; ep: number; gp: number; pp: number };
+let ddbCoins: Coins = { cp: 0, sp: 0, ep: 0, gp: 0, pp: 0 };
 let hp: { current: number; max: number; temp: number; removed: number } | null = null;
 let defenses: { resist: string[]; immune: string[]; vulnerable: string[] } = { resist: [], immune: [], vulnerable: [] };
 let concentrating: { name: string } | null = null; // active concentration spell, if any
@@ -477,6 +481,7 @@ function applyCharacter(res: any, ref: string) {
   pokeMeta = res.poke || null;
   heldItems = Array.isArray(res.heldItems) ? res.heldItems : [];
   pokeTeamCount = Number(res.teamCount) || 0;
+  ddbCoins = normalizeCoins(res.currencies);
   evolveTargets = res.evolveTargets || [];
   evolveFrom = res.evolveFrom || null;
   asiPending = res.asiPending || null;
@@ -1586,6 +1591,61 @@ function moneyControl(): HTMLElement {
   return row;
 }
 
+// ---- D&D Beyond currency bar (the five coins) ----
+const COIN_ORDER: (keyof Coins)[] = ["pp", "gp", "ep", "sp", "cp"];
+const COIN_LABEL: Record<keyof Coins, string> = { pp: "PP", gp: "GP", ep: "EP", sp: "SP", cp: "CP" };
+function normalizeCoins(c: any): Coins {
+  const n = (x: any) => Math.max(0, Math.floor(Number(x) || 0));
+  return { cp: n(c?.cp), sp: n(c?.sp), ep: n(c?.ep), gp: n(c?.gp), pp: n(c?.pp) };
+}
+/** Apply a currency change to D&D Beyond (coin-transaction endpoint): `add` for the ± adjuster (deltas),
+ *  `set` for the direct-edit fields (absolute). Optimistic; reverts + reports on failure. */
+async function applyCurrency(op: { set?: Partial<Coins>; add?: Partial<Coins> }, optimistic: Coins, label: string) {
+  const prev = ddbCoins;
+  ddbCoins = normalizeCoins(optimistic); // optimistic
+  renderInventory();
+  const r = await window.api.ddbCurrency(op).catch(() => ({ ok: false } as any));
+  if (r?.ok && r.currencies) { ddbCoins = normalizeCoins(r.currencies); renderInventory(); setStatus(`${label} ✓ (saved to D&D Beyond)`); }
+  else { ddbCoins = prev; renderInventory(); setStatus(r?.error || "Couldn't save currency to D&D Beyond", true); }
+}
+/** The DDB currency control: per-coin direct-set inputs plus an "add/remove N of a coin" adjuster. */
+function currencyControl(): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.className = "cur-bar";
+  const canWrite = activeSource === "ddb" && writable;
+  const coinInputs = COIN_ORDER
+    .map((k) => `<label class="cur-coin"><span class="cur-k">${COIN_LABEL[k]}</span><input class="cur-in" data-coin="${k}" type="number" min="0" step="1" value="${ddbCoins[k]}"${canWrite ? "" : " disabled"} aria-label="${COIN_LABEL[k]}"></label>`)
+    .join("");
+  let html = `<div class="cur-head"><span>Currency</span></div><div class="cur-coins">${coinInputs}</div>`;
+  if (canWrite) {
+    const opts = COIN_ORDER.map((k) => `<option value="${k}"${k === "gp" ? " selected" : ""}>${COIN_LABEL[k]}</option>`).join("");
+    html += `<div class="cur-adjust"><input id="curAmt" class="cur-amt" type="number" min="1" step="1" placeholder="Amount" aria-label="Amount to add or remove"><select id="curCoin" class="cur-sel" aria-label="Coin">${opts}</select><button id="curAdd" class="mini-btn cur-btn">＋ Add</button><button id="curRem" class="mini-btn cur-btn">− Remove</button></div>`;
+  }
+  wrap.innerHTML = html;
+  if (canWrite) {
+    wrap.querySelectorAll<HTMLInputElement>(".cur-in").forEach((inp) => {
+      inp.addEventListener("change", () => {
+        const k = inp.dataset.coin as keyof Coins;
+        const v = Math.max(0, Math.floor(Number(inp.value) || 0));
+        if (v === ddbCoins[k]) { inp.value = String(ddbCoins[k]); return; }
+        applyCurrency({ set: { [k]: v } }, { ...ddbCoins, [k]: v }, `${COIN_LABEL[k]} set to ${v}`);
+      });
+    });
+    const amtEl = wrap.querySelector("#curAmt") as HTMLInputElement;
+    const coinEl = wrap.querySelector("#curCoin") as HTMLSelectElement;
+    const adjust = (sign: 1 | -1) => {
+      const k = (coinEl.value || "gp") as keyof Coins;
+      const amt = Math.max(0, Math.floor(Number(amtEl.value) || 0));
+      if (!amt) { setStatus("Enter an amount to add or remove", true); return; }
+      applyCurrency({ add: { [k]: sign * amt } }, { ...ddbCoins, [k]: Math.max(0, ddbCoins[k] + sign * amt) }, `${sign > 0 ? "Added" : "Removed"} ${amt} ${COIN_LABEL[k]}`);
+      amtEl.value = "";
+    };
+    (wrap.querySelector("#curAdd") as HTMLElement).onclick = () => adjust(1);
+    (wrap.querySelector("#curRem") as HTMLElement).onclick = () => adjust(-1);
+  }
+  return wrap;
+}
+
 function renderInventory() {
   const sec = sectionEl("items");
   const box = $("items");
@@ -1597,12 +1657,15 @@ function renderInventory() {
   const canAddPoke = activeSource === "poke5e" && writable;
   // Money is a TRAINER-level field (not per-Pokémon), shown/edited here to mirror poke5e's Inventory tab.
   const isTrainer = activeSource === "poke5e" && !activeRef.startsWith("pmon:");
+  const isDdbChar = activeSource === "ddb" && !!model; // a loaded DDB character → show the currency bar
   ($("manageItems") as HTMLElement).hidden = activeSource !== "ddb";
   ($("addPokeItem") as HTMLElement).hidden = !canAddPoke;
   // Keep the section visible for a poke5e trainer even with an empty bag — for the money control and
-  // (when owned) the Add button; otherwise there's no way to re-add a fully-removed item.
-  if (!inventory.length && !canAddPoke && !isTrainer) { sec.hidden = true; return; }
+  // (when owned) the Add button; otherwise there's no way to re-add a fully-removed item. Same for a
+  // DDB character, so the currency bar always shows.
+  if (!inventory.length && !canAddPoke && !isTrainer && !isDdbChar) { sec.hidden = true; return; }
   sec.hidden = false;
+  if (isDdbChar) box.appendChild(currencyControl()); // coins at the top of the DDB inventory
   if (isTrainer) box.appendChild(moneyControl()); // ₽ at the top of the bag
   if (!inventory.length) {
     ($("itemMeta") as HTMLElement).textContent = "";

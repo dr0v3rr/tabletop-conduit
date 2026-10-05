@@ -296,6 +296,19 @@ button { cursor: pointer; font: inherit; }
 .money-input { width: 92px; font: inherit; font-variant-numeric: tabular-nums; text-align: right; color: var(--ink); background: var(--panel2); border: 1px solid var(--line); border-radius: 4px; padding: 2px 6px; }
 .money-input:hover:not(:disabled) { border-color: var(--accent2); }
 .money-input:disabled { opacity: .6; cursor: default; }
+/* D&D Beyond currency bar: per-coin set inputs + an add/remove-by-amount adjuster. */
+.cur-bar { padding: 4px 2px 8px; margin-bottom: 6px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 6px; }
+.cur-head { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 600; }
+.cur-coins { display: flex; flex-wrap: wrap; gap: 6px; }
+.cur-coin { display: inline-flex; align-items: center; gap: 4px; }
+.cur-coin .cur-k { font-size: 10px; font-weight: 700; color: #e0c04a; width: 20px; }
+.cur-in { width: 64px; font: inherit; font-variant-numeric: tabular-nums; text-align: right; color: var(--ink); background: var(--panel2); border: 1px solid var(--line); border-radius: 4px; padding: 2px 6px; }
+.cur-in:hover:not(:disabled) { border-color: var(--accent2); }
+.cur-in:disabled { opacity: .6; cursor: default; }
+.cur-adjust { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.cur-amt { width: 84px; font: inherit; font-variant-numeric: tabular-nums; text-align: right; color: var(--ink); background: var(--panel2); border: 1px solid var(--line); border-radius: 4px; padding: 2px 6px; }
+.cur-sel { font: inherit; color: var(--ink); background: var(--panel2); border: 1px solid var(--line); border-radius: 4px; padding: 2px 4px; }
+.cur-btn { white-space: nowrap; }
 .item-mini.use-btn { color: #7fdd8f; border-color: #2e5a34; }
 .item-mini.use-btn:hover:not(:disabled) { color: #fff; background: #2e5a34; }
 #manageItems { float: none; }

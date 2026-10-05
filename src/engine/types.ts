@@ -57,6 +57,9 @@ export interface Modifier {
   componentId?: number | null;
   componentTypeId?: number | null;
   restriction?: string | null;
+  /** DDB flags attunement on the modifier itself (not always on the item definition) — e.g.
+   *  Cloak/Ring of Protection. The engine withholds such a modifier until the owning item is attuned. */
+  requiresAttunement?: boolean | null;
   friendlyTypeName?: string | null;
   friendlySubtypeName?: string | null;
 }

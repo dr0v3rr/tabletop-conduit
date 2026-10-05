@@ -125,6 +125,37 @@ describe('bug #1 — item modifiers gated on equipped/attunement', () => {
   });
 });
 
+describe('bug — modifier-level attunement gating (Cloak of Protection pattern)', () => {
+  // DDB often leaves the ITEM's definition.requiresAttunement unset and instead flags the MODIFIER
+  // with requiresAttunement. An equipped-but-UNATTUNED such item must NOT grant its bonus; attuning
+  // it must. (Cloak/Ring of Protection: +1 to all saving throws only while attuned.)
+  const withCloak = (attuned: boolean): CharacterData => {
+    const d = clone(data);
+    (d.inventory ??= []).push({
+      id: 987654, entityTypeId: 0,
+      definition: { id: 99991, name: 'Test Cloak of Protection', canAttune: true, grantedModifiers: [] },
+      equipped: true, isAttuned: attuned,
+    } as never);
+    (d.modifiers as { item?: unknown[] }).item = [
+      ...(((d.modifiers as { item?: unknown[] }).item) ?? []),
+      { type: 'bonus', subType: 'saving-throws', value: 1, componentId: 99991, requiresAttunement: true, restriction: '' },
+    ];
+    return d;
+  };
+  it('UNATTUNED → the +1 to all saves is withheld', () => {
+    const m2 = computeRollModel(withCloak(false));
+    expect(m2.saves.CON.mod).toBe(model.saves.CON.mod);
+    expect(m2.saves.STR.mod).toBe(model.saves.STR.mod);
+    expect(m2.saves.CHA.mod).toBe(model.saves.CHA.mod);
+  });
+  it('ATTUNED → the +1 applies to every save', () => {
+    const m2 = computeRollModel(withCloak(true));
+    expect(m2.saves.CON.mod).toBe(model.saves.CON.mod + 1);
+    expect(m2.saves.STR.mod).toBe(model.saves.STR.mod + 1);
+    expect(m2.saves.CHA.mod).toBe(model.saves.CHA.mod + 1);
+  });
+});
+
 describe('bug #2 — `set`-type ability-score modifiers', () => {
   it('an equipped+attuned item that SETs STR to 21 raises the score and cascades', () => {
     const d = clone(data);

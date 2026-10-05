@@ -95,10 +95,14 @@ export function computeRollModel(data: CharacterData): RollModel {
       return Array.isArray(gms) && gms.some((g) => g?.componentId === cid);
     });
     if (owners.length === 0) return true; // owner not identifiable -> keep
-    // Keep if ANY matching item instance is equipped (+ attuned when required).
+    // Keep if ANY matching item instance is equipped (+ attuned when required). Attunement is required
+    // when the ITEM's definition says so OR when THIS modifier is flagged `requiresAttunement` — DDB
+    // frequently leaves `definition.requiresAttunement` unset and marks the modifier instead (e.g.
+    // Cloak/Ring of Protection), so an UNATTUNED such item must not grant its attunement-gated bonus.
+    const attuneGated = m.requiresAttunement === true;
     return owners.some((it) => {
       if (it?.equipped !== true) return false;
-      return it?.definition?.requiresAttunement ? it?.isAttuned === true : true;
+      return (it?.definition?.requiresAttunement || attuneGated) ? it?.isAttuned === true : true;
     });
   };
 

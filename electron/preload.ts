@@ -49,6 +49,7 @@ contextBridge.exposeInMainWorld("api", {
   pokedexCaught: () => ipcRenderer.invoke("pokedex-caught"),
   poke5eItemQty: (item: unknown, quantity: number) => ipcRenderer.invoke("poke5e-item-qty", item, quantity),
   poke5eItemsCatalog: () => ipcRenderer.invoke("poke5e-items-catalog"),
+  ddbCurrency: (op: { set?: Record<string, number>; add?: Record<string, number> }) => ipcRenderer.invoke("ddb-currency", op),
   poke5eAddItem: (itemId: string, quantity?: number) => ipcRenderer.invoke("poke5e-add-item", itemId, quantity),
   poke5eHeldItems: (pokemonId: number) => ipcRenderer.invoke("poke5e-held-items", pokemonId),
   poke5eAddHeldItem: (pokemonId: number, itemId: string) => ipcRenderer.invoke("poke5e-add-held-item", pokemonId, itemId),
