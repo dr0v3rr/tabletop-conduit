@@ -16,43 +16,40 @@ describe('poke5e type chart', () => {
     expect(typeFactor('bug', 'fire')).toBe(0.5);
     expect(typeFactor('normal', 'normal')).toBe(1);   // neutral
   });
-  it('dual-type multipliers stack', () => {
-    expect(typeMultiplier('rock', ['ice', 'bug'])).toBe(4);       // 2 × 2 = ×4
-    expect(typeMultiplier('fire', ['water', 'rock'])).toBe(0.25); // ½ × ½ = ×¼
-    expect(typeMultiplier('ground', ['fire', 'flying'])).toBe(0); // 2 × 0 (flying immune) = 0
-    expect(typeMultiplier('water', ['ground', 'rock'])).toBe(4);
-    expect(typeMultiplier('fire', ['ice', 'bug'])).toBe(4);       // Snom (Ice/Bug) weak to Fire ×4
+  it('caps dual-type effectiveness (poke5e: no double vulnerability / resistance)', () => {
+    expect(typeMultiplier('rock', ['ice', 'bug'])).toBe(2);   // VG ×4 → capped ×2
+    expect(typeMultiplier('fire', ['water', 'rock'])).toBe(0.5); // VG ×¼ → capped ×½
+    expect(typeMultiplier('ground', ['fire', 'flying'])).toBe(0); // flying immune → ×0 (dominates)
+    expect(typeMultiplier('water', ['ground', 'rock'])).toBe(2); // VG ×4 → ×2
+    expect(typeMultiplier('fire', ['ice', 'bug'])).toBe(2);   // Snom weak to Fire → ×2, not ×4
+    // weak on one half + resisted on the other → they cancel to normal (×1)
+    expect(typeMultiplier('grass', ['water', 'grass'])).toBe(1); // grass ×2 vs water, ×½ vs grass → ×1
   });
   it('is case-insensitive and neutral on empty defenders', () => {
     expect(typeFactor('FIRE', 'GRASS')).toBe(2);
     expect(typeMultiplier('fire', [])).toBe(1);
   });
-  it('builds a defensive type matchup, bucketed by multiplier', () => {
+  it('builds a defensive type matchup (Vulnerable ×2 / Resist ×½ / Immune ×0 — no ×4/×¼)', () => {
     const s = (a: string[]) => [...a].sort();
-    const snom = typeMatchup(['ice', 'bug']); // Snom — famously ×4 to Fire and Rock
-    expect(s(snom.x4)).toEqual(['fire', 'rock']);
-    expect(s(snom.x2)).toEqual(['flying', 'steel']);
-    expect(s(snom.half)).toEqual(['grass', 'ground', 'ice']);
-    expect(snom.quarter).toEqual([]);
+    const snom = typeMatchup(['ice', 'bug']); // Snom — Fire/Rock vulnerable (×2, not ×4)
+    expect(s(snom.vulnerable)).toEqual(['fire', 'flying', 'rock', 'steel']);
+    expect(s(snom.resist)).toEqual(['grass', 'ground', 'ice']);
     expect(snom.immune).toEqual([]);
 
     const ralts = typeMatchup(['psychic', 'fairy']);
-    expect(ralts.immune).toEqual(['dragon']);   // Fairy → immune to Dragon
-    expect(ralts.quarter).toEqual(['fighting']); // Psychic ½ × Fairy ½
-    expect(ralts.half).toEqual(['psychic']);
-    expect(s(ralts.x2)).toEqual(['ghost', 'poison', 'steel']);
+    expect(ralts.immune).toEqual(['dragon']);                 // Fairy → immune to Dragon
+    expect(s(ralts.resist)).toEqual(['fighting', 'psychic']); // Fighting (VG ×¼) folds into Resist ×½
+    expect(s(ralts.vulnerable)).toEqual(['ghost', 'poison', 'steel']);
 
     const geo = typeMatchup(['rock', 'electric']); // Alolan Geodude
-    expect(geo.x4).toEqual(['ground']);
-    expect(geo.quarter).toEqual(['flying']);
+    expect(geo.vulnerable).toContain('ground');   // VG ×4 → Vulnerable
+    expect(geo.resist).toContain('flying');        // VG ×¼ → Resist
 
-    expect(typeMatchup([])).toEqual({ x4: [], x2: [], half: [], quarter: [], immune: [] }); // no types → nothing
+    expect(typeMatchup([])).toEqual({ vulnerable: [], resist: [], immune: [] });
   });
   it('labels multipliers', () => {
     expect(effectivenessLabel(2)).toMatch(/super effective/i);
-    expect(effectivenessLabel(4)).toMatch(/×4/);
     expect(effectivenessLabel(0.5)).toMatch(/not very/i);
-    expect(effectivenessLabel(0.25)).toMatch(/¼/);
     expect(effectivenessLabel(0)).toMatch(/immune/i);
     expect(effectivenessLabel(1)).toBeNull();
   });

@@ -1024,14 +1024,13 @@ function typeMatchupHtml(types: string[]): string {
   const m = typeMatchup(types);
   const chip = (t: string, mult: string, cls: string) =>
     `<span class="def ${cls}"><span class="tdot" style="background:var(--t-${t})"></span>${cap(t)} <span class="mx">${mult}</span></span>`;
-  const grp = (label: string, title: string, tiers: Array<[string[], string, string]>) => {
-    const chips = tiers.flatMap(([list, mult, cls]) => list.map((t) => chip(t, mult, cls))).join("");
-    return chips ? `<span class="def-grp" title="${title}"><span class="def-lab">${label}</span>${chips}</span>` : "";
-  };
+  const grp = (label: string, title: string, list: string[], mult: string, cls: string) =>
+    list.length ? `<span class="def-grp" title="${title}"><span class="def-lab">${label}</span>${list.map((t) => chip(t, mult, cls)).join("")}</span>` : "";
+  // poke5e caps effectiveness — Vulnerable ×2 · Resist ×½ · Immune ×0 (no ×4/×¼).
   return [
-    grp("Weak", "Takes extra damage", [[m.x4, "×4", "weak4"], [m.x2, "×2", "weak"]]),
-    grp("Resist", "Takes reduced damage", [[m.half, "×½", "resist"], [m.quarter, "×¼", "resist"]]),
-    grp("Immune", "Takes no damage", [[m.immune, "×0", "immune"]]),
+    grp("Vulnerable", "Takes double damage (×2)", m.vulnerable, "×2", "weak"),
+    grp("Resist", "Takes half damage (×½)", m.resist, "×½", "resist"),
+    grp("Immune", "Takes no damage (×0)", m.immune, "×0", "immune"),
   ].filter(Boolean).join("");
 }
 
@@ -3118,13 +3117,10 @@ function sheetDefenseRows(): { tier: string; detail: string }[] {
   const monTypes = (pokeMeta?.types ?? []).filter(Boolean);
   if (isPoke5ePokemon() && monTypes.length) {
     const m = typeMatchup(monTypes);
-    const join = (tiers: Array<[string[], string]>) => tiers.flatMap(([list, mult]) => list.map((t) => `${cap(t)} ${mult}`)).join(" · ");
-    const weak = join([[m.x4, "×4"], [m.x2, "×2"]]);
-    const res = join([[m.half, "×½"], [m.quarter, "×¼"]]);
-    const imm = m.immune.map(cap).join(" · ");
-    if (weak) rows.push({ tier: "Weak", detail: weak });
-    if (res) rows.push({ tier: "Resist", detail: res });
-    if (imm) rows.push({ tier: "Immune", detail: imm });
+    const list = (arr: string[], mult: string) => arr.map((t) => `${cap(t)} ${mult}`).join(" · ");
+    if (m.vulnerable.length) rows.push({ tier: "Vulnerable", detail: list(m.vulnerable, "×2") });
+    if (m.resist.length) rows.push({ tier: "Resist", detail: list(m.resist, "×½") });
+    if (m.immune.length) rows.push({ tier: "Immune", detail: m.immune.map(cap).join(" · ") });
     return rows;
   }
   if (defenses.immune.length) rows.push({ tier: "Immune", detail: defenses.immune.map(cap).join(", ") });

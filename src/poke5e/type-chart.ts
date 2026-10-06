@@ -43,43 +43,46 @@ export function typeFactor(attack: string, defender: string): number {
   return 1;
 }
 
-/** Combined multiplier of an attacking type vs a defender's type(s) — the product across each
- *  defending type (dual-types stack: e.g. Rock vs Ice/Bug = 2 × 2 = 4). Empty defender list → 1. */
+/** poke5e effectiveness of an attacking type vs a defender's type(s). poke5e uses D&D-style
+ *  resistance/vulnerability — per its rules, "there is no 'double vulnerability' or 'double
+ *  resistance' due to dual types." The raw product across both defending types only sets the
+ *  DIRECTION; the applied multiplier is then CAPPED: ×0 (immune) / ×½ (resistant) / ×2 (vulnerable)
+ *  / ×1 (normal). (This matches poke5e's own client, which buckets by e===0 / 0<e<1 / e>1.)
+ *  So Rock/Electric vs Ground is ×2 here, not ×4; Psychic/Fairy vs Fighting is ×½, not ×¼; and a
+ *  type that's weak on one half but resisted on the other (product 1) is normal. Empty defender → 1. */
 export function typeMultiplier(attack: string, defenderTypes: string[]): number {
-  return (defenderTypes ?? []).reduce((m, t) => m * typeFactor(attack, t), 1);
+  const product = (defenderTypes ?? []).reduce((m, t) => m * typeFactor(attack, t), 1);
+  if (product === 0) return 0; // immune (dominates)
+  if (product > 1) return 2;   // vulnerable (capped — no ×4)
+  if (product < 1) return 0.5; // resistant (capped — no ×¼)
+  return 1;                    // normal
 }
 
-/** A Pokémon's defensive type matchup: which attacking types hit it for ×4 / ×2 (weak), ×½ / ×¼
- *  (resist), or ×0 (immune). Neutral (×1) types are omitted. Each list is in POKE_TYPES order. */
+/** A Pokémon's defensive type matchup (poke5e model): which attacking types it's Vulnerable to (×2),
+ *  Resistant to (×½), or Immune to (×0). Normal (×1) types are omitted. Each list is in POKE_TYPES
+ *  order. There is no ×4 / ×¼ — dual types never double a vulnerability or resistance. */
 export interface TypeMatchup {
-  x4: PokeType[];
-  x2: PokeType[];
-  half: PokeType[];    // ×½
-  quarter: PokeType[]; // ×¼
-  immune: PokeType[];  // ×0
+  vulnerable: PokeType[]; // ×2
+  resist: PokeType[];     // ×½
+  immune: PokeType[];     // ×0
 }
 
-/** Bucket all 18 attacking types by their multiplier against a defender's type(s). The only possible
- *  multipliers (products of 0/½/1/2) are 0, ¼, ½, 1, 2, 4 — everything non-neutral lands in a bucket. */
+/** Bucket all 18 attacking types by poke5e effectiveness against a defender's type(s). */
 export function typeMatchup(defenderTypes: string[]): TypeMatchup {
-  const out: TypeMatchup = { x4: [], x2: [], half: [], quarter: [], immune: [] };
+  const out: TypeMatchup = { vulnerable: [], resist: [], immune: [] };
   for (const atk of POKE_TYPES) {
     const m = typeMultiplier(atk, defenderTypes);
     if (m === 0) out.immune.push(atk);
-    else if (m === 4) out.x4.push(atk);
-    else if (m === 2) out.x2.push(atk);
-    else if (m === 0.5) out.half.push(atk);
-    else if (m === 0.25) out.quarter.push(atk);
+    else if (m === 2) out.vulnerable.push(atk);
+    else if (m === 0.5) out.resist.push(atk);
   }
   return out;
 }
 
-/** A short label for a damage multiplier, or null for neutral (1×). */
+/** A short label for a poke5e effectiveness multiplier, or null for normal (×1). */
 export function effectivenessLabel(mult: number): string | null {
   if (mult === 0) return 'immune (×0)';
-  if (mult >= 4) return `super effective ×${mult}`;
   if (mult === 2) return 'super effective ×2';
   if (mult === 0.5) return 'not very effective ×½';
-  if (mult === 0.25) return 'not very effective ×¼';
-  return null; // 1× neutral
+  return null; // ×1 normal
 }
