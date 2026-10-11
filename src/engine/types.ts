@@ -60,6 +60,10 @@ export interface Modifier {
   /** DDB flags attunement on the modifier itself (not always on the item definition) — e.g.
    *  Cloak/Ring of Protection. The engine withholds such a modifier until the owning item is attuned. */
   requiresAttunement?: boolean | null;
+  /** DDB sets this false for a modifier that is NOT actually active — an unchosen "choose your ability
+   *  bonus" option, an ASI assigned elsewhere, a conditional not met. Such modifiers must NOT apply
+   *  (DDB doesn't). Absent/true = granted. */
+  isGranted?: boolean | null;
   friendlyTypeName?: string | null;
   friendlySubtypeName?: string | null;
 }

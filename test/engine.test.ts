@@ -156,6 +156,30 @@ describe('bug — modifier-level attunement gating (Cloak of Protection pattern)
   });
 });
 
+describe('bug — ungranted RACE ability increase (2024 origin rules) is not applied', () => {
+  // Under 2024 rules ability increases come from the BACKGROUND; a legacy species ASI is left in the
+  // data flagged isGranted:false and must NOT apply (seen live: a Gem Dragonborn's +2 CHA, isGranted
+  // false, inflating CHA by 2). But feat/background ability bonuses (half-feats, the chosen ASI) DO
+  // apply even when DDB flags them isGranted:false — so the drop is scoped to race `*-score` bonuses.
+  const withCha = (bucket: 'race' | 'feat', granted: boolean): CharacterData => {
+    const d = clone(data);
+    (d.modifiers as Record<string, unknown[]>)[bucket] = [
+      ...(((d.modifiers as Record<string, unknown[]>)[bucket]) ?? []),
+      { type: 'bonus', subType: 'charisma-score', value: 2, isGranted: granted },
+    ];
+    return d;
+  };
+  it('an ungranted RACE ability-score bonus is dropped', () => {
+    expect(computeRollModel(withCha('race', false)).abilities.CHA.score).toBe(model.abilities.CHA.score);
+  });
+  it('a granted RACE ability-score bonus still applies', () => {
+    expect(computeRollModel(withCha('race', true)).abilities.CHA.score).toBe(model.abilities.CHA.score + 2);
+  });
+  it('an ungranted FEAT ability-score bonus still applies (half-feat / chosen ASI)', () => {
+    expect(computeRollModel(withCha('feat', false)).abilities.CHA.score).toBe(model.abilities.CHA.score + 2);
+  });
+});
+
 describe('bug #2 — `set`-type ability-score modifiers', () => {
   it('an equipped+attuned item that SETs STR to 21 raises the score and cascades', () => {
     const d = clone(data);

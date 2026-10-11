@@ -112,6 +112,12 @@ export function computeRollModel(data: CharacterData): RollModel {
   for (const [bucket, arr] of Object.entries(data.modifiers ?? {})) {
     if (Array.isArray(arr)) {
       for (const m of arr) {
+        // Drop a RACE ability-score increase that DDB has marked not-granted: under the 2024 origin
+        // rules ability increases come from the BACKGROUND, so a legacy species ASI is left in the data
+        // flagged isGranted:false and must NOT apply (seen live: Gem Dragonborn's +2 CHA inflating a
+        // character by 2). This is scoped to race `*-score` bonuses only — feat/background ability
+        // bonuses (half-feats, the chosen ASI) stay applied even when DDB flags them isGranted:false.
+        if (m.isGranted === false && bucket === 'race' && m.type === 'bonus' && /-score$/.test(m.subType || '')) continue;
         if (bucket === 'item' && !itemModifierActive(m)) continue;
         mods.push({ ...m, _bucket: bucket });
       }
