@@ -308,3 +308,30 @@ describe('expandAttacks — STAB-once-per-target repeat damage', () => {
     expect(out.map((r) => r.baseDamage)).toEqual(['1d8 + 2', '1d8 + 2']);
   });
 });
+
+import { defaultRoll } from '../src/roll20/format';
+
+describe('default template adv/disadvantage shows each separate die', () => {
+  it('normal → a single Roll row', () => {
+    const c = defaultRoll({ name: 'Perception', formula: '1d20 + 3' });
+    expect(c).toContain('{{Roll=[[1d20 + 3]]}}');
+    expect(c).not.toContain('Roll 1');
+  });
+  it('disadvantage → both d20 rows + keep-the-lowest', () => {
+    const c = defaultRoll({ name: 'Perception', formula: '1d20 + 3', advantage: 'disadvantage' });
+    expect(c).toContain('{{Disadvantage=keep the lowest}}');
+    expect(c).toContain('{{Roll 1=[[1d20 + 3]]}}');
+    expect(c).toContain('{{Roll 2=[[1d20 + 3]]}}');
+    expect(c).not.toContain('2d20kl1'); // no single kept-total die
+  });
+  it('advantage → both d20 rows + keep-the-highest', () => {
+    const c = defaultRoll({ name: 'Perception', formula: '1d20 + 3', advantage: 'advantage' });
+    expect(c).toContain('{{Advantage=keep the highest}}');
+    expect(c).toContain('{{Roll 1=[[1d20 + 3]]}}');
+    expect(c).toContain('{{Roll 2=[[1d20 + 3]]}}');
+  });
+  it('super-advantage (elven accuracy) → three d20 rows', () => {
+    const c = defaultRoll({ name: 'Attack', formula: '1d20cs>20 + 5', advantage: 'super-advantage' });
+    expect(c).toContain('{{Roll 3=[[1d20cs>20 + 5]]}}');
+  });
+});

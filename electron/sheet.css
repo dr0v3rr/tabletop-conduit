@@ -275,6 +275,9 @@ button { cursor: pointer; font: inherit; }
 .roll-line.depleted { opacity: .4; }
 .roll-line.depleted .label { text-decoration: line-through; text-decoration-color: var(--muted); }
 .roll-line .label { display: flex; align-items: center; gap: 6px; }
+/* Per-ball art inline in the bag — sits before the name, sized to the text line. */
+.ball-icon { width: 20px; height: 20px; flex: none; display: inline-flex; filter: drop-shadow(0 1px 1px rgba(0,0,0,.35)); }
+.ball-icon svg { width: 100%; height: 100%; display: block; }
 .roll-line .mod { font-variant-numeric: tabular-nums; font-weight: 600; color: #d9d9e3; }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: transparent; border: 1px solid var(--muted); flex: none; }
 .dot.prof { background: var(--accent); border-color: var(--accent); }
@@ -289,7 +292,11 @@ button { cursor: pointer; font: inherit; }
 .item-mini:disabled { opacity: .35; cursor: default; }
 .item-qty { font-size: 11px; color: #d9d9e3; font-variant-numeric: tabular-nums; min-width: 22px; text-align: center; }
 /* Trainer money (₽) control at the top of the bag. */
-.money-row { display: flex; align-items: center; gap: 8px; padding: 4px 2px 8px; margin-bottom: 4px; border-bottom: 1px solid var(--line); }
+.money-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 4px 2px 8px; margin-bottom: 4px; border-bottom: 1px solid var(--line); }
+.money-adjust { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; flex-basis: 100%; margin-top: 2px; }
+.money-amt-in { width: 92px; font: inherit; font-variant-numeric: tabular-nums; text-align: right; color: var(--ink); background: var(--panel2); border: 1px solid var(--line); border-radius: 4px; padding: 2px 6px; }
+.money-amt-in:hover { border-color: var(--accent2); }
+.money-btn { white-space: nowrap; }
 .money-label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 600; }
 .money-amt { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; }
 .money-amt .cur { color: #e0c04a; font-weight: 700; }
@@ -545,6 +552,8 @@ select.upcast:hover { border-color: var(--accent2); }
 .cm-hit .cm-sr { margin-left: auto; font-family: ui-monospace, Menlo, monospace; font-size: 10.5px; color: var(--muted); }
 .cm-row { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-bottom: 10px; }
 .cm-row label { font-size: 11.5px; color: var(--muted); }
+.cm-row .cm-ball-art { width: 26px; height: 26px; flex: none; display: inline-flex; filter: drop-shadow(0 1px 2px rgba(0,0,0,.4)); }
+.cm-row .cm-ball-art svg { width: 100%; height: 100%; display: block; }
 .cm-row select { background: var(--panel); border: 1px solid var(--line); color: var(--ink); border-radius: 7px; font: inherit; font-size: 12.5px; padding: 5px 8px; }
 .cm-row input { width: 52px; background: var(--panel); border: 1px solid var(--line); color: var(--ink); border-radius: 7px; font: inherit; font-family: ui-monospace, Menlo, monospace; text-align: center; padding: 5px 6px; }
 .cm-mods { font-size: 13px; color: var(--ink); margin: 2px 0 8px; }

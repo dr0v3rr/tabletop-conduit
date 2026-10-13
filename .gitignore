@@ -17,6 +17,9 @@ browser-data/
 .env.*
 !.env.example
 
+# standalone HTML design mockups / prototypes (not part of the app build)
+mockups/
+
 # python / misc tooling that isn't part of the app
 .venv/
 __pycache__/

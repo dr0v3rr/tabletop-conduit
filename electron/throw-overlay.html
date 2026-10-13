@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self';" />
+    <title>Throw</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+      #stage { position: fixed; inset: 0; overflow: hidden; pointer-events: none; }
+      /* A gentle vignette so the ball reads against a busy VTT; fades in and out with the throw. */
+      .ov-scrim { position: fixed; inset: 0; opacity: 0;
+        background: radial-gradient(62% 62% at 50% 46%, rgba(8,10,20,0) 0%, rgba(8,10,20,.55) 100%); }
+      .ov-flash { position: fixed; inset: 0; opacity: 0;
+        background: radial-gradient(34% 34% at 50% 50%, #fff 0%, rgba(255,247,214,.7) 30%, transparent 62%); }
+      .ov-ball { position: fixed; left: 50%; top: 50%; width: 112px; height: 112px; margin: -56px 0 0 -56px;
+        will-change: transform; filter: drop-shadow(0 12px 12px rgba(0,0,0,.5)); }
+      .ov-ball svg { width: 100%; height: 100%; display: block; }
+    </style>
+  </head>
+  <body>
+    <div id="stage"></div>
+    <script src="throw-overlay.js"></script>
+  </body>
+</html>

@@ -15,6 +15,7 @@ import {
   simpleRoll,
   attackDamageRoll,
   defaultRoll,
+  defaultD20Fields,
   damageCardRoll,
   type ResolvedAdvantage,
 } from '../roll20/format';
@@ -325,11 +326,13 @@ export function composeRoll(model: RollModel, request: RollRequest): ComposedRol
   }
 
   // Universal &{template:default} path — renders in any campaign (no D&D 5e sheet required).
-  // Advantage uses 2d20kh1 / 2d20kl1 so the kept die is computed correctly without a sheet.
+  // Advantage/disadvantage shows EACH separate die as its own row (defaultD20Fields), so the default
+  // card — which can't display a dropped die inside one 2d20kl1 total — still shows both d20s and
+  // which to keep. So the die formula here is a SINGLE die; defaultD20Fields rolls it per column.
   if (style === 'default') {
-    const d20Formula = buildDefaultD20Formula(
+    const d20Single = buildDefaultD20Formula(
       d20Mod,
-      advantage,
+      'normal', // single die; the per-column expansion is handled by defaultD20Fields
       d20Reroll,
       d20BonusDice,
       request.kind === 'attack' ? critRange : undefined,
@@ -341,7 +344,8 @@ export function composeRoll(model: RollModel, request: RollRequest): ComposedRol
       if (damageMod) dF = dF ? `${dF} + ${damageMod}` : String(damageMod);
       const p: string[] = [];
       if (whisper) p.push('/w gm');
-      p.push('&{template:default}', `{{name=${name}}}`);      p.push(`{{Attack=[[${d20Formula}]]}}`);
+      p.push('&{template:default}', `{{name=${name}}}`);
+      p.push(...defaultD20Fields('Attack', d20Single, advantage));
       if (dF) p.push(`{{Damage=[[${dF}]]}}`);
       // On a crit, roll the weapon dice a second time (PHB) — dice only, no flat mod.
       if (request.crit && critDice) p.push(`{{Crit=[[${critDice}]]}}`);
@@ -350,7 +354,7 @@ export function composeRoll(model: RollModel, request: RollRequest): ComposedRol
         notes, command: p.join(' ') };
     }
     if (request.kind !== 'damage') {
-      const command = defaultRoll({ name, formula: d20Formula, whisper, speakingAs, advantage });
+      const command = defaultRoll({ name, formula: d20Single, whisper, speakingAs, advantage });
       return { template: 'default', name, whisper, advantage, d20Mod, critRange, d20BonusDice, notes, command };
     }
     // 'damage' falls through — it already uses defaultRoll below.

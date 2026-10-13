@@ -335,7 +335,7 @@ export function moveStat(move: any, pk: any, learned?: any): MoveStat {
   if (casting === "utility" && damageDice) out.autoHit = true;
   // OHKO / special moves whose ONLY mechanic is a die roll described in prose (Sheer Cold, Fissure,
   // Horn Drill, Guillotine, Explosion → d20; Metronome → d100; Acupressure → d6). Surface the die.
-  if (casting === "utility" && !damageDice && !healDice) {
+  if (casting === "utility" && !damageDice && !healDice && !fix?.noRollDie) {
     const desc = moveWording(move.description);
     const rm = /roll (?:a |1)?d(\d+)/i.exec(desc);
     if (rm) out.rollDie = `1d${rm[1]}`;

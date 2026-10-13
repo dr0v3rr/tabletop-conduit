@@ -9,6 +9,7 @@ import { scaleDamageDice } from "../src/engine/upcast.js"; // up-cast damage sca
 import { matchInline, matchBlock, isHrLine, blockTag } from "../src/notebook/markdown.js"; // notebook md shortcuts (pure, tested)
 import { sanitizeNoteHtml } from "../src/notebook/sanitize.js"; // strip unsafe/remote content from note HTML
 import { POKE_TYPES, typeMultiplier, effectivenessLabel, typeMatchup } from "../src/poke5e/type-chart.js"; // Pokémon damage types + effectiveness
+import { ballSvg } from "../src/poke5e/ball-art.js"; // per-ball vector art, keyed by the same ids as BALL_DC
 type Ability = "STR" | "DEX" | "CON" | "INT" | "WIS" | "CHA";
 type AdvMode = "normal" | "advantage" | "disadvantage" | "super-advantage" | "super-disadvantage";
 type NotebookPage = { id: string; emoji: string; title: string; html: string; updated: number };
@@ -65,6 +66,7 @@ declare global {
       notebookOpen(): Promise<{ ok: boolean; dir: string; error?: string }>;
       roll20Scrape(): Promise<any[]>;
       roll20Say(message: string, speakingAs?: string): Promise<{ ok: boolean; error?: string }>;
+      throwBallAnim(ballId: string): Promise<{ ok: boolean }>; // full-window ball-throw animation overlay
       displayInVtt(payload: { name: string; body: string; meta?: string; label?: string; speakingAs?: string }): Promise<{ ok: boolean; command?: string; error?: string }>;
       pokedexLoad(): Promise<{ ok: boolean; species: any[]; collection: Record<string, "seen" | "caught">; error?: string }>;
       pokedexView(open: boolean): Promise<{ ok: boolean }>;
@@ -1598,20 +1600,36 @@ function renderFeats() {
 function moneyControl(): HTMLElement {
   const row = document.createElement("div");
   row.className = "money-row";
-  row.innerHTML = `<span class="money-label">Money</span><span class="money-amt"><span class="cur">₽</span><input id="moneyInput" class="money-input" type="number" min="0" step="1" aria-label="Trainer money"${writable ? "" : " disabled"} /></span>`;
+  row.innerHTML =
+    `<span class="money-label">Money</span>` +
+    `<span class="money-amt"><span class="cur">₽</span><input id="moneyInput" class="money-input" type="number" min="0" step="1" aria-label="Trainer money"${writable ? "" : " disabled"} /></span>` +
+    (writable
+      ? `<span class="money-adjust"><input id="moneyAmt" class="money-amt-in" type="number" min="1" step="1" placeholder="Amount" aria-label="Amount to add or subtract"><button id="moneyAdd" class="mini-btn money-btn">＋ Add</button><button id="moneySub" class="mini-btn money-btn">− Subtract</button></span>`
+      : "");
   const input = row.querySelector("#moneyInput") as HTMLInputElement;
   input.value = String(pokeMoney);
+  // Write a new absolute total to poke5e (optimistic; reverts + reports on failure).
+  const save = async (next: number, label: string) => {
+    const val = Math.max(0, Math.round(next));
+    if (val === pokeMoney) { input.value = String(pokeMoney); return; }
+    const prev = pokeMoney;
+    pokeMoney = val; input.value = String(val); // optimistic
+    const r = await window.api.poke5eSetMoney(val).catch(() => ({ ok: false } as any));
+    if (r?.ok) setStatus(`${label} — ₽${val.toLocaleString()} ✓`);
+    else { pokeMoney = prev; input.value = String(prev); setStatus(r?.error || "Couldn't save money to poke5e", true); }
+  };
   if (writable) {
-    input.addEventListener("change", async () => {
-      const val = Math.max(0, Math.round(Number(input.value) || 0));
-      input.value = String(val);
-      if (val === pokeMoney) return;
-      const prev = pokeMoney;
-      pokeMoney = val; // optimistic
-      const r = await window.api.poke5eSetMoney(val).catch(() => ({ ok: false } as any));
-      if (r?.ok) setStatus(`Money set to ₽${val.toLocaleString()} ✓`);
-      else { pokeMoney = prev; input.value = String(prev); setStatus(r?.error || "Couldn't save money to poke5e", true); }
-    });
+    input.addEventListener("change", () => save(Number(input.value) || 0, "Money set"));
+    const amtEl = row.querySelector("#moneyAmt") as HTMLInputElement;
+    // ＋ Add / − Subtract a specified amount, so you don't have to hand-calculate the new total.
+    const adjust = (sign: 1 | -1) => {
+      const amt = Math.max(0, Math.round(Number(amtEl.value) || 0));
+      if (!amt) { setStatus("Enter an amount to add or subtract", true); return; }
+      save(pokeMoney + sign * amt, sign > 0 ? `Added ₽${amt.toLocaleString()}` : `Subtracted ₽${amt.toLocaleString()}`);
+      amtEl.value = "";
+    };
+    (row.querySelector("#moneyAdd") as HTMLElement).onclick = () => adjust(1);
+    (row.querySelector("#moneySub") as HTMLElement).onclick = () => adjust(-1);
   }
   return row;
 }
@@ -1718,7 +1736,10 @@ function renderInventory() {
       const note = it.attuned ? "attuned" : it.magic ? "magic" : "";
       nums = `<span class="item-note">${esc(it.typeName)}${note ? " · " + note : ""}</span>`;
     }
-    label.innerHTML = `<span class="label">${esc(it.name)}</span><span class="atk-nums">${nums}</span>`;
+    // Poké Balls get their own art inline, so the bag shows which ball each row is at a glance.
+    const isBall = String(it.itemType || "").toLowerCase() === "pokeball";
+    const ballIcon = isBall ? `<span class="ball-icon" aria-hidden="true">${ballSvg(it.itemId, { title: it.name })}</span>` : "";
+    label.innerHTML = `<span class="label">${ballIcon}${esc(it.name)}</span><span class="atk-nums">${nums}</span>`;
     if (rollable) (label as HTMLButtonElement).onclick = () => sendRoll(itemReq(it));
     row.appendChild(label);
 
@@ -3178,7 +3199,7 @@ $("deleteTrainerBtn").onclick = () => deleteCurrentTrainer();
 function populateDamageTypes() {
   const sel = $("hpDamageType") as HTMLSelectElement;
   const cur = sel.value;
-  const list: readonly string[] = activeSource === "poke5e" ? POKE_TYPES : DAMAGE_TYPES;
+  const list = [...(activeSource === "poke5e" ? POKE_TYPES : DAMAGE_TYPES)].sort(); // alphabetical dropdown
   sel.innerHTML = `<option value="">untyped</option>`;
   for (const dt of list) { const o = document.createElement("option"); o.value = dt; o.textContent = cap(dt); sel.appendChild(o); }
   if ([...sel.options].some((o) => o.value === cur)) sel.value = cur;
@@ -4381,7 +4402,9 @@ function renderCatch() {
   if (!balls.length) { body.innerHTML = h + `<div class="cm-note">No Poké Balls in your bag.</div>`; wireTarget(); return; }
   if (!catchCtx.ballItemId || !balls.some((b) => b.itemId === catchCtx.ballItemId)) catchCtx.ballItemId = balls[0].itemId;
 
-  h += `<div class="cm-row"><label>Ball</label><select id="cmBall">` +
+  h += `<div class="cm-row"><label>Ball</label>` +
+    `<span class="cm-ball-art" aria-hidden="true">${ballSvg(catchCtx.ballItemId, { title: ballName(catchCtx.ballItemId) })}</span>` +
+    `<select id="cmBall">` +
     balls.map((b) => `<option value="${esc(b.itemId)}"${b.itemId === catchCtx.ballItemId ? " selected" : ""}>${esc(b.name)} ×${b.quantity}</option>`).join("") +
     `</select><label style="margin-left:auto" title="The caught Pokémon's level (for the poke5e roster entry)">Level</label><input id="cmLvl" type="number" min="1" max="20" value="${lvl}"></div>`;
 
@@ -4484,6 +4507,7 @@ function rollCatch(ball: any | null, speciesName?: string) {
   const advField = adv === "advantage" ? ` {{Advantage=yes}}` : adv === "disadvantage" ? ` {{Disadvantage=yes}}` : ``;
   if (ball) {
     if ((ball.quantity ?? 0) <= 0) { setStatus(`No ${ball.name || "ball"} left`, true); return; }
+    window.api.throwBallAnim(ball.itemId).catch(() => {}); // play the throw over the window (cosmetic)
     const eff = ballEffect(ball.itemId);
     consumeBall(ball); // decrement this ball (poke5e write + local), re-render
     if (eff.auto) { // Master Ball
@@ -4509,6 +4533,7 @@ function doThrow() {
   const sp = catchCtx.species; if (!sp) return;
   const ball = bagBalls().find((b) => b.itemId === catchCtx.ballItemId);
   if (!ball || ball.quantity <= 0) { setStatus(`No ${ballName(catchCtx.ballItemId)} left`, true); return; }
+  window.api.throwBallAnim(ball.itemId).catch(() => {}); // play the throw over the window (cosmetic)
   const eff = ballEffect(ball.itemId);
   consumeBall(ball);
   const res = document.getElementById("cmResult");

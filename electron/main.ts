@@ -274,6 +274,8 @@ let sheetView: WebContentsView;
 let roll20View: WebContentsView;
 let ddbView: WebContentsView;
 let splashView: WebContentsView;
+let throwView: WebContentsView; // transparent full-window overlay for the ball-throw animation
+let throwActive = false; // true while a throw animation is on screen (keeps the overlay full-window in layout())
 let rightMode: "roll20" | "ddb" = "roll20";
 let pokedexOpen = false; // Pokédex tab active → sheet pane covers the whole window
 let notebookOpen = false; // Notebook tab active → sheet pane covers the whole window (same as dex)
@@ -324,6 +326,9 @@ function layout() {
   const right = { x: SHEET_W, y: 0, width: Math.max(1, w - SHEET_W), height: h };
   roll20View.setBounds(right);
   ddbView.setBounds(right);
+  // The throw-animation overlay spans the whole window while a throw is playing, otherwise 0×0 so it
+  // never intercepts clicks or paints over the panes.
+  if (throwView) throwView.setBounds(throwActive ? { x: 0, y: 0, width: w, height: h } : { x: 0, y: 0, width: 0, height: 0 });
 }
 
 /** Bring the active right-pane view to the front (Electron z-order = child add order). */
@@ -642,10 +647,21 @@ function createWindow() {
   });
   hardenView(splashView, { externalLinks: true, lockToFile: true, ownUi: true });
 
+  // Throw-animation overlay: a transparent view that composites OVER every pane (incl. the VTT) while a
+  // ball is thrown, then shrinks to 0×0. Same alpha trick as the sheet so the panes show through.
+  throwView = new WebContentsView({
+    webPreferences: { preload: join(__dirname, "preload.cjs"), contextIsolation: true, nodeIntegration: false, sandbox: true },
+  });
+  hardenView(throwView, { lockToFile: true, ownUi: true });
+  throwView.setBackgroundColor("#00000000");
+  throwView.setBounds({ x: 0, y: 0, width: 0, height: 0 }); // 0×0 until a throw plays (never intercept clicks, incl. over the splash)
+  throwView.webContents.setBackgroundThrottling(false); // keep the animation smooth when unfocused
+
   win.contentView.addChildView(ddbView); // bottom of the right stack
   win.contentView.addChildView(roll20View); // active by default (rightMode = 'roll20')
   win.contentView.addChildView(sheetView); // left pane
   win.contentView.addChildView(splashView); // on top until the user launches
+  win.contentView.addChildView(throwView); // top-most; 0×0 until a throw plays
   layout();
   win.on("resize", layout);
 
@@ -655,6 +671,7 @@ function createWindow() {
   // the logged-in "My Games" home. Cookies (restored above) keep the login.
   roll20View.webContents.loadURL(lastRoll20Url && isRestorableRoll20(lastRoll20Url) ? lastRoll20Url : ROLL20_HOME);
   splashView.webContents.loadFile(join(__dirname, "splash.html"));
+  throwView.webContents.loadFile(join(__dirname, "throw-overlay.html"));
 
   // Continuously capture rolls into the persistent store so nothing is lost past Roll20's buffer.
   setInterval(captureLoop, 25000);
@@ -1589,6 +1606,31 @@ ipcMain.handle("roll20-say", async (_e, message: string, speakingAs?: string) =>
   } catch (err) {
     return { ok: false, error: String(err) };
   }
+});
+
+// Ball-throw animation: expand the transparent overlay to the whole window, raise it to the top, run
+// the throw sequence in its renderer, then shrink it back to 0×0. Purely cosmetic — the catch roll is
+// fired independently by the sheet. We await the overlay's own promise (so the view hides exactly when
+// the animation ends), with a hard timeout so a stuck/early-nav overlay can never leave the window
+// covered by a click-stealing view.
+async function showThrowOverlay(ballId: string) {
+  if (!throwView || !launched || throwActive) return;
+  throwActive = true;
+  win.contentView.removeChildView(throwView);
+  win.contentView.addChildView(throwView); // top-most for the duration
+  layout(); // full-window bounds
+  const play = throwView.webContents
+    .executeJavaScript(`window.playThrow && window.playThrow(${JSON.stringify(String(ballId))})`, true)
+    .catch(() => {});
+  const timeout = new Promise((r) => setTimeout(r, 6000));
+  try { await Promise.race([play, timeout]); } finally {
+    throwActive = false;
+    layout(); // back to 0×0
+  }
+}
+ipcMain.handle("throw-ball-anim", async (_e, ballId: string) => {
+  try { await showThrowOverlay(String(ballId ?? "")); } catch { /* cosmetic — never surface */ }
+  return { ok: true };
 });
 
 // "Display in VTT" — post the WORDING of a move/spell/feat/item to the Roll20 table as a

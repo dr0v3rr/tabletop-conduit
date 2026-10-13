@@ -26,6 +26,10 @@ export interface MoveFix {
   autoHit?: boolean;
   /** Suppress STAB — the move deals FIXED damage independent of the user (Seismic Toss, Sonic Boom). */
   noStab?: boolean;
+  /** Don't surface a use-time die from the prose: the "roll a dN" in the description is a REACTIVE /
+   *  conditional mechanic (e.g. Double Team's duplicate absorbs on a later d4), not something to roll
+   *  when the move is used — so the move stays a display-only utility that just announces + spends PP. */
+  noRollDie?: boolean;
   /** One-sentence rule reminder shown when the move is used (what the engine does NOT apply). */
   note: string;
 }
@@ -36,6 +40,7 @@ export const MOVE_FIXES: Record<string, MoveFix> = {
   "bone-rush": { note: "On a hit deal 1d4+MOVE ground damage, then roll a d4; on a 3 or 4 immediately hit again for an additional 1d4 ground damage, repeating until you fail the d4 roll, up to a maximum of four additional hits." },
   "bullet-seed": { note: "On a hit deal 1d4+MOVE grass damage, then roll a d4; on a 3 or 4 immediately hit again for an additional 1d4 grass damage, repeating until you fail the d4 roll, up to a maximum of four additional hits." },
   "comet-punch": { note: "On a hit deal 1d4+MOVE normal damage, then roll a d4; on a 3 or 4 immediately hit again for an additional 1d4 normal damage, repeating until you fail the d4 roll, up to a maximum of four additional hits." },
+  "double-team": { noRollDie: true, note: "Creates a duplicate image. Nothing to roll on use — when you're later hit by a ≤5-ft attack/save, roll a d4; on a 3 or 4 the image absorbs it and disappears. (Reuse for up to 3 images; 2 images → attacker needs 5-6 on a d6, 3 → 7-8 on a d8.)" },
   "barrage": { note: "Make one ranged attack; on a hit roll 1d4 to determine the number of projectiles, and each projectile deals 1d4 normal damage." },
   "beat-up": { note: "Make one melee attack plus one additional separate attack for each other conscious creature your trainer is currently carrying, dealing 2d6 dark damage on each hit." },
   "double-slap": { note: "On a hit deal 1d4+MOVE normal damage, then roll a d4; on a 3 or 4 immediately hit again for an additional 1d4 normal damage, repeating until you fail the d4 roll, up to a maximum of four additional hits." },

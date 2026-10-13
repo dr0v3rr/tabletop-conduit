@@ -68,7 +68,15 @@ await build({
   format: "iife",
 });
 
-for (const f of ["sheet.html", "sheet.css", "splash.html", "splash.css"]) {
+await build({
+  ...common,
+  entryPoints: [resolve(root, "electron/throw-overlay.ts")],
+  outfile: resolve(out, "throw-overlay.js"),
+  platform: "browser",
+  format: "iife",
+});
+
+for (const f of ["sheet.html", "sheet.css", "splash.html", "splash.css", "throw-overlay.html"]) {
   copyFileSync(resolve(root, "electron", f), resolve(out, f));
 }
 console.log("electron bundles written to dist-electron/");

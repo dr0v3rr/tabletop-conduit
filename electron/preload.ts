@@ -41,6 +41,7 @@ contextBridge.exposeInMainWorld("api", {
   notebookOpen: () => ipcRenderer.invoke("notebook-open"),
   roll20Scrape: () => ipcRenderer.invoke("roll20-scrape"),
   roll20Say: (message: string, speakingAs?: string) => ipcRenderer.invoke("roll20-say", message, speakingAs),
+  throwBallAnim: (ballId: string) => ipcRenderer.invoke("throw-ball-anim", ballId),
   displayInVtt: (payload: { name: string; body: string; meta?: string; label?: string; speakingAs?: string }) =>
     ipcRenderer.invoke("display-in-vtt", payload),
   pokedexLoad: () => ipcRenderer.invoke("pokedex-load"),

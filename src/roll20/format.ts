@@ -214,13 +214,26 @@ export function attackDamageRoll(o: AttackDamageRollOptions): string {
 
 export interface DefaultRollOptions {
   name: string;
+  /** For a d20 roll this must be a SINGLE-die formula (e.g. `1d20cs>20 + 3`): on adv/disadv we roll it
+   *  once per die and show each separately (see defaultD20Fields). For a plain damage/heal roll it's
+   *  just the formula and `advantage` is omitted. */
   formula: string;
   whisper?: boolean;
   speakingAs?: string;
-  /** When adv/disadv, the roll field is labelled so the mode is visible on the plain default card
-   *  (which — unlike the D&D 5e `simple` template — shows a single total, so a `2d20kl1` roll would
-   *  otherwise read as one die). The formula still auto-keeps the right die. */
   advantage?: ResolvedAdvantage;
+}
+
+/** Default-template d20 field(s). The universal `&{template:default}` card can't show a dropped die
+ *  inside one `2d20kl1` total (unlike the D&D 5e `simple` template), so for advantage/disadvantage we
+ *  render EACH die as its own row plus which to keep — a disadvantage roll then shows both d20s and
+ *  "keep the lowest", not just the surviving number. `formula` must be a single die. */
+export function defaultD20Fields(label: string, formula: string, adv: ResolvedAdvantage): string[] {
+  if (adv === 'normal') return [`{{${label}=[[${formula}]]}}`];
+  const keepHigh = adv === 'advantage' || adv === 'super-advantage';
+  const n = adv === 'super-advantage' || adv === 'super-disadvantage' ? 3 : 2; // elven accuracy / 3d20
+  const rows = [`{{${keepHigh ? 'Advantage' : 'Disadvantage'}=keep the ${keepHigh ? 'highest' : 'lowest'}}}`];
+  for (let i = 1; i <= n; i++) rows.push(`{{${label} ${i}=[[${formula}]]}}`);
+  return rows;
 }
 
 /** `&{template:atkdmg}` damage-only — a standalone damage/heal roll (e.g. a save-based
@@ -239,17 +252,14 @@ export function damageCardRoll(o: { name: string; formula: string; damageType?: 
   return parts.join(' ');
 }
 
-/** `&{template:default}` — fallback (e.g. a standalone damage roll). */
+/** `&{template:default}` — universal card (poke5e d20 rolls, standalone damage). For adv/disadv it
+ *  shows each separate die (`formula` must be a single die); a plain roll shows one `{{Roll}}`. */
 export function defaultRoll(o: DefaultRollOptions): string {
   const parts: string[] = [];
   if (o.whisper) parts.push('/w gm');
   parts.push('&{template:default}');
   parts.push(`{{name=${o.name}}}`);
-  const label =
-    o.advantage === 'advantage' || o.advantage === 'super-advantage' ? 'Roll (Advantage — keep highest)'
-    : o.advantage === 'disadvantage' || o.advantage === 'super-disadvantage' ? 'Roll (Disadvantage — keep lowest)'
-    : 'Roll';
-  parts.push(`{{${label}=[[${o.formula}]]}}`);
+  parts.push(...defaultD20Fields('Roll', o.formula, o.advantage ?? 'normal'));
   return parts.join(' ');
 }
 
