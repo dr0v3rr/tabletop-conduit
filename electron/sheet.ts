@@ -151,6 +151,7 @@ let ddbBusy = false; // a DDB slot mutation (spend/restore/restoreAll) is in fli
 let adv: AdvMode = "normal";
 let whisperOn = false; // roll privately to the GM
 let adhocMod = 0; // ad-hoc situational modifier on the next d20 roll(s)
+let critNext = false; // one-shot: roll the next ATTACK's damage as a crit (doubles the damage dice)
 let lastRollRequest: any = null; // for the Reroll button
 let templateStyle: "sheet" | "default" = "default"; // 'sheet' → prettier D&D-5e cards when the game has that sheet
 let activeSource: "ddb" | "poke5e" | "monster" = "ddb"; // which character-sheet source the splash selected
@@ -2430,6 +2431,13 @@ async function sendRoll(request: any) {
   ($("rerollBtn") as HTMLButtonElement).disabled = false;
   const req = { ...request, whisper: whisperOn || request.whisper, templateStyle: request.templateStyle ?? templateStyle };
   if (adhocMod) { req.adhocMod = adhocMod; resetAdhoc(); } // one-off: applies to this roll, then clears
+  if (critNext) { req.crit = true; setCritNext(false); } // one-off: double the damage dice on this attack
+  // Alt/Shift-click hold-to-modify: one-off advantage/disadvantage for THIS roll without touching the
+  // sticky Adv/Dis control (Beyond20 convention). Leaves super-advantage (e.g. Elven Accuracy) intact.
+  if (clickAdv && !String(req.advantage || "").startsWith("super")) {
+    req.advantage = clickAdv;
+    setStatus(clickAdv === "advantage" ? "Advantage — this roll" : "Disadvantage — this roll");
+  }
   // Snapshot chat ids so we can spot OUR result once it lands (best-effort — needs a game open).
   const beforeIds = new Set((await window.api.roll20Scrape().catch(() => [])).map((r: any) => r.id));
   const toggles = [...enabled, ...activeConditionRuleIds()]; // active conditions auto-apply
@@ -2439,17 +2447,28 @@ async function sendRoll(request: any) {
   const inj = res.injected;
   const landed = inj?.ok ? "✓ sent to Roll20" : `⚠ ${inj?.error || "not sent — open a Roll20 game"}`;
   lr.innerHTML = `<b>${landed}</b> &nbsp; <code>${(res.command || "").replace(/</g, "&lt;")}</code>`;
-  if (inj?.ok) pollRollResult(beforeIds); // read the total back and show it
+  if (inj?.ok) pollRollResult(beforeIds, req.name); // read the total back and show it
 }
 
-// After a roll lands, poll the chat for OUR new result and surface the total (with crit/fumble).
-async function pollRollResult(beforeIds: Set<string>) {
+// After a roll lands, poll the chat for OUR new result and surface the total (with crit/fumble). The
+// scraper only fills `character` for the D&D-sheet-regex path (it's null for poke5e/default/most DDB
+// rolls), so matching on it silently failed for most rolls. Instead take the newest record that's NEW
+// since we snapshotted (almost always ours), preferring one that matches our character or this roll's
+// name when several land in the same window.
+async function pollRollResult(beforeIds: Set<string>, rollName?: string) {
   const myName = (model?.name || "").toLowerCase();
+  const want = String(rollName || "").toLowerCase();
   for (let i = 0; i < 6; i++) {
     await new Promise((r) => setTimeout(r, 500));
     const recs = await window.api.roll20Scrape().catch(() => []);
-    const fresh = recs.filter((r: any) => !beforeIds.has(r.id) && String(r.character || "").toLowerCase() === myName);
-    if (fresh.length) { showRollResult(fresh[fresh.length - 1]); return; }
+    const fresh = recs.filter((r: any) => !beforeIds.has(r.id));
+    if (fresh.length) {
+      const match =
+        (myName && fresh.find((r: any) => String(r.character || "").toLowerCase() === myName)) ||
+        (want && fresh.find((r: any) => String(r.name || "").toLowerCase() === want)) ||
+        fresh[fresh.length - 1]; // newest new record
+      showRollResult(match); return;
+    }
   }
 }
 
@@ -2924,7 +2943,19 @@ async function refreshPoke5eTrainers(reloadPane = false): Promise<boolean> {
       const res = monsterSrc === "ddb"
         ? await window.api.searchDdbMonsters(q).catch(() => ({ ok: false, results: [] as any[] }))
         : await window.api.searchMonsters(q).catch(() => ({ ok: false, results: [] as any[] }));
-      renderResults(res.results || []);
+      // Distinguish a service failure (ok:false) from a genuine no-match — otherwise an outage looks
+      // identical to "no such creature" and the user retries a name that was never the problem.
+      if ((res as any).ok === false) {
+        const svc = monsterSrc === "ddb" ? "D&D Beyond" : "Open5e";
+        results.innerHTML = `<div class="cp-note">Couldn't reach the ${svc} monster service — check your connection and try again.</div>`;
+        results.hidden = false; return;
+      }
+      const hits = res.results || [];
+      if (!hits.length) {
+        results.innerHTML = `<div class="cp-note">No creatures match “${esc(q)}”.</div>`;
+        results.hidden = false; return;
+      }
+      renderResults(hits);
     };
     toggle.querySelectorAll<HTMLButtonElement>("button").forEach((b) => {
       b.onclick = () => {
@@ -3005,6 +3036,36 @@ $("whisperToggle").onclick = () => {
   whisperOn = !whisperOn;
   $("whisperToggle").classList.toggle("on", whisperOn);
 };
+function setCritNext(on: boolean) { critNext = on; $("critToggle").classList.toggle("on", on); }
+$("critToggle").onclick = () => setCritNext(!critNext);
+
+// Hold-to-modify: Alt-click any rollable for one-off advantage, Shift-click for disadvantage — without
+// touching the sticky Adv/Dis control. Captured on pointerdown (capture phase, so it runs before the
+// row's own click handler) and cleared after that one gesture's synchronous roll dispatch.
+let clickAdv: AdvMode | null = null;
+document.addEventListener("pointerdown", (e) => {
+  const pe = e as PointerEvent;
+  clickAdv = pe.altKey ? "advantage" : pe.shiftKey ? "disadvantage" : null;
+  if (clickAdv) setTimeout(() => { clickAdv = null; }, 0);
+}, true);
+
+// Keyboard niceties: Cmd/Ctrl+F focuses the sheet's filter box; Escape clears it when it's focused,
+// and otherwise closes the Notebook (parity with the Pokédex's own Escape-to-close).
+document.addEventListener("keydown", (e) => {
+  const ke = e as KeyboardEvent;
+  const search = $("search") as HTMLInputElement | null;
+  if ((ke.metaKey || ke.ctrlKey) && ke.key.toLowerCase() === "f") {
+    if (search && search.offsetParent !== null) { e.preventDefault(); search.focus(); search.select(); }
+    return;
+  }
+  if (ke.key === "Escape") {
+    if (search && search.offsetParent !== null && document.activeElement === search && search.value) {
+      search.value = ""; search.dispatchEvent(new Event("input")); return;
+    }
+    // Don't steal Escape from an open modal (catch/evo/PP/item) — those wire their own handlers.
+    if (!$("notebook").hidden && !document.querySelector(".catch-overlay.open")) setView("character");
+  }
+});
 $("rerollBtn").onclick = () => { if (lastRollRequest) fireRoll(lastRollRequest); };
 document.querySelector("#stabNote .sn-x")?.addEventListener("click", () => showStabNote(null));
 
@@ -3928,11 +3989,24 @@ function renderNbEditor() {
     nbInsertImage(body, r.dataUrl); p.html = body.innerHTML; nbQueueSave();
     setStatus("Captured Roll20 into the note ✓");
   };
-  ($("nbDel") as HTMLElement).onclick = () => {
+  // Delete needs two clicks: the first arms (3s window), the second deletes — so one misclick can't
+  // wipe a campaign page. (A fresh closure per editor render, so the armed state can't leak.)
+  const delBtn = $("nbDel") as HTMLButtonElement;
+  let delArmed = false; let delTimer: ReturnType<typeof setTimeout> | null = null;
+  const disarmDel = () => { delArmed = false; delBtn.classList.remove("arm"); delBtn.title = "Delete this page"; if (delTimer) clearTimeout(delTimer); };
+  delBtn.onclick = () => {
+    if (!delArmed) {
+      delArmed = true; delBtn.classList.add("arm"); delBtn.title = "Click again to delete this page";
+      setStatus("Click 🗑 again to delete this page");
+      delTimer = setTimeout(disarmDel, 3000);
+      return;
+    }
+    disarmDel();
     nbPages = nbPages.filter((x) => x.id !== p.id);
     nbActiveId = nbPages[0]?.id ?? null;
     nbSaveNow();
     renderNbPages(); renderNbEditor();
+    setStatus("Page deleted");
   };
 }
 
@@ -4028,6 +4102,7 @@ function dexPass(p: any): boolean {
   if (st === "seen" && !s) return false; // seen OR caught
   if (st === "unseen" && s) return false;
   if (dexActiveTypes.size && !p.types.some((t: string) => dexActiveTypes.has(t))) return false;
+  if (($("dexSleep") as HTMLInputElement | null)?.checked && !p.sleep) return false; // "has a sleep move" lens
   return true;
 }
 
@@ -4261,6 +4336,10 @@ const BALL_DC: Record<string, { mod: number | "auto" | string; note?: string }> 
   "love-ball": { mod: "cond", note: "situational" },
   "timer-ball": { mod: "cond", note: "scales with rounds elapsed" },
   "fast-ball": { mod: 0, note: "throw as a reaction to a fleeing Pokémon" },
+  "dream-ball": { mod: "cond", note: "−5 vs a Pokémon affected by Sleep" },
+  "heal-ball": { mod: 0, note: "no catch bonus; held Pokémon rerolls a short-rest hit die, keeping the higher" },
+  "luxury-ball": { mod: 0, note: "no catch bonus; held Pokémon gains +1 to max hit dice" },
+  "premier-ball": { mod: 0, note: "no catch bonus; a rare collector's ball" },
 };
 /** Resolve a ball's DC effect for the current trainer (skill balls read the trainer's skill mod).
  *  The `note` strings in BALL_DC are descriptive documentation only — the app posts the ball's NAME
@@ -4389,7 +4468,7 @@ async function openCatch(opts: { species?: any; ballItemId?: string }) {
 
 function renderCatch() {
   const body = document.getElementById("cmBody"); if (!body) return;
-  const balls = bagBalls(), sp = catchCtx.species, ahMod = model?.skills?.["animal-handling"]?.mod, lvl = catchCtx.level || 5;
+  const balls = bagBalls(), sp = catchCtx.species, ahMod = model?.skills?.["animal-handling"]?.mod;
   let h = "";
   if (sp) {
     h += `<div class="cm-head"><div class="cm-art${sp.art ? "" : " noimg"}" data-ini="${esc((sp.name || "?").charAt(0))}">${sp.art ? `<img alt="${esc(sp.name)}" src="${esc(sp.art)}">` : ""}</div>` +
@@ -4402,44 +4481,30 @@ function renderCatch() {
   if (!balls.length) { body.innerHTML = h + `<div class="cm-note">No Poké Balls in your bag.</div>`; wireTarget(); return; }
   if (!catchCtx.ballItemId || !balls.some((b) => b.itemId === catchCtx.ballItemId)) catchCtx.ballItemId = balls[0].itemId;
 
-  h += `<div class="cm-row"><label>Ball</label>` +
-    `<span class="cm-ball-art" aria-hidden="true">${ballSvg(catchCtx.ballItemId, { title: ballName(catchCtx.ballItemId) })}</span>` +
-    `<select id="cmBall">` +
-    balls.map((b) => `<option value="${esc(b.itemId)}"${b.itemId === catchCtx.ballItemId ? " selected" : ""}>${esc(b.name)} ×${b.quantity}</option>`).join("") +
-    `</select><label style="margin-left:auto" title="The caught Pokémon's level (for the poke5e roster entry)">Level</label><input id="cmLvl" type="number" min="1" max="20" value="${lvl}"></div>`;
-
+  // Ball / advantage / level pickers removed for now — Throw uses your first Poké Ball and a straight
+  // Animal Handling check; the GM applies the ball / SR / level DC reduction from the posted ball name.
   if (sp) {
     const eff = ballEffect(catchCtx.ballItemId || "");
-    const other = catchCtx.other || 0;
-    // The Pokéball's effect on the DC is the GM's to apply — it is NOT folded into your roll. You post
-    // a raw Animal Handling check (+ any ad-hoc "other") plus the ball's name; the GM lowers their
-    // hidden DC for the ball / SR / level / target HP.
-    const rollMod = (ahMod ?? 0) + other;
-    const tooHigh = model?.level != null && lvl > model.level;
+    catchCtx.adv = false; catchCtx.other = 0;
+    // Record the catch at the species' minimum level (no level picker now).
+    catchCtx.level = Math.max(1, sp.minLevel ?? catchCtx.level ?? 1);
+    // A species whose minimum level is above your trainer level can't be caught yet — keep that guard
+    // even though the level picker is gone, so we never record an under-min-level roster entry.
+    const tooHigh = model?.level != null && catchCtx.level > model.level;
     const canWrite = activeSource === "poke5e" && writable;
+    const ballLabel = ballName(catchCtx.ballItemId);
 
-    // roll summary — the raw check you post (no DC, no ball math; the GM adjudicates)
-    const mods: string[] = [];
-    if (ahMod != null) mods.push(`Animal Handling ${sgn(ahMod)}`);
-    if (other) mods.push(`other ${sgn(other)}`);
     h += `<div class="cm-mods">${eff.auto
-      ? `<b>${esc(ballName(catchCtx.ballItemId))}: automatic catch</b>`
-      : (ahMod != null ? `Catch roll <b>d20 ${sgn(rollMod)}</b>${catchCtx.adv ? " (advantage)" : ""}` : `Load your trainer to roll Animal Handling`)}` +
-      (!eff.auto && mods.length ? ` <span class="cm-break">${mods.join(" · ")}</span>` : "") + `</div>`;
+      ? `<b>${esc(ballLabel)}: automatic catch</b>`
+      : (ahMod != null ? `Throwing <b>${esc(ballLabel)}</b> · catch roll <b>d20 ${sgn(ahMod)}</b> (Animal Handling)` : `Load your trainer to roll Animal Handling`)}</div>`;
 
     // Skill balls (Safari/Friend/Sport) lower the DC by the trainer's own Nature/Persuasion/Athletics
     // modifier — a sheet value the GM can't see — so surface it here and post it with the throw.
     if (!eff.auto && eff.skill) {
       const skMod = -eff.flat, skName = SKILL_NAMES[eff.skill] || cap(eff.skill);
-      h += `<div class="cm-note">${esc(ballName(catchCtx.ballItemId))}: the GM lowers the catch DC by your <b>${esc(skName)} ${sgn(skMod)}</b> — sent to Roll20 with your throw.</div>`;
+      h += `<div class="cm-note">${esc(ballLabel)}: the GM lowers the catch DC by your <b>${esc(skName)} ${sgn(skMod)}</b> — sent to Roll20 with your throw.</div>`;
     }
-
-    // modifiers the player controls: advantage (the GM tells you if a status grants it) + an ad-hoc bonus
-    if (!eff.auto) {
-      h += `<div class="cm-row"><label class="cm-chk" title="You throw with advantage if the target is poisoned, restrained, asleep, burning, confused, paralyzed, or frozen — the GM will tell you if it applies."><input type="checkbox" id="cmAdv"${catchCtx.adv ? " checked" : ""}> Advantage</label>` +
-        `<label style="margin-left:auto">Other</label><input id="cmOther" type="number" value="${other}"></div>`;
-    }
-    if (tooHigh) h += `<div class="cm-note" style="color:#ff7a6b">Its level (${lvl}) is above your trainer level (${model.level}) — it can't be caught.</div>`;
+    if (tooHigh) h += `<div class="cm-note" style="color:#ff7a6b">Its minimum level (${catchCtx.level}) is above your trainer level (${model!.level}) — it can't be caught yet.</div>`;
 
     if (isTeam(sp.id)) {
       h += `<div class="cm-actions"><span class="dd-caught-badge" style="align-self:center">● Caught · on poke5e</span></div>`;
@@ -4471,15 +4536,7 @@ function wireTarget() {
 }
 
 function wireCatchControls() {
-  const bsel = document.getElementById("cmBall") as HTMLSelectElement | null;
-  if (bsel) bsel.onchange = () => { catchCtx.ballItemId = bsel.value; renderCatch(); };
-  // numeric fields commit on blur/enter (onchange) so typing doesn't lose focus to a re-render
-  const lvl = document.getElementById("cmLvl") as HTMLInputElement | null;
-  if (lvl) lvl.onchange = () => { catchCtx.level = Math.max(1, Number(lvl.value) || 5); renderCatch(); };
-  const adv = document.getElementById("cmAdv") as HTMLInputElement | null;
-  if (adv) adv.onchange = () => { catchCtx.adv = adv.checked; renderCatch(); };
-  const other = document.getElementById("cmOther") as HTMLInputElement | null;
-  if (other) other.onchange = () => { catchCtx.other = Number(other.value) || 0; renderCatch(); };
+  // Ball / advantage / level pickers removed for now — only Throw + record actions remain.
   const th = document.getElementById("cmThrow"); if (th) th.onclick = doThrow;
   const noRoll = document.getElementById("cmAddNoRoll"); if (noRoll) noRoll.onclick = () => { const sp = catchCtx.species; if (sp) recordCatch(sp); };
 }
@@ -4583,7 +4640,7 @@ async function addTeam() {
 // wiring (the Pokédex tab lives in #paneSeg — handled by that seg's click listener)
 ["dexQ"].forEach((id) => { const e = document.getElementById(id); if (e) (e as HTMLInputElement).oninput = renderDexList; });
 ["dexRegion", "dexSR", "dexState"].forEach((id) => { const e = document.getElementById(id); if (e) (e as HTMLSelectElement).onchange = renderDexList; });
-{ const e = document.getElementById("dexFakemon"); if (e) (e as HTMLInputElement).onchange = renderDexList; }
+["dexFakemon", "dexSleep"].forEach((id) => { const e = document.getElementById(id); if (e) (e as HTMLInputElement).onchange = renderDexList; });
 
 // The Poké Ball button opens the dex popup over whatever you're looking at (it doesn't change tabs).
 $("dexBtn").onclick = () => setView("pokedex");

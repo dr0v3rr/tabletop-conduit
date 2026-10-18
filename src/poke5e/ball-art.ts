@@ -5,7 +5,7 @@
 
 export type BallMark =
   | "arcs" | "H" | "M" | "stripes" | "dots" | "ring" | "web"
-  | "wave" | "corners" | "crescent" | "leaf" | "bolt" | "eye" | "heart";
+  | "wave" | "corners" | "crescent" | "leaf" | "bolt" | "eye" | "heart" | "cross" | "zee";
 
 export interface BallArt {
   /** colour of the upper hemisphere */
@@ -38,6 +38,10 @@ export const BALL_ART: Record<string, BallArt> = {
   "love-ball":   { top: "#ec6fae", mark: "heart",    mc: "#ffffff" },
   "timer-ball":  { top: "#dfe3ea", mark: "stripes",  mc: "#e3350d" },
   "fast-ball":   { top: "#f2c200", mark: "bolt",     mc: "#e23b16" },
+  "premier-ball":{ top: "#f4f5f7", mark: "ring",     mc: "#e3350d" },
+  "luxury-ball": { top: "#15171f", mark: "ring",     mc: "#e8c14a" },
+  "heal-ball":   { top: "#f2a7c3", mark: "cross",    mc: "#ffffff" },
+  "dream-ball":  { top: "#b06fd6", mark: "zee",      mc: "#ffe08a" },
 };
 
 const FALLBACK: BallArt = { top: "#e3350d" }; // unknown ball id → a plain Poké Ball
@@ -77,6 +81,8 @@ function markSvg(kind: BallMark | undefined, mc: string, top: string): string {
     case "bolt":     return `<path fill="${mc}" d="M57 13 L33 38 L47 38 L43 49 L69 23 L54 23 Z"/>`;
     case "eye":      return `<ellipse cx="50" cy="29" rx="14" ry="8.5" fill="${mc}"/><circle cx="50" cy="29" r="3.6" fill="#141417"/>`;
     case "heart":    return `<path fill="${mc}" d="M50 43 C33 31 34 15 46 17 C49.5 17.4 50 21 50 23 C50 21 50.5 17.4 54 17 C66 15 67 31 50 43 Z"/>`;
+    case "cross":    return `<g fill="${mc}"><rect x="46" y="16" width="8" height="26" rx="1.5"/><rect x="37" y="25" width="26" height="8" rx="1.5"/></g>`;
+    case "zee":      return `<path fill="none" stroke="${mc}" stroke-width="5" stroke-linejoin="round" stroke-linecap="round" d="M39 20 H61 L39 40 H61"/>`;
     default:         return "";
   }
 }

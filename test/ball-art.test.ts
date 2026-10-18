@@ -8,6 +8,7 @@ const BALL_DC_IDS = [
   "poke-ball", "great-ball", "ultra-ball", "master-ball", "safari-ball", "friend-ball",
   "sport-ball", "net-ball", "dive-ball", "heavy-ball", "repeat-ball", "moon-ball", "lure-ball",
   "level-ball", "nest-ball", "quick-ball", "dusk-ball", "love-ball", "timer-ball", "fast-ball",
+  "dream-ball", "heal-ball", "luxury-ball", "premier-ball",
 ];
 
 describe("ball-art", () => {
@@ -35,8 +36,8 @@ describe("ball-art", () => {
   });
 
   it("falls back to a plain Poké Ball for an unknown id, still valid svg", () => {
-    const svg = ballSvg("premier-ball");
-    expect(hasBallArt("premier-ball")).toBe(false);
+    const svg = ballSvg("beast-ball"); // a real-world ball poke5e doesn't define → genuinely unknown
+    expect(hasBallArt("beast-ball")).toBe(false);
     expect(svg.startsWith("<svg")).toBe(true);
     expect(svg).toContain(`fill="${BALL_ART["poke-ball"]!.top}"`); // red top like a Poké Ball
     expect(svg).toContain(`id="bc_fallback"`); // fallback keeps its own def ids

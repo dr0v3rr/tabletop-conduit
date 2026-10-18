@@ -97,6 +97,7 @@
             <input id="adhocMod" type="number" value="0" step="1" aria-label="One-off modifier for the next roll" />
             <button id="modUp" type="button" class="ex-step" title="+1 to the next roll">+</button>
           </label>
+          <button id="critToggle" type="button" class="ex-toggle" title="Crit: roll your NEXT attack's damage as a critical hit (double the damage dice). Clears after one roll.">💥 Crit</button>
           <button id="whisperToggle" type="button" class="ex-toggle" title="Whisper rolls to the GM only">🔒 Whisper</button>
           <button id="rerollBtn" type="button" class="ex-toggle" title="Roll the last thing again" disabled>↻ Reroll</button>
           <button type="button" class="ex-toggle init-btn" data-kind="initiative" title="Roll initiative into Roll20">⚡ Init <span class="mod" id="initMod"></span></button>
@@ -250,6 +251,7 @@
           <option value="">All</option><option value="caught">Caught</option><option value="seen">Seen</option><option value="unseen">Unseen</option>
         </select>
         <label class="dex-chk" title="Include community-made (unofficial) species"><input type="checkbox" id="dexFakemon" /> Show fakémon</label>
+        <label class="dex-chk" title="Only species that learn a sleep move (Sing, Spore, Hypnosis, Yawn…) — pairs with the Dream Ball"><input type="checkbox" id="dexSleep" /> 💤 Sleep move</label>
         <div class="dex-tchips" id="dexTypes"></div>
       </div>
       <div class="dex-body">

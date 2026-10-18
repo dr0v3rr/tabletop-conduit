@@ -1,7 +1,7 @@
 // Electron main. One window with a splash chooser + a left sheet-UI view and two right-hand panes
 // (the VTT — Roll20 — and the character source's site). Character sources: D&D Beyond, poke5e,
 // and Open5e/DDB monsters. The engine runs here in main; the renderer is a thin client over IPC.
-import { app, BaseWindow, BrowserWindow, WebContentsView, ipcMain, dialog, session, clipboard, net, Notification, shell, Menu } from "electron";
+import { app, BaseWindow, BrowserWindow, WebContentsView, ipcMain, dialog, session, clipboard, net, Notification, shell, Menu, screen } from "electron";
 import type { MenuItemConstructorOptions } from "electron";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve, relative, isAbsolute } from "node:path";
@@ -51,6 +51,8 @@ let updateSkip: string | null = null;
 // The last Roll20 page the user was on, PERSISTED so a restart reopens that game/editor instead of the
 // Roll20 home. (The login itself is kept by the persistent cookie store; this only restores WHICH page.)
 let lastRoll20Url: string | null = null;
+// Remembered window bounds so the app reopens at the size/position you left it (not the 1500×950 default).
+let winBounds: { x: number; y: number; width: number; height: number } | null = null;
 const ROLL20_HOME = "https://app.roll20.net/campaigns/"; // logged-in "My Games" dashboard (default landing)
 /** A Roll20 URL worth reopening next launch: an app.roll20.net page that isn't the login flow.
  *  The /sessions exclusion is anchored to the host ROOT so it only drops the login pages
@@ -81,6 +83,7 @@ async function loadStore() {
     }
     if (typeof data.updateSkip === "string") updateSkip = data.updateSkip;
     if (typeof data.lastRoll20Url === "string" && isRestorableRoll20(data.lastRoll20Url)) lastRoll20Url = data.lastRoll20Url;
+    if (data.winBounds && ["x", "y", "width", "height"].every((k) => typeof data.winBounds[k] === "number")) winBounds = data.winBounds;
     for (const id of data.pokeHidden ?? []) pokeHidden.add(String(id));
     for (const [id, v] of Object.entries(data.evoAsi ?? {})) {
       if (v && typeof v === "object" && (v as any).toSpecies) evoAsi.set(String(id), v as any);
@@ -110,7 +113,7 @@ function saveStoreSoon() {
   saveTimer = setTimeout(async () => {
     saveTimer = null;
     try {
-      await writeFile(storePath(), JSON.stringify({ records: [...sessionLog.values()], actions: actionLog, campaigns: Object.fromEntries(campaignNames), poke5e: detectedPoke5e, pokedex: Object.fromEntries(pokedexCollection), updateSkip, lastRoll20Url, pokeHidden: [...pokeHidden], evoAsi: Object.fromEntries(evoAsi) }), "utf8");
+      await writeFile(storePath(), JSON.stringify({ records: [...sessionLog.values()], actions: actionLog, campaigns: Object.fromEntries(campaignNames), poke5e: detectedPoke5e, pokedex: Object.fromEntries(pokedexCollection), updateSkip, lastRoll20Url, winBounds, pokeHidden: [...pokeHidden], evoAsi: Object.fromEntries(evoAsi) }), "utf8");
     } catch {
       /* best-effort */
     }
@@ -601,7 +604,27 @@ function hardenView(view: WebContentsView, opts: { externalLinks?: boolean; lock
 }
 
 function createWindow() {
-  win = new BaseWindow({ width: 1500, height: 950, title: `Conduit v${app.getVersion()}` });
+  // Reopen at the last size/position when it still lands on a connected display (a disconnected monitor
+  // would otherwise strand the window off-screen); otherwise the default, centered. Enforce a floor so
+  // the right pane can't be squeezed to nothing.
+  const onScreen = (b: { x: number; y: number; width: number; height: number }) => {
+    try {
+      return screen.getAllDisplays().some((d) => {
+        const a = d.workArea;
+        return b.x < a.x + a.width && b.x + b.width > a.x && b.y < a.y + a.height && b.y + b.height > a.y;
+      });
+    } catch { return false; }
+  };
+  const restored = winBounds && onScreen(winBounds) ? winBounds : null;
+  win = new BaseWindow({
+    ...(restored ?? { width: 1500, height: 950 }),
+    minWidth: 900, minHeight: 600,
+    title: `Conduit v${app.getVersion()}`,
+  });
+  // Remember size/position as the user changes it (debounced through saveStoreSoon).
+  const rememberBounds = () => { try { if (!win.isMinimized()) { winBounds = win.getBounds(); saveStoreSoon(); } } catch { /* ignore */ } };
+  win.on("resize", rememberBounds);
+  win.on("move", rememberBounds);
   // Packaged builds carry the Conduit icon via electron-builder; an unpackaged `electron .` run shows
   // the default Electron icon, so set the dock icon by hand in dev (macOS) from build/icon.png.
   if (!app.isPackaged && process.platform === "darwin") {
@@ -2345,6 +2368,17 @@ function installGlobalHardening() {
 // unsigned, and silent replacement would just re-trigger SmartScreen/Gatekeeper) — "Download" opens
 // the release page so the user installs deliberately.
 const GH_LATEST_RELEASE = "https://api.github.com/repos/dr0v3rr/tabletop-conduit/releases/latest";
+/** A short, plain-text excerpt of a release's notes for the update dialog (strips HTML, caps length).
+ *  electron-updater may hand us a ReleaseNoteInfo[] ({version, note}) rather than a string. */
+function trimReleaseNotes(raw: unknown): string {
+  const text = Array.isArray(raw)
+    ? raw.map((n: any) => (n && typeof n === "object" ? String(n.note ?? "") : String(n))).join("\n\n")
+    : String(raw ?? "");
+  const s = text.replace(/<[^>]+>/g, " ").replace(/\r/g, "").replace(/[ \t]+\n/g, "\n").trim();
+  if (!s) return "";
+  const clipped = s.length > 700 ? s.slice(0, 700).replace(/\s+\S*$/, "") + "…" : s;
+  return `\n\n— What's new —\n${clipped}`;
+}
 async function checkForUpdate(manual = false): Promise<void> {
   try {
     const res = await fetch(GH_LATEST_RELEASE, { headers: { "User-Agent": "Conduit-update-check", Accept: "application/vnd.github+json" } });
@@ -2362,7 +2396,7 @@ async function checkForUpdate(manual = false): Promise<void> {
       type: "info",
       title: "Update available",
       message: `Conduit v${latest} is available`,
-      detail: `You're running v${current}. Download the new version from GitHub?`,
+      detail: `You're running v${current}. Download the new version from GitHub?` + trimReleaseNotes(rel.body),
       buttons: ["Download", "Later", "Skip this version"],
       defaultId: 0,
       cancelId: 1,
@@ -2391,21 +2425,24 @@ function autoUpdate(manual = false): void {
       if (!manual && updateSkip === info.version) return;
       const { response } = await dialog.showMessageBox(win, {
         type: "info", title: "Update available", message: `Conduit v${info.version} is available`,
-        detail: `You're running v${app.getVersion()}. Download it now? Conduit will offer to restart when it's ready.`,
+        detail: `You're running v${app.getVersion()}. Download it now? Conduit will offer to restart when it's ready.` + trimReleaseNotes((info as any).releaseNotes),
         buttons: ["Download", "Later", "Skip this version"], defaultId: 0, cancelId: 1,
       });
       if (response === 0) autoUpdater.downloadUpdate();
       else if (response === 2) { updateSkip = info.version; saveStoreSoon(); }
     });
+    // Surface download progress in the window title (unintrusive; restored when the download finishes).
+    autoUpdater.on("download-progress", (p) => { try { win.setTitle(`Conduit — downloading update ${Math.round(p.percent)}%`); } catch { /* title cosmetic */ } });
     autoUpdater.on("update-not-available", () => { if (manual) dialog.showMessageBox(win, { type: "info", message: "You're up to date", detail: `Conduit v${app.getVersion()} is the latest release.` }); });
     autoUpdater.on("update-downloaded", async (info) => {
+      try { win.setTitle(`Conduit v${app.getVersion()}`); } catch { /* restore title after progress */ }
       const { response } = await dialog.showMessageBox(win, {
         type: "info", title: "Update ready", message: `Conduit v${info.version} downloaded`,
         detail: "Restart now to finish installing?", buttons: ["Restart now", "Later"], defaultId: 0, cancelId: 1,
       });
       if (response === 0) autoUpdater.quitAndInstall();
     });
-    autoUpdater.on("error", () => { void checkForUpdate(manual); }); // no feed yet / offline → notifier fallback
+    autoUpdater.on("error", () => { try { win.setTitle(`Conduit v${app.getVersion()}`); } catch { /* restore title if a download errored mid-way */ } void checkForUpdate(manual); }); // no feed yet / offline → notifier fallback
   }
   autoUpdater.checkForUpdates().catch(() => checkForUpdate(manual));
 }

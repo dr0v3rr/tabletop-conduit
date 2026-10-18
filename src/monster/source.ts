@@ -133,19 +133,35 @@ export function monsterToCharacter(m: any): {
     conditional: [],
   };
 
-  // Actions with an attack roll + damage become rollable "weapons".
+  // Actions with an attack roll + damage become rollable "weapons"; save-based damage actions (a
+  // dragon's breath weapon, etc.) have no to-hit but carry "DC N <Ability> saving throw … (XdY)
+  // <type> damage" in their description — parse those too so they aren't silently dropped.
+  const SAVE_RX = /DC\s*(\d+)\s+(Strength|Dexterity|Constitution|Intelligence|Wisdom|Charisma)\s+saving throw/i;
+  const DICE_RX = /(\d+d\d+)(?:\s*([+-])\s*(\d+))?/;
+  const SV_ABIL: Record<string, Ability> = { strength: "STR", dexterity: "DEX", constitution: "CON", intelligence: "INT", wisdom: "WIS", charisma: "CHA" };
   const weapons: MonsterWeapon[] = [];
   for (const a of (m.actions ?? []) as any[]) {
-    if (a.attack_bonus == null || !a.damage_dice) continue;
-    const dtype = DAMAGE_TYPE_RX.exec(a.desc || "")?.[1]?.toLowerCase();
-    weapons.push({
-      name: a.name,
-      attackMod: Number(a.attack_bonus) || 0,
-      damageDice: String(a.damage_dice),
-      damageMod: Number(a.damage_bonus) || 0,
-      damageType: dtype,
-      proficient: true,
-    });
+    const desc = String(a.desc || "");
+    const dtype = DAMAGE_TYPE_RX.exec(desc)?.[1]?.toLowerCase();
+    if (a.attack_bonus != null && a.damage_dice) {
+      weapons.push({ name: a.name, attackMod: Number(a.attack_bonus) || 0, damageDice: String(a.damage_dice), damageMod: Number(a.damage_bonus) || 0, damageType: dtype, proficient: true });
+      continue;
+    }
+    const sv = SAVE_RX.exec(desc);
+    if (!sv) continue;
+    const ability = SV_ABIL[String(sv[2] ?? "").toLowerCase()];
+    // Dice + optional flat: prefer Open5e's structured damage_dice; else parse the prose, but only a
+    // dice expression tied to "damage" (so a duration like "stunned for 1d4 rounds" isn't mistaken for
+    // damage and turned into a bogus weapon).
+    const dm = a.damage_dice
+      ? String(a.damage_dice).match(/(\d+d\d+)(?:\s*([+-])\s*(\d+))?/)
+      : desc.match(/(\d+d\d+)(?:\s*([+-])\s*(\d+))?\s*\)?\s*[a-z]*\s*damage/i);
+    const dice = dm?.[1];
+    if (!ability || !dice) continue; // a save action with no damage dice (e.g. a stun) isn't a rollable weapon
+    let mod = 0;
+    if (a.damage_bonus != null) mod = Number(a.damage_bonus) || 0;
+    else if (dm[2] && dm[3]) mod = (dm[2] === "-" ? -1 : 1) * Number(dm[3]);
+    weapons.push({ name: a.name, attackMod: 0, damageDice: dice, damageMod: mod, damageType: dtype, proficient: false, save: { dc: Number(sv[1]), ability } });
   }
 
   return { model, hp: { current: maxHp, max: maxHp, temp: 0, removed: 0 }, weapons };

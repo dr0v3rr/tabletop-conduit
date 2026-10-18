@@ -146,6 +146,19 @@ export function ddbMonsterToCharacter(m: any): {
 
   const passive = (k: SkillKey) => 10 + skills[k].mod;
   const maxHp = Number(m.averageHitPoints) || 0;
+
+  // Movement: DDB gives `movements` as [{movementId, speed}] (1=Walk,2=Burrow,3=Climb,4=Fly,5=Swim).
+  // Map to the `-ing` type names the sheet's speed chip expects; walking drives the single `speed`.
+  // Falls back to 30 with no extra modes when the data is absent, so this never regresses.
+  const DDB_MOVE: Record<number, string> = { 1: "walking", 2: "burrowing", 3: "climbing", 4: "flying", 5: "swimming" };
+  let walkSpeed = 30;
+  const speeds: { type: string; value: number }[] = [];
+  for (const mv of (m.movements ?? []) as any[]) {
+    const type = DDB_MOVE[Number(mv?.movementId)] || (typeof mv?.name === "string" ? mv.name.toLowerCase() : "");
+    const value = Number(mv?.speed);
+    if (type && Number.isFinite(value)) { speeds.push({ type, value }); if (type === "walking") walkSpeed = value; }
+  }
+
   const model: RollModel = {
     name: m.name || "Monster",
     level: 1,
@@ -155,7 +168,8 @@ export function ddbMonsterToCharacter(m: any): {
     skills,
     passives: { perception: passive("perception"), investigation: passive("investigation"), insight: passive("insight") },
     initiative: abilities.DEX.mod,
-    speed: 30,
+    speed: walkSpeed,
+    speeds: speeds.length ? speeds : undefined,
     conditional: [],
   };
 
