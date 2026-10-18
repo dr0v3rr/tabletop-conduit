@@ -2108,6 +2108,25 @@ ipcMain.handle("r20-turn-top", async () => {
   }
 });
 
+// The current Roll20 player's display name — lets the renderer pick its OWN rolls out of the shared chat.
+ipcMain.handle("r20-me", async () => {
+  try {
+    return await roll20View.webContents.executeJavaScript(r20TokenExpr("me"), true);
+  } catch (err) {
+    return { ok: false, name: "" };
+  }
+});
+
+// Add/update an entry in Roll20's initiative tracker (used by the sheet's initiative roll). `id` is the
+// bound token's id or null (→ a custom-label row); `pr` is the rolled initiative total.
+ipcMain.handle("r20-turn-add", async (_e, id: string | null, label: string, pr: number) => {
+  try {
+    return await roll20View.webContents.executeJavaScript(r20TokenExpr("turnAdd", id ?? null, String(label ?? ""), Number(pr)), true);
+  } catch (err) {
+    return { ok: false, reason: String(err) };
+  }
+});
+
 /** Show an OS notification (e.g. "your turn"). */
 ipcMain.handle("notify", (_e, title: string, body: string) => {
   try {

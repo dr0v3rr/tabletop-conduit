@@ -203,6 +203,17 @@ window.__r20Token = (function () {
     inGame: function () {
       return !!(window.Campaign && window.Campaign.activePage && window.Campaign.activePage());
     },
+    // The current Roll20 player's display name — used to pick OUR OWN rolls out of the shared chat when
+    // reading a result back (several people can roll in the same window; the chat 'by' name is the only
+    // signal that separates ours from theirs). Empty when it can't be resolved (caller falls back).
+    me: function () {
+      try {
+        var p = window.currentPlayer;
+        if (!p) return { ok: false, name: '' };
+        var nm = (p.get && p.get('displayname')) || p._displayname || (p.attributes && p.attributes.displayname) || '';
+        return { ok: true, name: String(nm || '').replace(/\s*\(GM\)\s*$/i, '').trim() };
+      } catch (e) { return { ok: false, name: '' }; }
+    },
     // The token id at the TOP of the turn order (whose turn it is), or null.
     turnTop: function () {
       try {
@@ -213,11 +224,41 @@ window.__r20Token = (function () {
         return { id: arr[0].id, pr: arr[0].pr, count: arr.length };
       } catch (e) { return null; }
     },
+    // Add (or update) an entry in Roll20's initiative tracker. When id is a token id we attach the
+    // roll to that token (updating its existing turn if present); otherwise we add a custom-label row
+    // (id:-1, custom:label) so a trainer/Pokemon with no bound token still lands in the order. pr is
+    // the rolled initiative total. Writing Campaign.turnorder is a shared, player-allowed operation
+    // (it is how the initiative tracker works), so no per-token control check is needed here.
+    turnAdd: function (id, label, pr) {
+      try {
+        if (!(window.Campaign && window.Campaign.get && window.Campaign.set)) return { ok: false, reason: 'no-campaign' };
+        var raw = window.Campaign.get('turnorder');
+        var arr = [];
+        if (raw) { try { arr = JSON.parse(raw) || []; } catch (e) { arr = []; } }
+        if (!Array.isArray(arr)) arr = [];
+        var prStr = String(pr);
+        var mode;
+        if (id) {
+          var hit = null;
+          for (var i = 0; i < arr.length; i++) { if (String(arr[i] && arr[i].id) === String(id)) { hit = arr[i]; break; } }
+          if (hit) { hit.pr = prStr; mode = 'updated'; }
+          else { arr.push({ id: String(id), pr: prStr, custom: '' }); mode = 'token'; }
+        } else {
+          var lab = String(label || 'Initiative');
+          var chit = null;
+          for (var j = 0; j < arr.length; j++) { if (String(arr[j] && arr[j].id) === '-1' && String(arr[j].custom || '') === lab) { chit = arr[j]; break; } }
+          if (chit) { chit.pr = prStr; mode = 'updated'; }
+          else { arr.push({ id: '-1', pr: prStr, custom: lab }); mode = 'custom'; }
+        }
+        window.Campaign.set('turnorder', JSON.stringify(arr));
+        return { ok: true, mode: mode, count: arr.length };
+      } catch (e) { return { ok: false, reason: String(e) }; }
+    },
   };
 })();
 `;
 
-export function r20TokenExpr(method: "find" | "setHp" | "setHpById" | "selected" | "list" | "inGame" | "turnTop" | "renameById", ...args: (string | number | null)[]): string {
+export function r20TokenExpr(method: "find" | "setHp" | "setHpById" | "selected" | "list" | "inGame" | "turnTop" | "turnAdd" | "me" | "renameById", ...args: (string | number | null)[]): string {
   const a = args.map((x) => JSON.stringify(x)).join(", ");
   return `(function(){ ${ROLL20_TOKEN_SRC}\n return window.__r20Token.${method}(${a}); })()`;
 }

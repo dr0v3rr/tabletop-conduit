@@ -72,6 +72,8 @@ contextBridge.exposeInMainWorld("api", {
   poke5eDeleteTrainer: () => ipcRenderer.invoke("poke5e-delete-trainer"),
   roll20SheetStyle: () => ipcRenderer.invoke("roll20-sheet-style"),
   r20TurnTop: () => ipcRenderer.invoke("r20-turn-top"),
+  r20TurnAdd: (id: string | null, label: string, pr: number) => ipcRenderer.invoke("r20-turn-add", id, label, pr),
+  r20Me: () => ipcRenderer.invoke("r20-me"),
   notify: (title: string, body: string) => ipcRenderer.invoke("notify", title, body),
   // Session log & statistics
   sessionSync: () => ipcRenderer.invoke("session-sync"),

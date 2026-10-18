@@ -96,6 +96,8 @@ declare global {
       poke5eHiddenSet(id: string, hidden: boolean): Promise<{ ok: boolean }>;
       roll20SheetStyle(): Promise<{ style: "sheet" | "default" }>;
       r20TurnTop(): Promise<{ id: string; pr: any; count: number } | null>;
+      r20TurnAdd(id: string | null, label: string, pr: number): Promise<{ ok: boolean; mode?: string; count?: number; reason?: string }>;
+      r20Me(): Promise<{ ok: boolean; name?: string }>;
       notify(title: string, body: string): Promise<{ ok: boolean }>;
       sessionSync(): Promise<{ records: any[]; stats: any; actions: any[]; currentCampaign?: string | null; campaigns?: Record<string, string> }>;
       sessionDeepSync(): Promise<{ records: any[]; stats: any; actions: any[]; currentCampaign?: string | null; campaigns?: Record<string, string> }>;
@@ -152,6 +154,7 @@ let adv: AdvMode = "normal";
 let whisperOn = false; // roll privately to the GM
 let adhocMod = 0; // ad-hoc situational modifier on the next d20 roll(s)
 let critNext = false; // one-shot: roll the next ATTACK's damage as a crit (doubles the damage dice)
+let myR20Player: string | null = null; // our Roll20 display name (null = not yet fetched), to match our own rolls
 let lastRollRequest: any = null; // for the Reroll button
 let templateStyle: "sheet" | "default" = "default"; // 'sheet' → prettier D&D-5e cards when the game has that sheet
 let activeSource: "ddb" | "poke5e" | "monster" = "ddb"; // which character-sheet source the splash selected
@@ -2447,7 +2450,12 @@ async function sendRoll(request: any) {
   const inj = res.injected;
   const landed = inj?.ok ? "✓ sent to Roll20" : `⚠ ${inj?.error || "not sent — open a Roll20 game"}`;
   lr.innerHTML = `<b>${landed}</b> &nbsp; <code>${(res.command || "").replace(/</g, "&lt;")}</code>`;
-  if (inj?.ok) pollRollResult(beforeIds, req.name); // read the total back and show it
+  // For an initiative roll, once the result lands we also add it to Roll20's turn order automatically —
+  // using the bound token when there is one, else a name-labelled custom row.
+  const initCtx = request.kind === "initiative"
+    ? { token: boundToken?.id ?? null, label: model?.name || "Initiative" }
+    : null;
+  if (inj?.ok) pollRollResult(beforeIds, req.name, initCtx); // read the total back and show it
 }
 
 // After a roll lands, poll the chat for OUR new result and surface the total (with crit/fumble). The
@@ -2455,21 +2463,43 @@ async function sendRoll(request: any) {
 // rolls), so matching on it silently failed for most rolls. Instead take the newest record that's NEW
 // since we snapshotted (almost always ours), preferring one that matches our character or this roll's
 // name when several land in the same window.
-async function pollRollResult(beforeIds: Set<string>, rollName?: string) {
+async function pollRollResult(beforeIds: Set<string>, rollName?: string, initCtx?: { token: string | null; label: string } | null) {
   const myName = (model?.name || "").toLowerCase();
   const want = String(rollName || "").toLowerCase();
+  // Resolve our Roll20 display name once so we can pick OUR OWN rolls out of the shared chat — several
+  // people can roll in the same window, and for poke5e/default rolls the scraper leaves `character`
+  // null, so the chat 'by' name is the only reliable signal. Critical for the initiative→turn-order
+  // write, which must never post someone else's number into the shared tracker.
+  if (myR20Player === null) { const m = await window.api.r20Me().catch(() => null); myR20Player = m?.ok ? (m.name || "") : ""; }
   for (let i = 0; i < 6; i++) {
     await new Promise((r) => setTimeout(r, 500));
     const recs = await window.api.roll20Scrape().catch(() => []);
     const fresh = recs.filter((r: any) => !beforeIds.has(r.id));
     if (fresh.length) {
+      // Narrow to OUR rolls first (by player), then disambiguate within those by character/roll-name.
+      const mine = myR20Player ? fresh.filter((r: any) => String(r.player || "") === myR20Player) : [];
+      const pool = mine.length ? mine : fresh;
       const match =
-        (myName && fresh.find((r: any) => String(r.character || "").toLowerCase() === myName)) ||
-        (want && fresh.find((r: any) => String(r.name || "").toLowerCase() === want)) ||
-        fresh[fresh.length - 1]; // newest new record
-      showRollResult(match); return;
+        (myName && pool.find((r: any) => String(r.character || "").toLowerCase() === myName)) ||
+        (want && pool.find((r: any) => String(r.name || "").toLowerCase() === want)) ||
+        pool[pool.length - 1]; // newest in the pool
+      showRollResult(match);
+      if (initCtx) {
+        if (typeof match?.total === "number") await addInitiativeToTurnOrder(initCtx, match.total);
+        else setStatus("Rolled initiative — the result wasn't a number, so it wasn't added to the turn order", true);
+      }
+      return;
     }
   }
+  // Rolled, but the result never landed in the chat scrape (e.g. nothing captured) — can't add a value.
+  if (initCtx) setStatus("Rolled initiative — couldn't read the result to add it to the turn order", true);
+}
+
+/** Push a rolled initiative into Roll20's turn order: the bound token's turn if any, else a named row. */
+async function addInitiativeToTurnOrder(ctx: { token: string | null; label: string }, total: number) {
+  const r = await window.api.r20TurnAdd(ctx.token, ctx.label, total).catch(() => null);
+  if (r?.ok) setStatus(`Added to the turn order — initiative ${total}${ctx.token ? "" : ` (${ctx.label})`}`);
+  else setStatus(`Rolled initiative ${total} — couldn't add to the turn order${r?.reason ? ` (${r.reason})` : ""}`, true);
 }
 
 function showRollResult(r: any) {
