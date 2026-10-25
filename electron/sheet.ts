@@ -504,10 +504,6 @@ function applyCharacter(res: any, ref: string) {
   if (res.readKey) { addPoke5eKey(res.readKey); poke5eTrainerKey = res.readKey; } // remember trainer + track the active one
   buildRosterFrom(res, ref);
   ($("sheet") as HTMLElement).hidden = false;
-  // Rest buttons are poke5e-only (DDB sheets use the dedicated Rests section with Hit Dice + slots).
-  const isPoke = activeSource === "poke5e";
-  ($("longRestBtn") as HTMLElement).hidden = !isPoke;
-  ($("shortRestBtn") as HTMLElement).hidden = !isPoke;
   populateDamageTypes(); // poke5e → 18 Pokémon types; DDB/monster → 5e damage types
   render();
   refreshToggles();
@@ -531,10 +527,10 @@ type DdbState = "checking" | "synced" | "signedin" | "signin";
 function setDdbStatus(state: DdbState) {
   const el = $("ddbStatus");
   const text: Record<DdbState, string> = {
-    checking: "DDB: checking…",
-    synced: "DDB: synced ✓",
-    signedin: "DDB: signed in ✓",
-    signin: "DDB: sign in ↗",
+    checking: "DDB checking…",
+    synced: "DDB synced ✓",
+    signedin: "DDB signed in ✓",
+    signin: "DDB sign in ↗",
   };
   el.textContent = text[state];
   el.className = "ddb-status " + (state === "synced" || state === "signedin" ? "ok" : state === "signin" ? "off" : "");
@@ -597,11 +593,17 @@ function scheduleDdbRecheck() {
   );
 }
 
+// Status messages show as a toast at the bottom of the sheet and fade on their own (errors linger
+// longer). Click to dismiss early. Replaces the old always-visible status row under the loader.
+let statusTimer: ReturnType<typeof setTimeout> | null = null;
 function setStatus(msg: string, err = false) {
   const s = $("status");
   s.textContent = msg;
-  s.className = "status" + (err ? " err" : "");
+  s.className = "status" + (err ? " err" : "") + (msg ? " show" : "");
+  if (statusTimer) clearTimeout(statusTimer);
+  statusTimer = msg ? setTimeout(() => s.classList.remove("show"), err ? 8000 : 4500) : null;
 }
+$("status").onclick = () => $("status").classList.remove("show");
 
 // A prominent, self-dismissing banner for reminders that shouldn't get lost in the muted status line
 // (e.g. the once-per-target STAB note on a multi-attack move). Pass null to clear it.
@@ -806,6 +808,7 @@ function render() {
   renderSpells();
   renderInventory();
   renderHitDice();
+  renderRestControl();
   renderFeats();
   applyFilter();
 }
@@ -1109,12 +1112,12 @@ function showBindPicker(tokens: { id: string; name: string; charName?: string | 
   // must be re-pinned to the button whenever the sheet scrolls or the window resizes — otherwise it
   // stays put in the viewport while the button scrolls away.
   const reposition = () => {
-    const rr = ($("bindToken") as HTMLElement).getBoundingClientRect();
+    const rr = ($("moreBtn") as HTMLElement).getBoundingClientRect();
     menu.style.left = Math.min(rr.left, window.innerWidth - 260) + "px";
     menu.style.top = rr.bottom + 4 + "px";
   };
   const onOutside = (e: MouseEvent) => {
-    if (!(e.target as HTMLElement).closest("#bindPicker") && (e.target as HTMLElement).id !== "bindToken") cleanup();
+    if (!(e.target as HTMLElement).closest("#bindPicker") && !(e.target as HTMLElement).closest("#bindToken, #moreBtn")) cleanup();
   };
   const cleanup = () => {
     menu.hidden = true;
@@ -1145,8 +1148,8 @@ function showBindPicker(tokens: { id: string; name: string; charName?: string | 
 
 function renderBindToken() {
   const b = $("bindToken") as HTMLButtonElement;
-  if (boundToken) { b.textContent = `⚔ ${boundToken.name} ✕`; b.classList.add("on"); b.title = "Unbind — stop driving this token"; }
-  else { b.textContent = "⚔ Bind token"; b.classList.remove("on"); b.title = "Bind HP to the token you've selected on Roll20"; }
+  if (boundToken) { b.textContent = `⚔ Unbind “${boundToken.name}”`; b.classList.add("on"); b.title = "Stop driving this token's HP"; }
+  else { b.textContent = "⚔ Bind HP to a token…"; b.classList.remove("on"); b.title = "Bind HP to a specific Roll20 token — so multiple same-named NPCs track separately"; }
 }
 
 // poke5e is the source of truth for character names. When a poke5e Pokémon is bound to a Roll20
@@ -1394,6 +1397,18 @@ function promptConcentration(dmgTaken: number) {
   doRoll({ kind: "save", key: "CON" }); // one-click: post the CON save
 }
 
+// One Rest menu for every source. poke5e has its own rest rules (HP/PP/status); D&D Beyond and
+// monsters spend Hit Dice and restore slots. Hidden when there's nothing a rest would change.
+function renderRestControl() {
+  const isPoke = activeSource === "poke5e";
+  const pools = hitDice?.pools ?? [];
+  ($("shortRestBtn") as HTMLElement).hidden = !isPoke;
+  ($("longRestBtn") as HTMLElement).hidden = !isPoke;
+  ($("shortRest") as HTMLElement).hidden = isPoke || !pools.length;
+  ($("longRest") as HTMLElement).hidden = isPoke;
+  ($("restWrap") as HTMLElement).hidden = !(isPoke || pools.length || spellSlots.length);
+}
+
 function renderHitDice() {
   const sec = sectionEl("rests");
   const box = $("hitDice");
@@ -1492,12 +1507,26 @@ function attachTip(el: HTMLElement, html: string) {
   el.addEventListener("mouseenter", () => showTipFor(el, html));
   el.addEventListener("mouseleave", hideTip);
 }
+/** D&D Beyond wording arrives as HTML (<p>, <strong>, entities…). Flatten it to plain text with
+ *  paragraph breaks for the tooltip (which escapes and renders pre-wrap). DOMParser builds an inert
+ *  document — nothing in it loads or runs. Plain text passes through unchanged. */
+function htmlToTipText(raw: string): string {
+  if (!/[<&]/.test(raw)) return raw;
+  const doc = new DOMParser().parseFromString(raw, "text/html");
+  doc.querySelectorAll("br").forEach((br) => br.replaceWith("\n"));
+  doc.querySelectorAll("p, div, li, tr, h1, h2, h3, h4, h5, h6").forEach((el) => {
+    if (el.tagName === "LI") el.prepend("• ");
+    el.append("\n");
+  });
+  return (doc.body.textContent || "").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 /** Build tooltip HTML for a move/spell/ability: bold name, a muted meta line, the full wording, and
  *  (optionally) how it scales at higher levels. Returns "" when there's no wording/meta to show. */
 function detailTipHtml(d: { name: string; meta?: string; description?: string; higher?: string }): string {
-  const body = (d.description || "").trim();
+  const body = htmlToTipText((d.description || "").trim());
   const meta = (d.meta || "").trim();
-  const higher = (d.higher || "").trim();
+  const higher = htmlToTipText((d.higher || "").trim());
   if (!body && !meta && !higher) return "";
   let h = `<div class="ht-name">${esc(d.name)}</div>`;
   if (meta) h += `<div class="ht-meta">${esc(meta)}</div>`;
@@ -2521,21 +2550,6 @@ function doRoll(req: { kind: string; key?: string }) {
 }
 
 // wire controls
-$("restBtn").onclick = async () => {
-  // A poke5e Pokémon's "slots" are its moves' PP — a long rest refills every move to full.
-  if (activeSource === "poke5e" && activeRef.startsWith("pmon:")) { await restorePokemonPp(); return; }
-  if (writable && ddbConnected) {
-    await withDdbLock(async () => {
-      const res = await window.api.ddbRestoreAll();
-      if (res.slots) applyDdbSlots(res.slots);
-      setStatus("Slots restored on D&D Beyond");
-    });
-  } else {
-    for (const s of spellSlots) remaining[s.level] = s.total - s.used;
-    renderSpells();
-    setStatus("Long rest — slots restored (local)");
-  }
-};
 
 // Long rest for a poke5e Pokémon: restore every move's PP to its max (write-key gated; local-only
 // without one). Struggle has no PP, so it's naturally skipped.
@@ -2727,10 +2741,50 @@ async function syncInventory() {
 // Click the status chip to re-check DDB connection (e.g. right after signing in).
 $("ddbStatus").onclick = () => { if (model) refreshDdb(); };
 
+// Dropdown menus: a [data-dd="x"] button toggles #dd-x. Menus are position:fixed (cards clip with
+// overflow:hidden) and close on an item click, outside click, Escape, or scroll. Clicks inside a
+// menu that aren't on an item (e.g. Hit Dice pips in the Rest menu) keep it open.
+function closeMenus(except?: HTMLElement) {
+  document.querySelectorAll<HTMLElement>(".dd-menu").forEach((m) => { if (m !== except) m.hidden = true; });
+}
+function openMenu(btn: HTMLElement, menu: HTMLElement) {
+  closeMenus(menu);
+  menu.hidden = false;
+  const r = btn.getBoundingClientRect();
+  const w = menu.offsetWidth, h = menu.offsetHeight;
+  const left = r.right - w >= 8 ? r.right - w : Math.min(r.left, window.innerWidth - w - 8);
+  menu.style.left = `${Math.round(Math.max(8, left))}px`;
+  const below = r.bottom + 4;
+  menu.style.top = `${Math.round(below + h > window.innerHeight - 8 ? Math.max(8, r.top - h - 4) : below)}px`;
+}
+document.addEventListener("click", (e) => {
+  const t = e.target as HTMLElement;
+  const btn = t.closest<HTMLElement>("[data-dd]");
+  if (btn) {
+    e.stopPropagation(); // don't collapse the section whose header holds the menu
+    const menu = document.getElementById("dd-" + btn.dataset.dd);
+    if (menu) { if (menu.hidden) openMenu(btn, menu); else menu.hidden = true; }
+    return;
+  }
+  if (t.closest(".dd-menu")) {
+    // Let the item's own handler run, then close; non-item clicks (pips) keep the menu open.
+    if (t.closest(".mm-item")) setTimeout(() => closeMenus(), 0);
+    return;
+  }
+  closeMenus();
+}, true);
+window.addEventListener("scroll", (e) => { if (!(e.target as HTMLElement)?.closest?.(".dd-menu")) closeMenus(); }, true);
+window.addEventListener("resize", () => closeMenus());
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeMenus(); });
+
+// The roll bar sticks just under the (sticky) header; track the header's height so they stack.
+const topBar = document.querySelector<HTMLElement>("header.top")!;
+new ResizeObserver(() => document.body.style.setProperty("--top-h", `${topBar.offsetHeight}px`)).observe(topBar);
+
 // Collapsible sections (twisties)
 document.querySelectorAll<HTMLElement>(".section-head").forEach((h) => {
   h.addEventListener("click", (e) => {
-    if ((e.target as HTMLElement).closest("button")) return; // header buttons handle themselves
+    if ((e.target as HTMLElement).closest("button, .dd-menu, label, input")) return; // header controls handle themselves
     h.closest(".card")!.classList.toggle("collapsed");
   });
 });
@@ -3044,7 +3098,7 @@ $("longRestBtn").onclick = () => {
   // Solo team or read-only → just do the single long rest (no menu). With a team of >1 on an owned
   // trainer, offer the scope choice: this Pokémon (or the trainer) vs. the whole team.
   if (!(writable && pokeTeamCount > 1)) { poke5eLongRest(); return; }
-  openLongRestMenu($("longRestBtn"));
+  openLongRestMenu($("restMenuBtn"));
 };
 $("shortRestBtn").onclick = () => poke5eShortRest();
 document.querySelectorAll<HTMLElement>('[data-kind="initiative"]').forEach((b) => {

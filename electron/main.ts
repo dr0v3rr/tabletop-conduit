@@ -1608,11 +1608,14 @@ ipcMain.handle("r20-token-rename", async (_e, id: string, name: string) => {
 /** Detect whether the open Roll20 game has the D&D 5e sheet's roll-template styling loaded. If so
  *  the app can send the prettier sheet templates (simple/atkdmg); otherwise it uses the universal
  *  default template (which renders in ANY game, just plainer). Checks loaded CSS, so it works even
- *  before any roll has been made. */
+ *  before any roll has been made. The DOM fallback matches the 5e templates BY NAME: Roll20 stamps
+ *  its own built-in default card with `sheet-rolltemplate-default` in every game, so a bare
+ *  `[class*=sheet-rolltemplate-]` match on chat history misreports a non-5e game (e.g. Pokémon) as
+ *  "sheet" — and every 5e card then renders as an empty message. */
 ipcMain.handle("roll20-sheet-style", async () => {
   try {
     const has5e = await roll20View.webContents.executeJavaScript(
-      `(function(){try{for(const ss of document.styleSheets){let rules;try{rules=ss.cssRules;}catch(e){continue;}if(!rules)continue;for(const r of rules){if(r.selectorText&&/sheet-rolltemplate-(simple|atkdmg|atk|dmg|spell)/.test(r.selectorText))return true;}}}catch(e){}return !!document.querySelector('[class*=sheet-rolltemplate-]');})()`,
+      `(function(){var re=/sheet-rolltemplate-(simple|atkdmg|atk|dmg|spell)\\b/;try{for(const ss of document.styleSheets){let rules;try{rules=ss.cssRules;}catch(e){continue;}if(!rules)continue;for(const r of rules){if(r.selectorText&&re.test(r.selectorText))return true;}}}catch(e){}return Array.prototype.some.call(document.querySelectorAll('[class*=sheet-rolltemplate-]'),function(el){return re.test(el.className);});})()`,
       true,
     );
     return { style: has5e ? "sheet" : "default" };

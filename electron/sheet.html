@@ -25,11 +25,11 @@
           <div class="seg" id="paneSeg">
             <button data-pane="roll20" class="on">Table</button>
             <button data-pane="ddb">D&amp;D Beyond</button>
-            <button data-pane="notebook" title="Notes for the campaign currently open in Roll20">📓 Notebook</button>
+            <button data-pane="notebook" title="Notebook — notes for the campaign currently open in Roll20" aria-label="Notebook">📓</button>
           </div>
           <button id="dexBtn" class="dex-btn" hidden title="Pokédex — browse species, stat blocks, moves, evolution, catch odds" aria-label="Open the Pokédex"><span class="d-scr"></span></button>
         </div>
-        <span id="ddbStatus" class="ddb-status" title="Slot sync with D&amp;D Beyond — click to re-check">DDB: —</span>
+        <span id="ddbStatus" class="ddb-status" title="Slot sync with D&amp;D Beyond — click to re-check">DDB —</span>
         <button id="logoutBtn" class="mini-btn" title="Return to the setup menu — change character source or VTT">⇦ Menu</button>
       </div>
     </header>
@@ -43,17 +43,21 @@
         <div class="name-row">
           <h1 id="charName"></h1>
           <button id="rosterToggle" class="roster-toggle" title="Switch character" aria-haspopup="listbox" aria-expanded="false" hidden>▾</button>
-          <button id="reloadChar" class="roster-toggle" title="Reload this character from the source (pick up changes made elsewhere, e.g. on poke5e)" hidden>↻</button>
-          <button id="exportPdfBtn" class="roster-toggle" title="Export a printable character-sheet PDF">📄 PDF</button>
-          <button id="restorePpBtn" class="roster-toggle" title="Use an Ether/Elixir from the trainer's bag to restore move PP" hidden>🧪 PP</button>
+          <span id="roMode" class="ro-badge" title="You don't own this sheet — rolls work and HP/resources track locally, but nothing writes back to the source" hidden>Read-only</span>
           <div id="rosterMenu" class="roster-menu" role="listbox" hidden></div>
-        </div>
-        <span id="roMode" class="ro-badge" title="You don't own this sheet — rolls work and HP/resources track locally, but nothing writes back to the source" hidden>Read-only</span>
-        <div class="trainer-actions">
-          <button id="keysBtn" class="keys-btn" title="Show / copy this trainer's poke5e read + write keys so you can back them up" hidden>🔑 Keys</button>
-          <span class="ta-right">
-            <button id="removeTrainerBtn" class="keys-btn" title="Remove this trainer from your list (stays in poke5e; re-add with its read key)" hidden>✕ Remove</button>
-            <button id="deleteTrainerBtn" class="keys-btn del-btn" title="Permanently delete this trainer from poke5e" hidden>🗑 Delete</button>
+          <!-- Character actions live in one overflow menu; destructive ones sit apart at the bottom. -->
+          <span class="dd more-wrap">
+            <button id="moreBtn" class="more-btn" data-dd="more" title="Character actions" aria-haspopup="menu">⋯</button>
+            <div id="dd-more" class="dd-menu" role="menu" hidden>
+              <button id="reloadChar" class="mm-item" title="Pick up changes made elsewhere, e.g. on poke5e" hidden>↻ Reload from source</button>
+              <button id="exportPdfBtn" class="mm-item" title="Export a printable character-sheet PDF">📄 Export PDF</button>
+              <button id="bindToken" class="mm-item" title="Bind HP to a specific Roll20 token — so multiple same-named NPCs track separately">⚔ Bind token</button>
+              <button id="restorePpBtn" class="mm-item" title="Use an Ether/Elixir from the trainer's bag to restore move PP" hidden>🧪 Restore PP</button>
+              <button id="keysBtn" class="mm-item" title="Show / copy this trainer's poke5e read + write keys so you can back them up" hidden>🔑 Show keys</button>
+              <hr class="mm-sep" />
+              <button id="removeTrainerBtn" class="mm-item" title="Remove this trainer from your list (stays in poke5e; re-add with its read key)" hidden>✕ Remove from my list</button>
+              <button id="deleteTrainerBtn" class="mm-item danger" title="Permanently delete this trainer from poke5e" hidden>🗑 Delete permanently…</button>
+            </div>
           </span>
         </div>
         <div id="meta" class="meta"></div>
@@ -69,6 +73,21 @@
             <button id="condAddBtn" class="cond-add" title="Add or remove conditions">＋ Condition</button>
             <div id="condList" class="cond-list" hidden></div>
           </span>
+          <span class="dd" id="restWrap" hidden>
+            <button id="restMenuBtn" class="cond-add rest-chip" data-dd="rest" title="Short or long rest">🌙 Rest ▾</button>
+            <div id="dd-rest" class="dd-menu rest-pop" role="menu" hidden>
+              <!-- D&D Beyond: Hit Dice to spend, then commit with Short rest. -->
+              <div data-section="rests" hidden>
+                <div class="rp-head">Hit Dice <span id="restMeta" class="spell-meta"></span></div>
+                <div id="hitDice" class="hitdice"></div>
+                <hr class="mm-sep" />
+              </div>
+              <button id="shortRest" class="mm-item">🌗 Short rest <small>commit spent Hit Dice</small></button>
+              <button id="longRest" class="mm-item">🌙 Long rest <small>HP, slots, half Hit Dice</small></button>
+              <button id="shortRestBtn" class="mm-item" hidden>🌗 Short rest <small>HP via Hit Dice · no PP</small></button>
+              <button id="longRestBtn" class="mm-item" hidden>🌙 Long rest <small>full HP, PP, status</small></button>
+            </div>
+          </span>
         </div>
       </div>
 
@@ -81,72 +100,47 @@
 
       <div class="controls">
         <div class="adv-row">
-          <span class="adv-label">Roll</span>
-          <div class="seg" id="advSeg">
+          <div class="seg" id="advSeg" title="Next roll: advantage / disadvantage">
             <button data-adv="super-disadvantage" title="Super-disadvantage — roll 3d20, keep the lowest">S·Dis</button>
             <button data-adv="disadvantage">Dis</button>
             <button data-adv="normal" class="on">Normal</button>
             <button data-adv="advantage">Adv</button>
             <button data-adv="super-advantage" title="Super-advantage — roll 3d20, keep the highest (e.g. advantage + Elven Accuracy)">S·Adv</button>
           </div>
-        </div>
-        <div class="extras-row">
           <label class="ex-mod" title="One-off modifier for your NEXT roll only — a bonus or penalty the sheet can't know about (a DM-granted +2, cover −5, a temporary buff). It resets to 0 after you roll. Leave at 0 normally.">
-            <span>This roll</span>
             <button id="modDown" type="button" class="ex-step" title="−1 to the next roll">−</button>
             <input id="adhocMod" type="number" value="0" step="1" aria-label="One-off modifier for the next roll" />
             <button id="modUp" type="button" class="ex-step" title="+1 to the next roll">+</button>
           </label>
+        </div>
+        <div class="extras-row">
           <button id="critToggle" type="button" class="ex-toggle" title="Crit: roll your NEXT attack's damage as a critical hit (double the damage dice). Clears after one roll.">💥 Crit</button>
           <button id="whisperToggle" type="button" class="ex-toggle" title="Whisper rolls to the GM only">🔒 Whisper</button>
-          <button id="rerollBtn" type="button" class="ex-toggle" title="Roll the last thing again" disabled>↻ Reroll</button>
-          <button type="button" class="ex-toggle init-btn" data-kind="initiative" title="Roll initiative into Roll20">⚡ Init <span class="mod" id="initMod"></span></button>
-          <button id="shortRestBtn" type="button" class="ex-toggle" title="Short rest (poke5e): recover HP by spending Hit Dice — PP is NOT restored" hidden>🌗 Short Rest</button>
-          <button id="longRestBtn" type="button" class="ex-toggle" title="Long rest (poke5e): full HP, all PP restored, and status cured" hidden>🌙 Long Rest</button>
+          <span class="ex-push">
+            <button type="button" class="ex-toggle init-btn" data-kind="initiative" title="Roll initiative into Roll20">⚡ Init <span class="mod" id="initMod"></span></button>
+            <button id="rerollBtn" type="button" class="ex-toggle" title="Roll the last thing again" disabled>↻ Reroll</button>
+          </span>
         </div>
         <input id="search" type="text" placeholder="Search skills, attacks, spells…" />
       </div>
 
       <section class="card" data-section="hp" hidden>
         <div class="section-head"><span class="tw"></span><span class="section-title">Hit Points</span>
-          <span id="hpMeta" class="spell-meta"></span></div>
+          <span id="hpMeta" class="spell-meta"></span>
+          <label class="hp-temp" title="Temporary hit points (a separate buffer that absorbs damage first)">Temp <input id="hpTemp" type="number" min="0" placeholder="0" /></label></div>
         <div class="section-body">
           <div class="hp-bar"><div id="hpFill" class="hp-fill"></div><div id="hpText" class="hp-text"></div></div>
           <div class="hp-controls">
-            <input id="hpAmount" type="number" min="0" placeholder="amount" />
+            <input id="hpAmount" type="number" min="0" placeholder="Amt" />
             <select id="hpDamageType" class="hp-dtype" title="Damage type — applies your resistances / immunities / vulnerabilities"><option value="">untyped</option></select>
             <button id="hpDamage" class="mini-btn hp-dmg">− Damage</button>
             <button id="hpHeal" class="mini-btn hp-heal">+ Heal</button>
-            <button id="hpUndo" class="mini-btn" title="Undo the last HP change" disabled>↶ Undo</button>
-            <button id="bindToken" class="mini-btn" title="Bind HP to the token you've selected on Roll20 — so multiple same-named NPCs track separately">⚔ Bind token</button>
-            <label class="hp-temp" title="Temporary hit points (a separate buffer that absorbs damage first)">Temp <input id="hpTemp" type="number" min="0" placeholder="0" /></label>
+            <button id="hpUndo" class="mini-btn" title="Undo the last HP change" aria-label="Undo the last HP change" disabled>↶</button>
           </div>
           <div id="defenses" class="defenses"></div>
           <div id="concentration" class="conc-chip" hidden></div>
           <div id="deathSaves" class="death-saves" hidden></div>
         </div>
-      </section>
-
-      <section class="card" data-section="abilities">
-        <div class="section-head"><span class="tw"></span><span class="section-title">Abilities</span></div>
-        <div class="section-body"><div id="abilities" class="abil-grid"></div></div>
-      </section>
-
-      <section class="card" data-section="saves">
-        <div class="section-head"><span class="tw"></span><span class="section-title">Saving Throws</span></div>
-        <div class="section-body">
-          <div id="saves" class="rows"></div>
-        </div>
-      </section>
-
-      <section class="card" data-section="skills">
-        <div class="section-head"><span class="tw"></span><span class="section-title">Skills</span></div>
-        <div class="section-body"><div id="skills" class="rows"></div></div>
-      </section>
-
-      <section class="card" data-section="features" hidden>
-        <div class="section-head"><span class="tw"></span><span class="section-title">Features &amp; Abilities</span></div>
-        <div class="section-body"><div id="features" class="features"></div></div>
       </section>
 
       <section class="card" data-section="attacks" hidden>
@@ -158,9 +152,30 @@
         <div class="section-head">
           <span class="tw"></span><span class="section-title">Spells</span>
           <span id="spellMeta" class="spell-meta"></span>
-          <button id="restBtn" class="mini-btn" title="Long rest — restore all slots">Rest</button>
         </div>
         <div class="section-body"><div id="spells" class="rows"></div></div>
+      </section>
+
+      <section class="card" data-section="skills">
+        <div class="section-head"><span class="tw"></span><span class="section-title">Skills</span></div>
+        <div class="section-body"><div id="skills" class="rows"></div></div>
+      </section>
+
+      <section class="card" data-section="saves">
+        <div class="section-head"><span class="tw"></span><span class="section-title">Saving Throws</span></div>
+        <div class="section-body">
+          <div id="saves" class="rows"></div>
+        </div>
+      </section>
+
+      <section class="card" data-section="abilities">
+        <div class="section-head"><span class="tw"></span><span class="section-title">Abilities</span></div>
+        <div class="section-body"><div id="abilities" class="abil-grid"></div></div>
+      </section>
+
+      <section class="card" data-section="features" hidden>
+        <div class="section-head"><span class="tw"></span><span class="section-title">Features &amp; Abilities</span></div>
+        <div class="section-body"><div id="features" class="features"></div></div>
       </section>
 
       <section class="card" data-section="items" hidden>
@@ -173,18 +188,6 @@
         <div class="section-body"><div id="items" class="rows"></div></div>
       </section>
 
-      <section class="card" data-section="rests" hidden>
-        <div class="section-head"><span class="tw"></span><span class="section-title">Rests</span>
-          <span id="restMeta" class="spell-meta"></span></div>
-        <div class="section-body">
-          <div id="hitDice" class="hitdice"></div>
-          <div class="rest-actions">
-            <button id="shortRest" class="mini-btn">Short Rest</button>
-            <button id="longRest" class="mini-btn">Long Rest</button>
-          </div>
-        </div>
-      </section>
-
       <section class="card collapsed" data-section="options" hidden>
         <div class="section-head"><span class="tw"></span><span class="section-title">Roll Options</span></div>
         <div class="section-body"><div id="toggles" class="toggles"></div></div>
@@ -194,8 +197,25 @@
         <div class="section-head">
           <span class="tw"></span><span class="section-title">Session Log</span>
           <span id="logMeta" class="spell-meta"></span>
-          <button id="logDeepSync" class="mini-btn" title="Scroll Roll20 to load the most history it will serve, then capture (deduped)">Full sync</button>
-          <button id="logRefresh" class="mini-btn" title="Sync from the Roll20 game chat">Sync</button>
+          <span class="dd head-dd">
+            <button class="mini-btn" data-dd="sync" title="Pull rolls from the Roll20 game chat">Sync ▾</button>
+            <div id="dd-sync" class="dd-menu" role="menu" hidden>
+              <button id="logRefresh" class="mm-item" title="Sync from the Roll20 game chat">⟳ Sync now <small>recent chat</small></button>
+              <button id="logDeepSync" class="mm-item" title="Scroll Roll20 to load the most history it will serve, then capture (deduped)">⇊ Full sync <small>all history</small></button>
+            </div>
+          </span>
+          <span class="dd head-dd">
+            <button class="mini-btn" data-dd="export" title="Copy, export, or clear the log">Export ▾</button>
+            <div id="dd-export" class="dd-menu" role="menu" hidden>
+              <button id="logCopy" class="mm-item">📋 Copy to clipboard</button>
+              <button id="exportJson" class="mm-item">Export JSON</button>
+              <button id="exportCsvLog" class="mm-item">Export CSV <small>rolls</small></button>
+              <button id="exportCsvStats" class="mm-item">Export CSV <small>stats</small></button>
+              <button id="openRollLogs" class="mm-item" title="Open the durable per-campaign roll archive folder (kept even if you Clear the view)">📁 Open archive folder</button>
+              <hr class="mm-sep" />
+              <button id="logClear" class="mm-item danger">Clear log</button>
+            </div>
+          </span>
         </div>
         <div class="section-body">
           <div class="log-controls">
@@ -213,14 +233,6 @@
           </div>
           <div id="statsTable" class="stats"></div>
           <div id="rollLog" class="rolllog"></div>
-          <div class="log-actions">
-            <button id="logCopy" class="mini-btn">Copy</button>
-            <button id="exportJson" class="mini-btn">Export JSON</button>
-            <button id="exportCsvLog" class="mini-btn">Export CSV</button>
-            <button id="exportCsvStats" class="mini-btn">Stats CSV</button>
-            <button id="openRollLogs" class="mini-btn" title="Open the durable per-campaign roll archive folder (kept even if you Clear the view)">📁 Archive</button>
-            <button id="logClear" class="mini-btn">Clear</button>
-          </div>
         </div>
       </section>
 

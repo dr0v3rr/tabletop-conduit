@@ -305,3 +305,19 @@ describe('computeWeapons — synthetic regressions', () => {
     expect(w!.attackAbility).toBe('DEX');
   });
 });
+
+describe('computeWeapons — duplicate inventory entries', () => {
+  const dagger = (extra: Record<string, unknown> = {}) => ({ definition: { name: 'Dagger', filterType: 'Weapon', damage: { diceString: '1d4' }, damageType: 'Piercing', attackType: 1, categoryId: 1, properties: [{ name: 'Finesse' }], ...extra } });
+  const withInventory = (inventory: unknown[]) => ({ ...data, inventory }) as unknown as CharacterData;
+
+  it('lists two identical daggers (separate DDB entries) as one attack', () => {
+    const d = withInventory([dagger(), dagger()]);
+    expect(computeWeapons(d, computeRollModel(d)).filter((w) => w.name === 'Dagger')).toHaveLength(1);
+  });
+
+  it('keeps copies that roll differently (a +1 dagger and a plain one)', () => {
+    const d = withInventory([dagger(), dagger({ grantedModifiers: [{ type: 'bonus', subType: 'magic', value: 1 }] })]);
+    const daggers = computeWeapons(d, computeRollModel(d)).filter((w) => w.name === 'Dagger');
+    expect(daggers.map((w) => w.magicBonus).sort()).toEqual([0, 1]);
+  });
+});

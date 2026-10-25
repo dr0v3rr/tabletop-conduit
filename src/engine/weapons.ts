@@ -353,6 +353,19 @@ function computeInventoryWeapons(data: CharacterData, model: RollModel): Weapon[
   return out;
 }
 
+/** D&D Beyond keeps separate inventory entries for copies of the same weapon (e.g. two daggers
+ *  bought at different times). They roll identically, so list each distinct attack once. Copies that
+ *  differ in any rolled stat (a +1 dagger vs a plain one) stay separate. */
+function dedupeWeapons(weapons: Weapon[]): Weapon[] {
+  const seen = new Set<string>();
+  return weapons.filter((w) => {
+    const key = [w.name, w.attackAbility, w.attackMod, w.damageDice, w.damageMod, w.damageType, w.versatileDamage ?? '', w.range ?? ''].join('|');
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 // ---- Custom weapon actions ----
 
 function computeActionWeapons(data: CharacterData, model: RollModel): Weapon[] {
@@ -444,7 +457,7 @@ function unarmedStrike(model: RollModel): Weapon {
  */
 export function computeWeapons(data: CharacterData, model: RollModel): Weapon[] {
   return [
-    ...computeInventoryWeapons(data, model),
+    ...dedupeWeapons(computeInventoryWeapons(data, model)),
     ...computeActionWeapons(data, model),
     unarmedStrike(model),
   ];
