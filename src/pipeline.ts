@@ -19,7 +19,7 @@ import type { HpState } from "./engine/hp.js";
 import { computeConditions } from "./engine/conditions.js";
 import { computeDefenses, type Defenses } from "./engine/defenses.js";
 import type { ActiveCondition } from "./engine/conditions.js";
-import type { RollRequest } from "./shared/roll-types.js";
+import type { RollRequest, RuleEffect } from "./shared/roll-types.js";
 
 export interface RollResult {
   model: RollModel;
@@ -46,13 +46,29 @@ export function rollFrom(
   const auto = hasDdbData ? resolveEffects(data, model, request, enabledToggleIds) : [];
   const merged: RollRequest = {
     ...request,
-    effects: [...(request.effects ?? []), ...auto],
+    effects: [...(request.effects ?? []), ...auto, ...standingAdvantage(model, request)],
     speakingAs: request.speakingAs ?? model.name,
     // Universal template by default so rolls render in ANY campaign; callers with the
     // D&D 5e sheet installed can pass templateStyle:'sheet' for the prettier templates.
     templateStyle: request.templateStyle ?? "default",
   };
   return { model, request: merged, command: buildRoll20Command(model, merged) };
+}
+
+/** Advantage / disadvantage the character always has on this roll, from D&D Beyond (Vedalken
+ *  Dispassion's saves, armour that hinders Stealth). They combine with everything else the 5e way —
+ *  any advantage and any disadvantage cancel. Situational ones (with a restriction) aren't included. */
+function standingAdvantage(model: RollModel, request: RollRequest): RuleEffect[] {
+  const entry =
+    request.kind === "skill" ? model.skills[request.key as keyof RollModel["skills"]]
+    : request.kind === "save" ? model.saves[request.key as keyof RollModel["saves"]]
+    : undefined;
+  if (!entry) return [];
+  const target = request.kind === "save" ? "save" : "check";
+  return [
+    ...(entry.advantage ?? []).map((c): RuleEffect => ({ op: "advantage", target, mode: "advantage", label: c.source })),
+    ...(entry.disadvantage ?? []).map((c): RuleEffect => ({ op: "advantage", target, mode: "disadvantage", label: c.source })),
+  ];
 }
 
 /** Which roll-time toggles a UI should offer for this character + roll. */

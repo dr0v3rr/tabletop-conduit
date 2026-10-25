@@ -326,6 +326,13 @@ export function computeRollModel(data: CharacterData): RollModel {
     let mod = abilityMod(scoreOf(statId)) + profComponent + sumBonus(sk) + sumBonus('ability-checks');
 
     const { advantage, disadvantage } = collectAdvDis(sk);
+    // Armour that hinders Stealth (D&D Beyond `stealthCheck: 2` — half plate, plate, …) while worn.
+    if (sk === 'stealth') {
+      for (const it of data.inventory ?? []) {
+        const def = it?.definition as { name?: string; stealthCheck?: number } | undefined;
+        if (it?.equipped && def?.stealthCheck === 2) disadvantage.push({ source: def.name ?? 'Armor', restriction: '' });
+      }
+    }
     const skv: SkillValue = {
       mod,
       ability,

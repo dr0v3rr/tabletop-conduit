@@ -4,6 +4,7 @@ import { computeRollModel } from '../src/engine';
 import { computeSpells } from '../src/engine/spells';
 import { computeDefenses } from '../src/engine/defenses';
 import { computeWeapons } from '../src/engine/weapons';
+import { rollFrom } from '../src/pipeline';
 import type { CharacterData, RollModel, SkillKey } from '../src/engine';
 import fixture from './fixtures/aldric-144074405.json';
 
@@ -637,3 +638,21 @@ function equipDagger(d: CharacterData): CharacterData {
   for (const it of d.inventory ?? []) if (it.definition?.name === 'Dagger') it.equipped = true;
   return d;
 }
+
+describe('standing advantage / disadvantage from D&D Beyond reaches the roll', () => {
+  it('armour that hinders Stealth (stealthCheck 2) gives Stealth disadvantage while worn', () => {
+    const d = clone(data);
+    (d.inventory ??= []).push({ id: 990005001, equipped: true, definition: { id: 990005, name: 'Half Plate', armorTypeId: 2, stealthCheck: 2 } } as never);
+    expect(computeRollModel(d).skills.stealth.disadvantage).toEqual([{ source: 'Half Plate', restriction: '' }]);
+    expect(rollFrom(d, { kind: 'skill', key: 'stealth' }).command).toContain('{{Disadvantage=keep the lowest}}');
+    d.inventory!.at(-1)!.equipped = false;
+    expect(rollFrom(d, { kind: 'skill', key: 'stealth' }).command).not.toContain('Disadvantage');
+  });
+  it("an unconditional save advantage (Vedalken Dispassion) applies, and cancels with chosen disadvantage", () => {
+    const d = clone(data);
+    const mods = d.modifiers as Record<string, unknown[]>;
+    mods.race = [...(mods.race ?? []), { type: 'advantage', subType: 'charisma-saving-throws', restriction: '' }];
+    expect(rollFrom(d, { kind: 'save', key: 'CHA' }).command).toContain('{{Advantage=keep the highest}}');
+    expect(rollFrom(d, { kind: 'save', key: 'CHA', advantage: 'disadvantage' }).command).not.toMatch(/keep the/);
+  });
+});

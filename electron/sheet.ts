@@ -789,7 +789,7 @@ function render() {
   sv.innerHTML = "";
   for (const a of ABILITIES) {
     const s = model.saves[a];
-    sv.appendChild(rollLine(`${a} Save`, s.mod, s.proficient ? "prof" : "", () => doRoll({ kind: "save", key: a })));
+    sv.appendChild(rollLine(`${a} Save`, s.mod, s.proficient ? "prof" : "", () => doRoll({ kind: "save", key: a }), "", advBadge(s)));
   }
 
   const sk = $("skills");
@@ -799,7 +799,7 @@ function render() {
     const s = model.skills[key];
     if (!s) continue;
     const cls = s.expertise ? "exp" : s.proficient ? "prof" : "";
-    sk.appendChild(rollLine(SKILL_NAMES[key]!, s.mod, cls, () => doRoll({ kind: "skill", key }), specTip));
+    sk.appendChild(rollLine(SKILL_NAMES[key]!, s.mod, cls, () => doRoll({ kind: "skill", key }), specTip, advBadge(s)));
   }
 
   renderVitals();
@@ -2488,13 +2488,24 @@ function spellReq(sp: any): any | null {
   return { kind: "cast", key: sp.name, verb };
 }
 
-function rollLine(label: string, mod: number, dotCls: string, onclick: () => void, title = ""): HTMLElement {
+function rollLine(label: string, mod: number, dotCls: string, onclick: () => void, title = "", badge = ""): HTMLElement {
   const b = document.createElement("button");
   b.className = "roll-line";
   if (title) b.title = title;
-  b.innerHTML = `<span class="label"><span class="dot ${dotCls}"></span>${label}</span><span class="mod">${sgn(mod)}</span>`;
+  b.innerHTML = `<span class="label"><span class="dot ${dotCls}"></span>${label}${badge}</span><span class="mod">${sgn(mod)}</span>`;
   b.onclick = onclick;
   return b;
+}
+
+/** ADV / DIS tag for a save or skill the character always rolls with advantage / disadvantage (from
+ *  D&D Beyond — Half Plate's Stealth, Vedalken Dispassion's saves); both at once cancel, so neither. */
+function advBadge(v: { advantage?: { source: string }[]; disadvantage?: { source: string }[] }): string {
+  const adv = v.advantage ?? [], dis = v.disadvantage ?? [];
+  if (adv.length && dis.length) return "";
+  const list = adv.length ? adv : dis;
+  if (!list.length) return "";
+  const what = adv.length ? "Advantage" : "Disadvantage";
+  return ` <span class="stag ${adv.length ? "adv" : "dis"}" title="${esc(`${what} — ${list.map((c) => c.source).join(", ")}`)}">${adv.length ? "ADV" : "DIS"}</span>`;
 }
 
 async function refreshToggles() {
