@@ -95,24 +95,61 @@ export function ddbSlotsExpr(method: "ensureSpellsTab" | "read" | "spend" | "res
 // IMPORTANT difference from spell slots: the hit-die slots inside the Short Rest
 // pane are STAGED, not persisted. Toggling a slot there does NOT update the
 // server's classes[].hitDiceUsed on its own (verified empirically). Only the
-// "Take Short Rest" button commits the staged spend (and applies the healing —
-// which is exactly what a short rest is). "Reset" reverts the staging with no
-// server change. So the flow is: open -> stage N dice -> commit.
+// "Take Short Rest" button commits the staged spend. "Reset" reverts the staging
+// with no server change. So the flow is: open -> stage N dice per class -> commit.
+//
+// The pane's "Automatically apply healing with dice result" option makes DDB roll
+// the staged dice AGAIN and add its own result to HP on commit. Conduit rolls each
+// Hit Point Die in Roll20 and applies that exact result itself, so it switches the
+// option off for its commit and restores it afterwards (autoHeal/setAutoHeal).
+// The Long Rest pane commits with its (also two-step) "Take Long Rest" button and
+// applies the sheet's own long-rest rules (5e half / 5.5e all Hit Dice, features,
+// exhaustion, slots).
 // ---------------------------------------------------------------------------
 
 export const DDB_HITDICE_SRC = String.raw`
 window.__ddbHitDice = (function () {
-  function shortRestButton() {
+  function headerButton(re) {
     var labels = Array.prototype.slice.call(
       document.querySelectorAll('.ct-character-header-desktop__button-label, .ct-character-header-desktop__button')
     );
-    var lab = labels.filter(function (e) { return /^\s*short rest\s*$/i.test(e.textContent || ''); })[0];
+    var lab = labels.filter(function (e) { return re.test(e.textContent || ''); })[0];
     if (!lab) return null;
-    var b = lab;
-    for (var i = 0; i < 4 && b; i++) { if (b.tagName === 'BUTTON') return b; b = b.parentElement; }
-    return lab;
+    return lab.closest('button, [role=button]') || lab;
   }
+  function shortRestButton() { return headerButton(/^\s*short rest\s*$/i); }
   function pane() { return document.querySelector('.ct-reset-pane__hitdice'); }
+  // The Long Rest pane uses build-hashed CSS-module classes, so find it by its commit button.
+  function longRestButton() {
+    var scope = document.querySelector('.ct-sidebar') || document;
+    return Array.prototype.slice.call(scope.querySelectorAll('button'))
+      .filter(function (x) { return /take long rest/i.test(x.textContent || ''); })[0] || null;
+  }
+  function longRestPane() { return longRestButton(); }
+  // The pane's option checkboxes share one parent, so match each box by ITS OWN label.
+  function autoHealBox() {
+    var scope = document.querySelector('.ct-reset-pane');
+    if (!scope) return null;
+    var boxes = Array.prototype.slice.call(scope.querySelectorAll('.ddbc-checkbox[aria-checked]'));
+    return boxes.filter(function (b) {
+      var lab = b.querySelector('.ddbc-checkbox__label');
+      return /automatically apply healing/i.test((lab && lab.textContent) || '');
+    })[0] || null;
+  }
+  // DDB's rest buttons are two-step "confirm" buttons: the first click arms them (class
+  // ct-button--is-confirming, ~4s) without saving anything; a second click while armed commits.
+  function confirmClick(button) {
+    var armed = function () { return document.contains(button) && /--is-confirming/.test(button.className); };
+    var wait = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
+    return (async function () {
+      if (!armed()) button.click();
+      for (var i = 0; i < 10 && !armed(); i++) await wait(100);
+      if (!armed()) return { ok: false, error: 'the rest button did not ask for confirmation' };
+      button.click();
+      for (var j = 0; j < 30 && armed(); j++) await wait(100);
+      return armed() ? { ok: false, error: 'the rest was not confirmed' } : { ok: true };
+    })();
+  }
   function pools() {
     var out = [];
     Array.prototype.forEach.call(document.querySelectorAll('.ct-reset-pane__hitdie'), function (row) {
@@ -124,7 +161,7 @@ window.__ddbHitDice = (function () {
       var slots = mgr ? Array.prototype.slice.call(mgr.querySelectorAll('.ct-slot-manager__slot')) : [];
       var interactive = slots.some(function (s) { return /--interactive/.test(s.className); });
       out.push({
-        cls: clsEl ? (clsEl.textContent || '').trim() : '',
+        cls: clsEl ? (clsEl.textContent || '').trim() : (heading.match(/^\s*([A-Za-z][A-Za-z' -]*?)\s*\(/) || [])[1] || '',
         die: dieM ? Number(dieM[1]) : null,
         total: totM ? Number(totM[1]) : slots.length,
         used: slots.filter(function (s) { return s.getAttribute('aria-checked') === 'true'; }).length,
@@ -135,7 +172,7 @@ window.__ddbHitDice = (function () {
     return out;
   }
   function commitButton() {
-    var btns = Array.prototype.slice.call(document.querySelectorAll('button, [role=button]'));
+    var btns = Array.prototype.slice.call((document.querySelector('.ct-reset-pane') || document).querySelectorAll('button'));
     return btns.filter(function (b) { return /take short rest/i.test(b.textContent || ''); })[0] || null;
   }
   function resetButton() {
@@ -156,29 +193,60 @@ window.__ddbHitDice = (function () {
     read: function () {
       return pools().map(function (p) { return { cls: p.cls, die: p.die, total: p.total, used: p.used, interactive: p.interactive }; });
     },
-    // Stage 'n' additional spent dice for the pool with the given die size (or the
-    // first interactive pool if die is null). Re-queries between clicks because each
-    // click re-renders the manager. Returns how many were actually staged.
-    stage: function (die, n) {
-      var staged = 0;
-      for (var guard = (n || 0) + 5; guard > 0 && staged < n; guard--) {
-        var cur = pools().filter(function (p) { return p.interactive && (die == null || p.die === die); })[0];
-        if (!cur) break;
-        var free = cur.slots.filter(function (s) {
-          return s.getAttribute('aria-checked') === 'false' && /--interactive/.test(s.className);
+    // Stage 'n' additional spent dice in the given class's row (case-insensitive; any class if
+    // null). Picks a row that still has a free die, so two classes sharing a die size can't block
+    // each other. Each click re-renders the manager ASYNCHRONOUSLY — clicking again before it has
+    // would hit the same box and un-tick it — so wait for the used count to rise between clicks.
+    // Resolves to how many dice were actually staged.
+    stage: async function (cls, n) {
+      var want = cls == null ? null : String(cls).trim().toLowerCase();
+      var isFree = function (s) { return s.getAttribute('aria-checked') === 'false' && /--interactive/.test(s.className); };
+      var row = function () {
+        return pools().filter(function (p) {
+          return p.interactive && (want == null || p.cls.toLowerCase() === want) && (want != null || p.slots.some(isFree));
         })[0];
+      };
+      var wait = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
+      var staged = 0;
+      for (var k = 0; k < (n || 0); k++) {
+        var cur = row();
+        var free = cur && cur.slots.filter(isFree)[0];
         if (!free) break;
+        var before = cur.used;
         free.click();
+        var rose = false;
+        for (var t = 0; t < 20 && !rose; t++) { await wait(50); var now = row(); rose = !!now && now.used > before; }
+        if (!rose) break;
         staged++;
       }
       return { ok: staged === n, staged: staged };
     },
-    // Commit the staged short rest (persists hitDiceUsed + applies healing on DDB).
+    // Is DDB's "Automatically apply healing with dice result" on? null when the pane isn't open.
+    autoHeal: function () {
+      var b = autoHealBox();
+      return b ? b.getAttribute('aria-checked') === 'true' : null;
+    },
+    // Set that option; returns the resulting state (null if the checkbox wasn't found).
+    setAutoHeal: function (on) {
+      var b = autoHealBox();
+      if (!b) return null;
+      if ((b.getAttribute('aria-checked') === 'true') !== !!on) (b.querySelector('.ddbc-checkbox__input') || b).click();
+      // React re-renders asynchronously — wait (briefly) for the box to reflect the change.
+      return new Promise(function (resolve) {
+        var tries = 0;
+        (function check() {
+          var after = autoHealBox();
+          var state = after ? after.getAttribute('aria-checked') === 'true' : null;
+          if (state === !!on || ++tries > 10) return resolve(state);
+          setTimeout(check, 100);
+        })();
+      });
+    },
+    // Commit the staged short rest (persists hitDiceUsed on DDB).
     commit: function () {
       var b = commitButton();
       if (!b) return { ok: false, error: 'no Take Short Rest button' };
-      b.click();
-      return { ok: true };
+      return confirmClick(b);
     },
     // Revert staging without any server change (closes nothing; just un-stages).
     reset: function () {
@@ -186,14 +254,29 @@ window.__ddbHitDice = (function () {
       if (b) { b.click(); return { ok: true }; }
       return { ok: false, error: 'no Reset button' };
     },
+    // Open the Long Rest sidebar (true once its "Take Long Rest" pane is showing).
+    openLong: function () {
+      if (longRestPane()) return true;
+      var b = headerButton(/^\s*long rest\s*$/i);
+      if (b) b.click();
+      return !!longRestPane();
+    },
+    // Take the long rest with whatever rules the sheet has selected (5e half / 5.5e all Hit Dice).
+    commitLong: function () {
+      var b = longRestButton();
+      if (!b) return { ok: false, error: 'Long Rest pane not open' };
+      return confirmClick(b);
+    },
     loggedIn: function () { return !!document.querySelector('.ct-slot-manager__slot--interactive'); },
   };
 })();
 `;
 
+export type DdbHitDiceMethod = "open" | "isOpen" | "read" | "stage" | "autoHeal" | "setAutoHeal" | "commit" | "reset" | "openLong" | "commitLong" | "loggedIn";
+
 export function ddbHitDiceExpr(
-  method: "open" | "isOpen" | "read" | "stage" | "commit" | "reset" | "loggedIn",
-  arg1?: number | null,
+  method: DdbHitDiceMethod,
+  arg1?: number | string | boolean | null,
   arg2?: number,
 ): string {
   const args = [arg1, arg2]

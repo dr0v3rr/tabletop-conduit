@@ -63,6 +63,8 @@ h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: v
 .rest-pop [data-section="rests"][hidden] { display: none; }
 .rp-head { font-size: 11px; color: var(--muted); margin-bottom: 6px; }
 .rest-pop .hd-row { flex-wrap: wrap; }
+.rest-pop .hd-label { min-width: 96px; }
+.hd-left { color: var(--muted); font-size: 11px; margin-left: 2px; }
 .rest-chip { margin-left: 2px; }
 .roster-toggle { background: var(--panel); border: 1px solid var(--line); color: var(--muted); border-radius: 6px; padding: 0 6px; font-size: 13px; line-height: 20px; cursor: pointer; }
 .roster-toggle:hover, .roster-toggle.on { border-color: var(--accent2); color: var(--ink); }

@@ -160,17 +160,23 @@ describe('bug — ungranted RACE ability increase (2024 origin rules) is not app
   // Under 2024 rules ability increases come from the BACKGROUND; a legacy species ASI is left in the
   // data flagged isGranted:false and must NOT apply (seen live: a Gem Dragonborn's +2 CHA, isGranted
   // false, inflating CHA by 2). But feat/background ability bonuses (half-feats, the chosen ASI) DO
-  // apply even when DDB flags them isGranted:false — so the drop is scoped to race `*-score` bonuses.
-  const withCha = (bucket: 'race' | 'feat', granted: boolean): CharacterData => {
+  // apply even when DDB flags them isGranted:false — so the drop is scoped to race `*-score` bonuses —
+  // and a species' own increases still apply when the background grants none (Acerē: Half-Elf +1s).
+  const withCha = (bucket: 'race' | 'feat', granted: boolean, bgAsi = true): CharacterData => {
     const d = clone(data);
-    (d.modifiers as Record<string, unknown[]>)[bucket] = [
-      ...(((d.modifiers as Record<string, unknown[]>)[bucket]) ?? []),
-      { type: 'bonus', subType: 'charisma-score', value: 2, isGranted: granted },
-    ];
+    const mods = d.modifiers as Record<string, unknown[]>;
+    mods[bucket] = [...(mods[bucket] ?? []), { type: 'bonus', subType: 'charisma-score', value: 2, isGranted: granted }];
+    if (bgAsi) mods.background = [...(mods.background ?? []), { type: 'bonus', subType: 'wisdom-score', value: 1, isGranted: true }];
     return d;
   };
-  it('an ungranted RACE ability-score bonus is dropped', () => {
-    expect(computeRollModel(withCha('race', false)).abilities.CHA.score).toBe(model.abilities.CHA.score);
+  const wisBump = 1; // the background ASI added alongside (2024 origin)
+  it('an ungranted RACE ability-score bonus is dropped when the background grants the increases', () => {
+    const m = computeRollModel(withCha('race', false));
+    expect(m.abilities.CHA.score).toBe(model.abilities.CHA.score);
+    expect(m.abilities.WIS.score).toBe(model.abilities.WIS.score + wisBump);
+  });
+  it('an ungranted RACE ability-score bonus still applies when the background grants none (legacy origin)', () => {
+    expect(computeRollModel(withCha('race', false, false)).abilities.CHA.score).toBe(model.abilities.CHA.score + 2);
   });
   it('a granted RACE ability-score bonus still applies', () => {
     expect(computeRollModel(withCha('race', true)).abilities.CHA.score).toBe(model.abilities.CHA.score + 2);

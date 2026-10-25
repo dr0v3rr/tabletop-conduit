@@ -106,18 +106,23 @@ export function computeRollModel(data: CharacterData): RollModel {
     });
   };
 
+  // Under the 2024 origin rules ability increases come from the BACKGROUND, and a legacy species ASI is
+  // then left in the data flagged isGranted:false and NOT applied (seen live: a Gem Dragonborn's +2 CHA
+  // inflating CHA by 2). But isGranted:false alone doesn't mean "off": a species' CHOSEN increases
+  // (Half-Elf's +1 to two scores) carry it too and DDB applies them when the background grants no
+  // increases (seen live: Acerē, DEX/CON 16 on DDB). So drop them only when the background grants some.
+  const isScoreBonus = (m: Modifier) => m.type === 'bonus' && /-score$/.test(m.subType || '');
+  const backgroundGrantsAsi = ((data.modifiers as Record<string, Modifier[] | undefined> | undefined)?.background ?? []).some(isScoreBonus);
+
   // Flatten all modifiers, tagging bucket for source resolution. `item`-bucket
   // modifiers are dropped unless their owning inventory item is equipped/attuned.
   const mods: Array<Modifier & { _bucket: string }> = [];
   for (const [bucket, arr] of Object.entries(data.modifiers ?? {})) {
     if (Array.isArray(arr)) {
       for (const m of arr) {
-        // Drop a RACE ability-score increase that DDB has marked not-granted: under the 2024 origin
-        // rules ability increases come from the BACKGROUND, so a legacy species ASI is left in the data
-        // flagged isGranted:false and must NOT apply (seen live: Gem Dragonborn's +2 CHA inflating a
-        // character by 2). This is scoped to race `*-score` bonuses only — feat/background ability
-        // bonuses (half-feats, the chosen ASI) stay applied even when DDB flags them isGranted:false.
-        if (m.isGranted === false && bucket === 'race' && m.type === 'bonus' && /-score$/.test(m.subType || '')) continue;
+        // Feat/background ability bonuses (half-feats, the chosen ASI) stay applied even when DDB flags
+        // them isGranted:false — the drop is scoped to race `*-score` bonuses.
+        if (backgroundGrantsAsi && m.isGranted === false && bucket === 'race' && isScoreBonus(m)) continue;
         if (bucket === 'item' && !itemModifierActive(m)) continue;
         mods.push({ ...m, _bucket: bucket });
       }

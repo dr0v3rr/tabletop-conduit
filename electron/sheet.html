@@ -76,13 +76,13 @@
           <span class="dd" id="restWrap" hidden>
             <button id="restMenuBtn" class="cond-add rest-chip" data-dd="rest" title="Short or long rest">🌙 Rest ▾</button>
             <div id="dd-rest" class="dd-menu rest-pop" role="menu" hidden>
-              <!-- D&D Beyond: Hit Dice to spend, then commit with Short rest. -->
+              <!-- D&D Beyond: spend Hit Point Dice (each rolls + heals), then commit with Short rest. -->
               <div data-section="rests" hidden>
-                <div class="rp-head">Hit Dice <span id="restMeta" class="spell-meta"></span></div>
+                <div class="rp-head">Hit Point Dice <span id="restMeta" class="spell-meta"></span></div>
                 <div id="hitDice" class="hitdice"></div>
                 <hr class="mm-sep" />
               </div>
-              <button id="shortRest" class="mm-item">🌗 Short rest <small>commit spent Hit Dice</small></button>
+              <button id="shortRest" class="mm-item">🌗 Short rest <small>record spent dice</small></button>
               <button id="longRest" class="mm-item">🌙 Long rest <small>HP, slots, half Hit Dice</small></button>
               <button id="shortRestBtn" class="mm-item" hidden>🌗 Short rest <small>HP via Hit Dice · no PP</small></button>
               <button id="longRestBtn" class="mm-item" hidden>🌙 Long rest <small>full HP, PP, status</small></button>

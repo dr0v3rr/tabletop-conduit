@@ -13,7 +13,7 @@ import type { CharacterData, RollRequest } from "../src/pipeline.js";
 import { buildSendExpression } from "../src/roll20/inject.js";
 import { displayCard } from "../src/roll20/format.js";
 import { r20TokenExpr } from "../src/roll20/token.js";
-import { ddbSlotsExpr, ddbHitDiceExpr, ddbInventoryExpr, ddbFetchCharExpr } from "../src/ddb/inject.js";
+import { ddbSlotsExpr, ddbHitDiceExpr, ddbInventoryExpr, ddbFetchCharExpr, type DdbHitDiceMethod } from "../src/ddb/inject.js";
 import { extractReadKey, fetchTrainer, trainerToRollModel, trainerExtras, buildInventory, fetchTrainerFeats, updateTrainerHp, updateTrainerMoney, trainerMoney, updatePokemonHp, updatePokemonStatus, updatePokemonExp, updateMovePp, updateInventoryItem, addInventoryItem, fetchItemsCatalog, fetchHeldItems, addHeldItem, removeHeldItem, addPokemonToTeam, removePokemon, evolvePokemon, deleteTrainer, setPoke5eCredentials, getPoke5eCredentials } from "../src/poke5e/source.js";
 import { buildPokedex } from "../src/poke5e/pokedex.js";
 import type { DexEntry } from "../src/poke5e/pokedex.js";
@@ -1285,7 +1285,7 @@ ipcMain.handle("ddb-restore-all", async () => {
 
 // ---- IPC: D&D Beyond hit-dice / short rest (Short Rest sidebar; stage -> commit) ----------
 
-async function ddbHd(method: "open" | "isOpen" | "read" | "stage" | "commit" | "reset" | "loggedIn", a1?: number | null, a2?: number) {
+async function ddbHd(method: DdbHitDiceMethod, a1?: number | string | boolean | null, a2?: number) {
   return ddbView.webContents.executeJavaScript(ddbHitDiceExpr(method, a1, a2), true);
 }
 
@@ -1306,10 +1306,10 @@ ipcMain.handle("ddb-hd-read", async () => {
   return { ok: true, pools };
 });
 
-/** Stage `count` spent dice (die size optional) WITHOUT committing — for previewing. */
-ipcMain.handle("ddb-hd-stage", async (_e, count: number, die?: number) => {
+/** Stage `count` spent dice in a class's row (any class if omitted) WITHOUT committing — for previewing. */
+ipcMain.handle("ddb-hd-stage", async (_e, count: number, cls?: string) => {
   if (!(await ensureShortRest())) return { ok: false, error: "Short Rest pane not ready — open the D&D Beyond pane and sign in" };
-  const res = await ddbHd("stage", die ?? null, count).catch((e) => ({ ok: false, error: String(e) }));
+  const res = await ddbHd("stage", cls ?? null, count).catch((e) => ({ ok: false, error: String(e) }));
   const pools = await ddbHd("read").catch(() => []);
   return { ...res, pools };
 });
@@ -1321,23 +1321,71 @@ ipcMain.handle("ddb-hd-reset", async () => {
   return { ...res, pools };
 });
 
-/** Full short-rest spend driver: open -> stage `count` dice -> commit (persists
- *  hitDiceUsed and applies the short-rest healing on D&D Beyond). This is a real,
- *  user-initiated mutation of the live sheet — only ever runs on an explicit click. */
-ipcMain.handle("ddb-short-rest", async (_e, count: number, die?: number) => {
+/** Per-class hitDiceUsed as D&D Beyond's server has it (authenticated read through the DDB pane).
+ *  The Short Rest pane shows staged dice as ticked too, so only the server can confirm a commit. */
+async function serverHitDiceUsed(): Promise<Record<string, number> | null> {
+  if (!current?.id) return null;
+  const r: any = await ddbView.webContents.executeJavaScript(ddbFetchCharExpr(current.id), true).catch(() => null);
+  if (!r?.ok || !r.data?.classes) return null;
+  const out: Record<string, number> = {};
+  for (const c of r.data.classes) out[String(c.definition?.name ?? "").toLowerCase()] = c.hitDiceUsed ?? 0;
+  return out;
+}
+
+/** Full short-rest driver: open -> stage each class's spent dice -> commit. Commits with DDB's
+ *  "Automatically apply healing" OFF — the sheet already rolled every Hit Point Die in Roll20 and
+ *  applied that exact result, so DDB must only record the spent dice, not roll and heal again. The
+ *  user's setting is restored afterwards. A real, user-initiated mutation of the live sheet — only
+ *  ever runs on an explicit click. */
+ipcMain.handle("ddb-short-rest", async (_e, spends: { cls: string; count: number }[]) => {
   if (!(await ensureShortRest())) return { ok: false, error: "Short Rest pane not ready — open the D&D Beyond pane and sign in" };
-  if (count > 0) {
-    const staged = await ddbHd("stage", die ?? null, count).catch((e) => ({ ok: false, error: String(e) }));
+  const before = (spends ?? []).some((x) => x.count > 0) ? await serverHitDiceUsed() : null;
+  for (const { cls, count } of spends ?? []) {
+    if (!(count > 0)) continue;
+    const staged = await ddbHd("stage", cls, count).catch((e) => ({ ok: false, error: String(e) }));
     if (!staged || !(staged as any).ok) {
       await ddbHd("reset").catch(() => ({}));
-      return { ok: false, error: `could only stage ${(staged as any)?.staged ?? 0}/${count} hit dice` };
+      return { ok: false, error: `could only stage ${(staged as any)?.staged ?? 0}/${count} ${cls} hit dice` };
     }
   }
-  const res = await ddbHd("commit").catch((e) => ({ ok: false, error: String(e) }));
+  const autoHealWas = await ddbHd("autoHeal").catch(() => null);
+  if (autoHealWas === true && (await ddbHd("setAutoHeal", false).catch(() => null)) !== false) {
+    await ddbHd("reset").catch(() => ({}));
+    return { ok: false, error: "couldn't switch off D&D Beyond's automatic hit-die healing — nothing was committed" };
+  }
+  const res: any = await ddbHd("commit").catch((e) => ({ ok: false, error: String(e) }));
   await sleep(700);
-  // After committing, the pane closes; re-open read-only to report the persisted state.
-  const pools = (await ensureShortRest()) ? await ddbHd("read").catch(() => []) : [];
-  return { ...res, pools };
+  // Re-open (if it closed) to restore the user's setting and report the persisted state.
+  let pools: any[] = [];
+  let autoHealRestored = true;
+  if (await ensureShortRest()) {
+    if (autoHealWas === true) autoHealRestored = (await ddbHd("setAutoHeal", true).catch(() => null)) === true;
+    pools = await ddbHd("read").catch(() => []);
+  } else if (autoHealWas === true) autoHealRestored = false;
+  // Confirm the spent dice actually stuck on the server: each class's hitDiceUsed must have risen.
+  if (res?.ok && before) {
+    const after = await serverHitDiceUsed();
+    const missing = (spends ?? []).filter(({ cls, count }) => count > 0 && (after?.[cls.toLowerCase()] ?? 0) < (before[cls.toLowerCase()] ?? 0) + count);
+    if (!after || missing.length) {
+      return { ok: false, error: `D&D Beyond didn't record the spent ${missing.map((m) => m.cls).join(" / ") || "Hit"} dice — check its Short Rest pane`, pools, autoHealRestored };
+    }
+  }
+  return { ...res, pools, autoHealRestored };
+});
+
+/** Long rest on D&D Beyond: open its Long Rest pane and press "Take Long Rest", which applies the
+ *  sheet's own rules (5.5e: all Hit Dice back; 5e: half), HP, slots, Pact Magic, limited-use features
+ *  and exhaustion. The sheet re-loads the character afterwards to pick all of that up. */
+ipcMain.handle("ddb-long-rest", async () => {
+  let open = false;
+  for (let i = 0; i < 10 && !open; i++) {
+    open = !!(await ddbHd("openLong").catch(() => false));
+    if (!open) await sleep(400);
+  }
+  if (!open) return { ok: false, error: "Long Rest pane not ready — open the D&D Beyond pane and sign in" };
+  const res = await ddbHd("commitLong").catch((e) => ({ ok: false, error: String(e) }));
+  await sleep(1200); // let DDB persist before the sheet re-reads the character
+  return res;
 });
 
 // ---- IPC: inventory (quantity write-back via DDB's own API; add/search via native UI) ----

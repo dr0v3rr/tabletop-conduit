@@ -6,6 +6,7 @@ import { buildSheetDto } from "../src/sheet/sheet-pdf.js"; // printable-sheet DT
 import { expandAttacks } from "../src/compose/index.js"; // fan a FIXED multi-attack move into N cards (pure)
 import { expUntilLevelUp, expProgress, formatExp, MAX_LEVEL } from "../src/poke5e/experience.js"; // EXP maths
 import { scaleDamageDice } from "../src/engine/upcast.js"; // up-cast damage scaling (pure, tested)
+import { longRestUsed, hitDieHealFormula } from "../src/engine/hit-dice.js"; // rest rules (pure, tested)
 import { matchInline, matchBlock, isHrLine, blockTag } from "../src/notebook/markdown.js"; // notebook md shortcuts (pure, tested)
 import { sanitizeNoteHtml } from "../src/notebook/sanitize.js"; // strip unsafe/remote content from note HTML
 import { POKE_TYPES, typeMultiplier, effectivenessLabel, typeMatchup } from "../src/poke5e/type-chart.js"; // Pokémon damage types + effectiveness
@@ -45,7 +46,8 @@ declare global {
       ddbRestore(level: number): Promise<{ ok: boolean; slots?: any[]; error?: string }>;
       ddbRestoreAll(): Promise<{ ok: boolean; slots?: any[] }>;
       ddbHitDiceRead(): Promise<{ ok: boolean; pools: { cls: string; die: number; total: number; used: number; interactive: boolean }[] }>;
-      ddbShortRest(count: number, die?: number): Promise<{ ok: boolean; pools?: any[]; error?: string }>;
+      ddbShortRest(spends: { cls: string; count: number }[]): Promise<{ ok: boolean; pools?: any[]; error?: string; autoHealRestored?: boolean }>;
+      ddbLongRest(): Promise<{ ok: boolean; error?: string }>;
       ddbItemSetQty(id: number, quantity: number): Promise<{ ok: boolean; quantity?: number; error?: string; message?: string }>;
       inventoryRefresh(): Promise<{ ok: boolean; items: any[]; error?: string }>;
       ddbOpenInventory(): Promise<{ ok: boolean; error?: string }>;
@@ -128,8 +130,8 @@ let spellcasting: any = null;
 let spellSlots: any[] = [];
 let remaining: Record<number, number> = {}; // spell level -> remaining slots
 let hitDice: any = null; // { pools: [{die,total,used}], conMod }
-let hitRemaining: Record<number, number> = {}; // die size -> remaining hit dice
-let hitPending: Record<number, number> = {}; // die size -> hit dice spent this short rest, awaiting DDB commit
+let hitRemaining: number[] = []; // per hitDice.pools entry (one per class) -> remaining Hit Point Dice
+let hitPending: number[] = []; // per pool -> dice spent (and healed) this short rest, awaiting the DDB commit
 let inventory: any[] = []; // rollable + magic items (potions, offensive consumables, magic gear)
 let pokeMoney = 0; // poke5e trainer's money (₽); shown/edited in the Inventory section, syncs on change
 // A Pokémon's held items (its own per-Pokémon list, distinct from the trainer bag). Empty for trainers.
@@ -496,9 +498,8 @@ function applyCharacter(res: any, ref: string) {
   acValue = typeof res.ac === "number" ? res.ac : null; // non-DDB sources send AC directly
   hpUndo = null;
   ($("hpUndo") as HTMLButtonElement).disabled = true;
-  hitRemaining = {};
-  hitPending = {};
-  for (const pool of hitDice?.pools ?? []) hitRemaining[pool.die] = pool.total - pool.used;
+  hitRemaining = (hitDice?.pools ?? []).map((p: any) => p.total - p.used);
+  hitPending = hitRemaining.map(() => 0);
   setStatus(`Loaded ${model.name}`);
   rememberLastChar(ref);
   if (res.readKey) { addPoke5eKey(res.readKey); poke5eTrainerKey = res.readKey; } // remember trainer + track the active one
@@ -1406,6 +1407,8 @@ function renderRestControl() {
   ($("longRestBtn") as HTMLElement).hidden = !isPoke;
   ($("shortRest") as HTMLElement).hidden = isPoke || !pools.length;
   ($("longRest") as HTMLElement).hidden = isPoke;
+  const lrNote = $("longRest").querySelector("small");
+  if (lrNote) lrNote.textContent = `HP, slots, ${hitDice?.longRest === "half" ? "half" : "all"} Hit Dice`;
   ($("restWrap") as HTMLElement).hidden = !(isPoke || pools.length || spellSlots.length);
 }
 
@@ -1415,49 +1418,60 @@ function renderHitDice() {
   const pools: any[] = hitDice?.pools ?? [];
   if (!pools.length) { sec.hidden = true; return; }
   sec.hidden = false;
-  const pendingTotal = Object.values(hitPending).reduce((a, b) => a + b, 0);
-  const metaBits = [`heal ${sgn(hitDice.conMod)} / die`];
-  if (pendingTotal) metaBits.push(`${pendingTotal} to spend`);
+  const pendingTotal = hitPending.reduce((a, b) => a + b, 0);
+  const metaBits = [`${sgn(hitDice.conMod)} CON each${hitDice.healMultiplier > 1 ? " · ×2 Periapt" : ""}`];
+  if (pendingTotal) metaBits.push(`${pendingTotal} spent — take the short rest to finish`);
   ($("restMeta") as HTMLElement).textContent = metaBits.join(" · ");
   box.innerHTML = pools
-    .map((p) => {
-      const rem = hitRemaining[p.die] ?? 0;
-      const pend = hitPending[p.die] ?? 0;
+    .map((p, idx) => {
+      const rem = hitRemaining[idx] ?? 0;
+      const pend = hitPending[idx] ?? 0;
       let pips = "";
       for (let i = 0; i < p.total; i++) {
-        // full = still available; spent (empty) that is staged this rest gets a distinct look.
+        // full = still available; spent (empty) this rest gets a distinct "staged" look until committed.
         const staged = i >= rem && i < rem + pend;
-        pips += `<span class="pip hd ${i < rem ? "full" : staged ? "staged" : ""}" data-die="${p.die}" data-i="${i}"></span>`;
+        pips += `<span class="pip hd ${i < rem ? "full" : staged ? "staged" : ""}" data-pool="${idx}" data-i="${i}"></span>`;
       }
-      return `<div class="hd-row"><span class="hd-label">Hit Dice ${p.total}d${p.die}</span><span class="pips">${pips}</span><span class="hd-heal">1d${p.die}${sgn(hitDice.conMod)}</span></div>`;
+      return `<div class="hd-row"><span class="hd-label">${esc(p.cls)} d${p.die} <span class="hd-left">${rem}/${p.total}</span></span><span class="pips">${pips}</span><span class="hd-heal">${esc(hitDieHealFormula(p.die, hitDice.conMod, hitDice.healMultiplier))}</span></div>`;
     })
     .join("");
   box.querySelectorAll<HTMLElement>(".pip.hd").forEach((pip) => {
+    pip.title = pip.classList.contains("full") ? "Spend this Hit Point Die — rolls the healing in Roll20 and applies it" : pip.classList.contains("staged") ? "Spent this rest — click to un-spend (its healing stays; use ↶ on HP to undo it)" : "Spent";
     pip.onclick = () => {
-      const die = Number(pip.dataset.die);
-      if (pip.classList.contains("full")) spendHitDie(die);
-      else {
-        // Un-spend the most recent staged die (correcting a mis-click before you commit).
-        const total = pools.find((x) => x.die === die)?.total ?? 0;
-        hitRemaining[die] = Math.min(total, (hitRemaining[die] ?? 0) + 1);
-        hitPending[die] = Math.max(0, (hitPending[die] ?? 0) - 1);
+      const idx = Number(pip.dataset.pool);
+      if (pip.classList.contains("full")) spendHitDie(idx);
+      else if (pip.classList.contains("staged")) {
+        // Correct a mis-click before committing. The die was already rolled and healed, so its HP stays;
+        // the HP ↶ Undo reverts the heal if wanted.
+        hitRemaining[idx] = (hitRemaining[idx] ?? 0) + 1;
+        hitPending[idx] = Math.max(0, (hitPending[idx] ?? 0) - 1);
         renderHitDice();
+        setStatus("Hit Point Die un-spent — its healing is still applied (↶ on HP undoes it)");
       }
     };
   });
 }
 
-// Spend one hit die: roll the heal to Roll20 now, and stage it for the next Short Rest
-// (which writes hitDiceUsed back to D&D Beyond on commit). Nothing hits DDB until you
-// press Short Rest, so several spends batch into one real short rest.
-function spendHitDie(die: number) {
-  const rem = hitRemaining[die] ?? 0;
-  if (rem <= 0) { setStatus(`No d${die} Hit Dice left`, true); return; }
-  hitRemaining[die] = rem - 1;
-  hitPending[die] = (hitPending[die] ?? 0) + 1;
+// Spend one Hit Point Die (2024 Short Rest): roll it in Roll20, read the result back and heal by exactly
+// that much — the same number the table sees. The die stays staged until "Short rest" commits the spent
+// dice to D&D Beyond (with DDB's own auto-healing off, so it isn't rolled and healed twice).
+function spendHitDie(idx: number) {
+  const pool = hitDice?.pools?.[idx];
+  if (!pool) return;
+  const rem = hitRemaining[idx] ?? 0;
+  if (rem <= 0) { setStatus(`No ${pool.cls} Hit Point Dice left`, true); return; }
+  hitRemaining[idx] = rem - 1;
+  hitPending[idx] = (hitPending[idx] ?? 0) + 1;
   renderHitDice();
-  const mod = hitDice.conMod;
-  sendRoll({ kind: "damage", key: "Hit Die (heal)", baseDamage: mod ? `1d${die} + ${mod}` : `1d${die}` });
+  const formula = hitDieHealFormula(pool.die, hitDice.conMod, hitDice.healMultiplier);
+  sendRoll({ kind: "damage", key: `Hit Point Die (${pool.cls} d${pool.die})`, baseDamage: formula, hitDie: true }, (total) => {
+    if (typeof total !== "number" || !hp) {
+      setStatus("Couldn't read the Hit Point Die result from Roll20 — add it with + Heal", true);
+      return;
+    }
+    commitHp(Math.max(0, hp.removed - total), hp.temp);
+    setStatus(`Hit Point Die: +${total} HP (${pool.cls} d${pool.die})`);
+  });
 }
 
 // "Display in VTT" — post a thing's wording to the Roll20 table as an info card (formatting +
@@ -2458,12 +2472,18 @@ function fireRoll(request: any) {
   lastRollRequest = request;                               // …so restore the full request for Reroll
 }
 
-async function sendRoll(request: any) {
-  lastRollRequest = request;
-  ($("rerollBtn") as HTMLButtonElement).disabled = false;
+async function sendRoll(request: any, onTotal?: (total: number | null) => void) {
+  // A Hit Point Die heal is bookkeeping, not an attack: it doesn't consume the one-shot ± / Crit, and
+  // Reroll mustn't repeat it (that would heal again without spending a die).
+  const hitDie = !!request.hitDie;
+  if (!hitDie) {
+    lastRollRequest = request;
+    ($("rerollBtn") as HTMLButtonElement).disabled = false;
+  }
   const req = { ...request, whisper: whisperOn || request.whisper, templateStyle: request.templateStyle ?? templateStyle };
-  if (adhocMod) { req.adhocMod = adhocMod; resetAdhoc(); } // one-off: applies to this roll, then clears
-  if (critNext) { req.crit = true; setCritNext(false); } // one-off: double the damage dice on this attack
+  delete req.hitDie;
+  if (adhocMod && !hitDie) { req.adhocMod = adhocMod; resetAdhoc(); } // one-off: applies to this roll, then clears
+  if (critNext && !hitDie) { req.crit = true; setCritNext(false); } // one-off: double the damage dice on this attack
   // Alt/Shift-click hold-to-modify: one-off advantage/disadvantage for THIS roll without touching the
   // sticky Adv/Dis control (Beyond20 convention). Leaves super-advantage (e.g. Elven Accuracy) intact.
   if (clickAdv && !String(req.advantage || "").startsWith("super")) {
@@ -2475,7 +2495,7 @@ async function sendRoll(request: any) {
   const toggles = [...enabled, ...activeConditionRuleIds()]; // active conditions auto-apply
   const res = await window.api.roll(req, toggles);
   const lr = $("lastRoll");
-  if (!res.ok) { lr.innerHTML = `<b>Error:</b> ${res.error}`; return; }
+  if (!res.ok) { lr.innerHTML = `<b>Error:</b> ${esc(String(res.error ?? ""))}`; onTotal?.(null); return; }
   const inj = res.injected;
   const landed = inj?.ok ? "✓ sent to Roll20" : `⚠ ${inj?.error || "not sent — open a Roll20 game"}`;
   lr.innerHTML = `<b>${landed}</b> &nbsp; <code>${(res.command || "").replace(/</g, "&lt;")}</code>`;
@@ -2484,7 +2504,8 @@ async function sendRoll(request: any) {
   const initCtx = request.kind === "initiative"
     ? { token: boundToken?.id ?? null, label: model?.name || "Initiative" }
     : null;
-  if (inj?.ok) pollRollResult(beforeIds, req.name, initCtx); // read the total back and show it
+  if (inj?.ok) pollRollResult(beforeIds, req.name, initCtx, onTotal); // read the total back and show it
+  else onTotal?.(null);
 }
 
 // After a roll lands, poll the chat for OUR new result and surface the total (with crit/fumble). The
@@ -2492,7 +2513,7 @@ async function sendRoll(request: any) {
 // rolls), so matching on it silently failed for most rolls. Instead take the newest record that's NEW
 // since we snapshotted (almost always ours), preferring one that matches our character or this roll's
 // name when several land in the same window.
-async function pollRollResult(beforeIds: Set<string>, rollName?: string, initCtx?: { token: string | null; label: string } | null) {
+async function pollRollResult(beforeIds: Set<string>, rollName?: string, initCtx?: { token: string | null; label: string } | null, onTotal?: (total: number | null) => void) {
   const myName = (model?.name || "").toLowerCase();
   const want = String(rollName || "").toLowerCase();
   // Resolve our Roll20 display name once so we can pick OUR OWN rolls out of the shared chat — several
@@ -2513,6 +2534,7 @@ async function pollRollResult(beforeIds: Set<string>, rollName?: string, initCtx
         (want && pool.find((r: any) => String(r.name || "").toLowerCase() === want)) ||
         pool[pool.length - 1]; // newest in the pool
       showRollResult(match);
+      onTotal?.(typeof match?.total === "number" ? match.total : null);
       if (initCtx) {
         if (typeof match?.total === "number") await addInitiativeToTurnOrder(initCtx, match.total);
         else setStatus("Rolled initiative — the result wasn't a number, so it wasn't added to the turn order", true);
@@ -2521,6 +2543,7 @@ async function pollRollResult(beforeIds: Set<string>, rollName?: string, initCtx
     }
   }
   // Rolled, but the result never landed in the chat scrape (e.g. nothing captured) — can't add a value.
+  onTotal?.(null);
   if (initCtx) setStatus("Rolled initiative — couldn't read the result to add it to the turn order", true);
 }
 
@@ -2631,81 +2654,109 @@ function openLongRestMenu(anchor: HTMLElement) {
   setTimeout(() => { document.addEventListener("mousedown", onDoc); window.addEventListener("scroll", closeLongRestMenu, true); document.addEventListener("keydown", onKey); }, 0);
   longRestMenuCleanup = () => { document.removeEventListener("mousedown", onDoc); window.removeEventListener("scroll", closeLongRestMenu, true); document.removeEventListener("keydown", onKey); };
 }
-$("shortRest").onclick = async () => {
+$("shortRest").onclick = () => takeShortRest();
+async function takeShortRest() {
   const pools: any[] = hitDice?.pools ?? [];
-  const pendingTotal = Object.values(hitPending).reduce((a, b) => a + b, 0);
+  const spent = hitPending.reduce((a, b) => a + b, 0);
+  const dice = (n: number) => `${n} Hit Point ${n === 1 ? "Die" : "Dice"}`;
   if (!writable || !ddbConnected) {
-    // Read-only or offline: the heals already went to Roll20 and pips already dropped — just clear staging.
-    hitPending = {};
-    setStatus(pendingTotal ? `Short rest — ${pendingTotal} Hit ${pendingTotal === 1 ? "Die" : "Dice"} spent (local only)` : "Short rest (local)");
+    // Read-only or offline: the heals already went to Roll20 and were applied — just finish the rest.
+    pools.forEach((p, i) => { p.used = p.total - (hitRemaining[i] ?? 0); });
+    hitPending = hitPending.map(() => 0);
+    restorePactSlots(); // Pact Magic comes back on a short rest
     renderHitDice();
+    setStatus(spent ? `Short rest — ${dice(spent)} spent (local only)` : "Short rest (local)");
     return;
   }
   await withDdbLock(async () => {
     setStatus("Short rest — writing to D&D Beyond…");
-    let committed = 0;
-    // Commit per die-size pool that has staged spends (one real short rest handles all).
-    const dice = pools.map((p) => p.die).filter((d) => (hitPending[d] ?? 0) > 0);
-    if (dice.length === 0) {
-      // Take a short rest with no hit dice spent (still resets short-rest features on DDB).
-      const res = await window.api.ddbShortRest(0);
-      if (!res.ok) { setStatus(res.error || "Short rest failed", true); return; }
-    } else {
-      for (const die of dice) {
-        const n = hitPending[die] ?? 0;
-        const res = await window.api.ddbShortRest(n, die);
-        if (!res.ok) { setStatus(res.error || "Short rest failed", true); return; }
-        committed += n;
-        if (res.pools) syncHitPoolsFromDdb(res.pools);
+    // One real DDB short rest records every class's spent dice (and resets short-rest features). With
+    // nothing spent it's still a short rest — recharges features and Pact Magic.
+    const spends = pools.map((p, i) => ({ cls: p.cls, count: hitPending[i] ?? 0 })).filter((x) => x.count > 0);
+    const expectedUsed = pools.map((p, i) => p.used + (hitPending[i] ?? 0)); // what DDB should end up with
+    const res = await window.api.ddbShortRest(spends);
+    if (!res.ok) {
+      // Partial or failed commit: adopt what DDB actually saved and keep only the unrecorded dice pending,
+      // so pressing Short rest again records exactly the rest (their healing was already applied).
+      if (res.pools?.length) {
+        syncHitPoolsFromDdb(res.pools);
+        hitPending = pools.map((p, i) => Math.max(0, (expectedUsed[i] ?? 0) - p.used));
+        hitRemaining = pools.map((p, i) => p.total - p.used - (hitPending[i] ?? 0));
+        renderHitDice();
       }
+      setStatus(res.error || "Short rest failed", true);
+      return;
     }
-    hitPending = {};
+    hitPending = hitPending.map(() => 0);
+    if (res.pools) syncHitPoolsFromDdb(res.pools);
     renderHitDice();
-    setStatus(committed ? `Short rest — spent ${committed} Hit ${committed === 1 ? "Die" : "Dice"} on D&D Beyond ✓` : "Short rest taken on D&D Beyond ✓");
+    // Pact Magic / short-rest slot changes: pull the slots back from DDB rather than waiting for the poll.
+    window.api.ddbSync().then((r) => { if (r.ok && r.slots.length) applyDdbSlots(r.slots); }).catch(() => {});
+    const done = spent ? `Short rest — ${dice(spent)} recorded on D&D Beyond ✓` : "Short rest taken on D&D Beyond ✓";
+    if (res.autoHealRestored === false) setStatus(`${done} — but D&D Beyond's "Automatically apply healing" option was left off; re-tick it in its Short Rest pane`, true);
+    else setStatus(done);
   });
-};
+}
+
+/** Pact Magic slots recover on a Short or Long Rest. */
+function restorePactSlots() {
+  const pact = spellSlots.filter((s: any) => s.pact);
+  if (!pact.length) return;
+  for (const s of pact) remaining[s.level] = s.total;
+  renderSpells();
+}
+
 $("longRest").onclick = async () => {
-  // Regain half your Hit Dice (min 1 per pool) — a long rest.
-  for (const p of hitDice?.pools ?? []) {
-    const regain = Math.max(1, Math.floor(p.total / 2));
-    hitRemaining[p.die] = Math.min(p.total, (hitRemaining[p.die] ?? 0) + regain);
-    // Update the model's used baseline so pending math stays correct after a long rest.
-    p.used = p.total - hitRemaining[p.die];
-  }
-  hitPending = {};
-  renderHitDice();
-  // Restore spell slots (on DDB if connected & writable, else locally).
-  if (writable && ddbConnected) {
-    const res = await window.api.ddbRestoreAll();
-    if (res.slots) applyDdbSlots(res.slots);
-  } else {
-    for (const s of spellSlots) remaining[s.level] = s.total - s.used;
-    renderSpells();
-  }
-  // Full HP (temp cleared), drop concentration, clear any death saves.
-  if (hp) commitHp(0, 0);
+  // 2024 (and 2014): a Long Rest can only start with at least 1 HP.
+  if (hp && hp.current <= 0) { setStatus("You need at least 1 HP to start a Long Rest", true); return; }
+  const rule = hitDice?.longRest === "half" ? "half your Hit Point Dice" : "all Hit Point Dice";
+  // Dice spent since the last short rest were spent IN a short rest — finish that one first so they count
+  // as spent (D&D Beyond only learns of them on a short-rest commit).
+  if (hitPending.some((n) => n > 0)) await takeShortRest();
+  // Ending the rest: concentration and death saves don't carry over.
   concentrating = null;
   deathSaves = { success: 0, fail: 0 };
   renderConcentration();
-  setStatus("Long rest — full HP, spell slots restored, half your Hit Dice back");
+  if (writable && ddbConnected) {
+    // Let D&D Beyond take the rest with the sheet's own rules — Hit Dice (5.5e all / 5e half), HP,
+    // slots, Pact Magic, limited-use features, exhaustion — then re-read the whole character.
+    await withDdbLock(async () => {
+      setStatus("Long rest — taking it on D&D Beyond…");
+      const res = await window.api.ddbLongRest();
+      if (!res.ok) { setStatus(res.error || "Long rest failed on D&D Beyond", true); return; }
+      await reloadCurrent();
+      setStatus(`Long rest taken on D&D Beyond ✓ — full HP, slots and ${rule} back`);
+    });
+    return;
+  }
+  // Read-only / offline: apply the same rules locally.
+  const pools: any[] = hitDice?.pools ?? [];
+  pools.forEach((p, i) => { p.used = p.total - (hitRemaining[i] ?? 0); }); // count every die actually spent
+  const used = longRestUsed(pools, hitDice?.longRest ?? "all");
+  pools.forEach((p, i) => { p.used = used[i] ?? 0; hitRemaining[i] = p.total - p.used; });
+  hitPending = hitPending.map(() => 0);
+  renderHitDice();
+  for (const s of spellSlots) remaining[s.level] = s.total;
+  renderSpells();
+  const exh = activeConditions.get(4); // Exhaustion drops one level
+  if (exh != null) { if (exh > 1) activeConditions.set(4, exh - 1); else activeConditions.delete(4); renderConditions(); }
+  else if (activeConditions.has(4)) { activeConditions.delete(4); renderConditions(); }
+  if (hp) commitHp(0, 0); // full HP; temporary HP ends with a Long Rest
+  setStatus(`Long rest (local) — full HP, slots and ${rule} back`);
 };
 
-// Reconcile local hit-dice pips with the authoritative per-class used counts DDB reports
-// after a short rest. DDB pools are per class; our pips are grouped by die size, so sum.
+// Reconcile local Hit Dice with the per-class used counts DDB reports after a short rest (matched by
+// class name, falling back to row order).
 function syncHitPoolsFromDdb(ddbPools: any[]) {
-  const usedByDie: Record<number, number> = {};
-  const totalByDie: Record<number, number> = {};
-  for (const p of ddbPools || []) {
-    if (p.die == null) continue;
-    usedByDie[p.die] = (usedByDie[p.die] ?? 0) + (p.used ?? 0);
-    totalByDie[p.die] = (totalByDie[p.die] ?? 0) + (p.total ?? 0);
-  }
-  for (const pool of hitDice?.pools ?? []) {
-    if (usedByDie[pool.die] == null) continue;
-    pool.used = usedByDie[pool.die];
-    hitRemaining[pool.die] = (totalByDie[pool.die] ?? pool.total) - usedByDie[pool.die];
-  }
+  const pools: any[] = hitDice?.pools ?? [];
+  pools.forEach((pool, i) => {
+    const d = (ddbPools || []).find((x: any) => String(x.cls || "").toLowerCase() === String(pool.cls).toLowerCase()) ?? (ddbPools || [])[i];
+    if (!d || typeof d.used !== "number") return;
+    pool.used = d.used;
+    hitRemaining[i] = (d.total ?? pool.total) - d.used;
+  });
 }
+
 let pendingInvRefresh = false;
 $("paneSeg").querySelectorAll("button").forEach((b) => {
   b.addEventListener("click", () => {
@@ -3302,7 +3353,9 @@ async function exportSheetPdf() {
   const subtitle = charClassLine
     || (activeSource === "poke5e" ? (activeRef.startsWith("pmon:") ? "poke5e Pokémon" : "poke5e Trainer") : activeSource === "monster" ? "Monster" : "Character")
        + (model.level ? ` · Level ${model.level}` : "");
-  const hd = hitDice?.pools?.length ? hitDice.pools.map((p: any) => `${p.total}d${p.die}`).join(" ") : null;
+  const hdByDie = new Map<number, number>();
+  for (const p of hitDice?.pools ?? []) hdByDie.set(p.die, (hdByDie.get(p.die) ?? 0) + p.total);
+  const hd = hdByDie.size ? [...hdByDie].sort((a, b) => b[0] - a[0]).map(([die, n]) => `${n}d${die}`).join(" ") : null;
   const dto = buildSheetDto({
     model, subtitle,
     ac: acValue,
