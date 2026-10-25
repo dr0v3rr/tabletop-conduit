@@ -120,6 +120,10 @@ h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: v
 .cond-chip { background: #b5432f; border: 1px solid #b5432f; color: #fff; border-radius: 20px; padding: 2px 8px; font-size: 11px; display: inline-flex; align-items: center; gap: 4px; }
 .cond-chip .cx { opacity: .7; font-size: 9px; }
 .cond-chip:hover .cx { opacity: 1; }
+.exh-chip { padding: 1px 4px; }
+.exh-chip button { background: none; border: none; color: inherit; font: inherit; cursor: pointer; padding: 0 3px; line-height: 1; }
+.exh-chip .exh-step { font-weight: 700; }
+.exh-chip .exh-step:disabled { opacity: .35; cursor: default; }
 .cond-add-wrap { position: relative; display: inline-block; }
 .cond-add { background: var(--panel); border: 1px dashed var(--line); color: var(--muted); border-radius: 20px; padding: 2px 9px; font-size: 11px; }
 .cond-add:hover { border-color: var(--accent2); color: var(--ink); }
@@ -354,6 +358,7 @@ button { cursor: pointer; font: inherit; }
 .stag { font-size: 9px; font-weight: 700; line-height: 1; padding: 2px 4px; border-radius: 3px; border: 1px solid var(--line); color: var(--muted); }
 .stag.conc { color: #e0a24a; border-color: #5a4a2e; background: rgba(224,162,74,.12); }
 .stag.rit { color: #7c9fe0; border-color: #2e3a5a; }
+.stag.item { color: #6fbf73; border-color: #2e5a35; }
 .stag.ct { color: #a98fe0; border-color: #3a2e5a; }
 /* Bonus-action moves get a distinct, filled badge so they're easy to spot while scanning the list. */
 .stag.ba { color: #08130f; background: #43c9a0; border-color: #43c9a0; font-weight: 800; letter-spacing: .02em; }

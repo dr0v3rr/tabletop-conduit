@@ -272,6 +272,7 @@ export function composeRoll(model: RollModel, request: RollRequest): ComposedRol
   const baseSplit = splitDamageMod(extras.baseDamage);
   let damageMod = baseSplit.flat;
   const damageBonusDice: string[] = [];
+  const critOnlyDice: string[] = []; // extra crit dice, rolled once and only on a crit (Brutal Critical)
   let damageReroll: number | undefined;
   let damageMin: number | undefined;
 
@@ -284,7 +285,8 @@ export function composeRoll(model: RollModel, request: RollRequest): ComposedRol
         else if (d20Set.has(e.target)) d20Mod += e.value;
         break;
       case 'add-dice':
-        if (e.target === 'damage') damageBonusDice.push(e.dice);
+        if (e.target === 'damage' && e.critOnly) { if (request.crit) critOnlyDice.push(e.dice); }
+        else if (e.target === 'damage') damageBonusDice.push(e.dice);
         else if (d20Set.has(e.target)) d20BonusDice.push(e.dice);
         break;
       case 'reroll':
@@ -348,7 +350,8 @@ export function composeRoll(model: RollModel, request: RollRequest): ComposedRol
       p.push(...defaultD20Fields('Attack', d20Single, advantage));
       if (dF) p.push(`{{Damage=[[${dF}]]}}`);
       // On a crit, roll the weapon dice a second time (PHB) — dice only, no flat mod.
-      if (request.crit && critDice) p.push(`{{Crit=[[${critDice}]]}}`);
+      const critRoll = [critDice, ...critOnlyDice].filter(Boolean).join(' + ');
+      if (request.crit && critRoll) p.push(`{{Crit=[[${critRoll}]]}}`);
       return { template: 'default', name, whisper, advantage, d20Mod, critRange, d20BonusDice,
         damage: { formula: baseSplit.dice, mod: damageMod, bonusDice: damageBonusDice },
         notes, command: p.join(' ') };
@@ -372,6 +375,7 @@ export function composeRoll(model: RollModel, request: RollRequest): ComposedRol
       damageFormula,
       damageMod,
       damageBonusDice,
+      critOnlyDice,
       damageReroll,
       damageMin,
       damageType: extras.damageType,
@@ -400,6 +404,7 @@ export function composeRoll(model: RollModel, request: RollRequest): ComposedRol
     let formula = dice;
     if (damageMod) formula = formula ? `${formula} + ${damageMod}` : String(damageMod);
     if (request.crit && dice) formula = `${formula} + ${dice}`;
+    for (const d of critOnlyDice) formula = formula ? `${formula} + ${d}` : d;
     if (!formula) formula = '0';
     // On a D&D-5e sheet, render as a proper damage card; otherwise the plain default box.
     const command = style === 'sheet'

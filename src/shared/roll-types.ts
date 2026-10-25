@@ -11,7 +11,7 @@ export type AdvantageMode = "normal" | "advantage" | "disadvantage" | "super-adv
  *  the compose layer consumes them and never needs to know the rule's name. */
 export type RuleEffect =
   | { op: "flat"; target: RollTarget; value: number; label?: string }              // +N / -N (Sharpshooter -5 atk / +10 dmg, etc.); target "d20" applies to every d20 roll (Exhaustion 2024)
-  | { op: "add-dice"; target: "attack" | "damage" | "check" | "save"; dice: string; label?: string } // "1d4" (Bless), "2d6" (Sneak Attack), "1d4" (Guidance)
+  | { op: "add-dice"; target: "attack" | "damage" | "check" | "save"; dice: string; label?: string; critOnly?: boolean } // "1d4" (Bless), "2d6" (Sneak Attack), "1d4" (Guidance); critOnly: extra crit dice rolled once, only on a crit (Brutal Critical)
   | { op: "advantage"; target: "attack" | "check" | "save"; mode: "advantage" | "disadvantage" | "elven-accuracy"; label?: string }
   | { op: "reroll"; target: "attack" | "damage" | "d20"; threshold: number; label?: string }  // reroll dice <= threshold (Great Weapon Fighting ro<=2, Halfling Lucky ro=1; "d20" = every d20 kind)
   | { op: "min-die"; target: "damage"; min: number; label?: string }                  // treat each die as >= min
@@ -58,4 +58,8 @@ export interface RollRequest {
   baseDamageRepeat?: string;
   /** Damage type label, e.g. "Slashing". */
   damageType?: string;
+  /** For a weapon attack — what the weapon is, for rules that only touch some weapons: Great Weapon
+   *  Fighting (a melee weapon held in two hands — Two-Handed, or Versatile rolled 2H) and Rage (an
+   *  attack using Strength). Absent for spells and other attacks. */
+  weapon?: { ability: string; melee: boolean; twoHanded: boolean };
 }

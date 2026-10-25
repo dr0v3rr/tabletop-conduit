@@ -335,3 +335,22 @@ describe('default template adv/disadvantage shows each separate die', () => {
     expect(c).toContain('{{Roll 3=[[1d20cs>20 + 5]]}}');
   });
 });
+
+describe('crit-only dice (Brutal Critical) join the crit roll once, and only on a crit', () => {
+  const brutal = { op: 'add-dice' as const, target: 'damage' as const, dice: '1d12', critOnly: true, label: 'Brutal Critical' };
+  const req = (crit: boolean, templateStyle: 'sheet' | 'default'): RollRequest =>
+    ({ kind: 'attack', key: 'Greataxe', baseAttackMod: 7, baseDamage: '1d12 + 4', crit, templateStyle, effects: [brutal] });
+  it('default template: Crit = weapon dice + 1d12; Damage untouched', () => {
+    const cmd = buildRoll20Command(model, req(true, 'default'));
+    expect(cmd).toContain('{{Damage=[[1d12 + 4]]}}');
+    expect(cmd).toContain('{{Crit=[[1d12 + 1d12]]}}');
+  });
+  it('sheet template: crit1 = weapon dice + 1d12', () => {
+    expect(buildRoll20Command(model, req(true, 'sheet'))).toContain('{{crit1=[[1d12 + 1d12]]}}');
+  });
+  it('no crit → no extra dice anywhere', () => {
+    const cmd = buildRoll20Command(model, req(false, 'default'));
+    expect(cmd).not.toContain('Crit=');
+    expect(cmd.match(/1d12/g)).toHaveLength(1);
+  });
+});

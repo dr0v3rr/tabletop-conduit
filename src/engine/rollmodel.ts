@@ -77,42 +77,64 @@ function hasRestriction(m: Modifier): boolean {
   return typeof m.restriction === 'string' && m.restriction.trim() !== '';
 }
 
-export function computeRollModel(data: CharacterData): RollModel {
-  const inventory = data.inventory ?? [];
+/** Whether the inventory item behind a modifier or spell (`componentId`) is in use: equipped, and
+ *  attuned when it needs attunement. Item modifiers and spells link to their item by
+ *  `componentId === item.definition.id` (also matched against the item's own granted-modifier
+ *  componentIds). If no owning item can be identified the answer is yes (conservative — never drop
+ *  something we cannot map). Attunement is required when the ITEM's definition says so OR the caller
+ *  says so — DDB often leaves `definition.requiresAttunement` unset and flags the modifier instead
+ *  (Cloak/Ring of Protection), so an UNATTUNED such item must not grant its attunement-gated bonus. */
+export function itemInUse(data: CharacterData, componentId: number | null | undefined, attuneGated = false): boolean {
+  if (componentId === undefined || componentId === null) return true;
+  const owners = (data.inventory ?? []).filter((it) => {
+    if (it?.definition?.id === componentId) return true;
+    const gms = it?.definition?.grantedModifiers ?? [];
+    return Array.isArray(gms) && gms.some((g) => g?.componentId === componentId);
+  });
+  if (owners.length === 0) return true; // owner not identifiable -> keep
+  // In use if ANY matching item instance is equipped (+ attuned when required).
+  return owners.some((it) => {
+    if (it?.equipped !== true) return false;
+    return (it?.definition?.requiresAttunement || attuneGated) ? it?.isAttuned === true : true;
+  });
+}
 
-  // Resolve whether an `item`-bucket modifier's owning inventory item is currently
-  // active: the item must be `equipped`, and (if it requires attunement) `isAttuned`.
-  // Item modifiers link to their inventory item by `componentId === item.definition.id`
-  // (also matched against the item's own granted-modifier componentIds). If no owning
-  // item can be positively identified, the modifier is KEPT (conservative — never
-  // regress a golden by dropping a modifier we cannot map).
-  const itemModifierActive = (m: Modifier): boolean => {
-    const cid = m.componentId;
-    if (cid === undefined || cid === null) return true;
-    const owners = inventory.filter((it) => {
-      if (it?.definition?.id === cid) return true;
-      const gms = it?.definition?.grantedModifiers ?? [];
-      return Array.isArray(gms) && gms.some((g) => g?.componentId === cid);
-    });
-    if (owners.length === 0) return true; // owner not identifiable -> keep
-    // Keep if ANY matching item instance is equipped (+ attuned when required). Attunement is required
-    // when the ITEM's definition says so OR when THIS modifier is flagged `requiresAttunement` — DDB
-    // frequently leaves `definition.requiresAttunement` unset and marks the modifier instead (e.g.
-    // Cloak/Ring of Protection), so an UNATTUNED such item must not grant its attunement-gated bonus.
-    const attuneGated = m.requiresAttunement === true;
-    return owners.some((it) => {
-      if (it?.equipped !== true) return false;
-      return (it?.definition?.requiresAttunement || attuneGated) ? it?.isAttuned === true : true;
-    });
-  };
+/** Every modifier currently in effect, tagged with its bucket: item modifiers only while their item
+ *  is equipped (and attuned when required), and a species' ungranted ability increases dropped when
+ *  the background grants them (2024 origins). Shared by the roll model and spellcasting. */
+export function activeModifiers(data: CharacterData): Array<Modifier & { _bucket: string }> {
+  const itemModifierActive = (m: Modifier): boolean => itemInUse(data, m.componentId, m.requiresAttunement === true);
 
   // Under the 2024 origin rules ability increases come from the BACKGROUND, and a legacy species ASI is
   // then left in the data flagged isGranted:false and NOT applied (seen live: a Gem Dragonborn's +2 CHA
   // inflating CHA by 2). But isGranted:false alone doesn't mean "off": a species' CHOSEN increases
   // (Half-Elf's +1 to two scores) carry it too and DDB applies them when the background grants no
   // increases (seen live: Acerē, DEX/CON 16 on DDB). So drop them only when the background grants some.
+  // A 2024 background's increases sit either in the background bucket or on a background "feat" D&D
+  // Beyond tags __INITIAL_ASI ("Charlatan Ability Score Improvements", seen live on a Gem Dragonborn).
   const isScoreBonus = (m: Modifier) => m.type === 'bonus' && /-score$/.test(m.subType || '');
-  const backgroundGrantsAsi = ((data.modifiers as Record<string, Modifier[] | undefined> | undefined)?.background ?? []).some(isScoreBonus);
+  const buckets = (data.modifiers as Record<string, Modifier[] | undefined> | undefined) ?? {};
+  const initialAsiFeats = new Set(
+    (data.feats ?? [])
+      .filter((f) => ((f?.definition as { categories?: { tagName?: string }[] } | undefined)?.categories ?? []).some((c) => c?.tagName === '__INITIAL_ASI'))
+      .map((f) => f?.definition?.id),
+  );
+  const backgroundGrantsAsi =
+    (buckets.background ?? []).some(isScoreBonus) ||
+    (buckets.feat ?? []).some((m) => isScoreBonus(m) && initialAsiFeats.has(m.componentId ?? undefined));
+
+  // Multiclassing: a class's starting proficiencies (its saving throws, armour, skills) apply only to
+  // the class you started with. D&D Beyond flags those modifiers availableToMulticlass:false, so drop
+  // them when their feature belongs to any OTHER class (seen live: a Rogue-first Rogue/Ranger getting
+  // Ranger's STR save proficiency).
+  const classes = data.classes ?? [];
+  const otherClassFeatures = new Set<number>();
+  if (classes.length > 1 && classes.some((c) => c?.isStartingClass)) {
+    for (const c of classes) {
+      if (c?.isStartingClass) continue;
+      for (const f of c?.classFeatures ?? []) if (typeof f?.definition?.id === 'number') otherClassFeatures.add(f.definition.id);
+    }
+  }
 
   // Flatten all modifiers, tagging bucket for source resolution. `item`-bucket
   // modifiers are dropped unless their owning inventory item is equipped/attuned.
@@ -124,10 +146,16 @@ export function computeRollModel(data: CharacterData): RollModel {
         // them isGranted:false — the drop is scoped to race `*-score` bonuses.
         if (backgroundGrantsAsi && m.isGranted === false && bucket === 'race' && isScoreBonus(m)) continue;
         if (bucket === 'item' && !itemModifierActive(m)) continue;
+        if (m.availableToMulticlass === false && typeof m.componentId === 'number' && otherClassFeatures.has(m.componentId)) continue;
         mods.push({ ...m, _bucket: bucket });
       }
     }
   }
+  return mods;
+}
+
+export function computeRollModel(data: CharacterData): RollModel {
+  const mods = activeModifiers(data);
 
   // componentId -> friendly source name (feats, class features, racial traits, background).
   const sourceById = new Map<number, string>();
@@ -165,6 +193,10 @@ export function computeRollModel(data: CharacterData): RollModel {
 
   // Sum of `bonus` mods for a subType, applying only unconditional ones.
   // Conditional (restriction-bearing) bonuses are emitted to conditional[] instead.
+  // A bonus "equal to your <ability> modifier" (Aura of Protection's CHA to saves) comes with no
+  // numeric value and a `statId` naming the ability instead; it resolves once the scores are known
+  // (a score bonus never takes this form, so the score pass below doesn't need it).
+  let statMod: ((id: number) => number) | null = null;
   const sumBonus = (sub: string): number => {
     let total = 0;
     for (const m of modsBy('bonus', sub)) {
@@ -172,7 +204,8 @@ export function computeRollModel(data: CharacterData): RollModel {
         pushConditional(m);
         continue;
       }
-      total += m.value ?? 0;
+      if (typeof m.value === 'number') total += m.value;
+      else if (m.statId && statMod) total += statMod(m.statId);
     }
     return total;
   };
@@ -201,7 +234,9 @@ export function computeRollModel(data: CharacterData): RollModel {
   const scores: Record<number, number> = {};
   for (let i = 1; i <= 6; i++) {
     let v = (base[i] ?? 0) + (bonus[i] ?? 0);
-    v += sumBonus(`${STAT_ID_TO_KEY[i]}-score`);
+    // An ability-score increase is never situational: text on it ("That you do not have Saving Throw
+    // Proficiency in" on Resilient) describes which score you could pick, so count it regardless.
+    for (const m of modsBy('bonus', `${STAT_ID_TO_KEY[i]}-score`)) v += m.value ?? 0;
     // `set` score mods (Gauntlets of Ogre Power / Headband of Intellect) floor-set the
     // score: apply as max(current, setValue), BEFORE any absolute overrideStats win.
     const setVal = maxSet(`${STAT_ID_TO_KEY[i]}-score`);
@@ -211,6 +246,7 @@ export function computeRollModel(data: CharacterData): RollModel {
     scores[i] = v;
   }
   const scoreOf = (id: number): number => scores[id] ?? 0;
+  statMod = (id) => abilityMod(scoreOf(id));
 
   const abilities = {} as RollModel['abilities'];
   for (const ab of ABILITIES) {
@@ -317,6 +353,35 @@ export function computeRollModel(data: CharacterData): RollModel {
   // Jack of All Trades / Remarkable Athlete also add half-proficiency to initiative.
   if (globalHalfProf) initiative += halfProfBonus;
 
+  // ---- Speed ----
+  // The species' base speeds, raised by any "your speed is N" (`set innate-speed-<mode>`, e.g. Fleet of
+  // Foot's 35 ft; no value = equal to your walking speed), then flat bonuses (`bonus speed` such as
+  // Mobile's +10 for walking, `bonus speed-<mode>` for one mode). Monk Unarmored Movement only counts
+  // with no armour or shield on. Conditional ones (Cloak of the Bat "in dim light") are left out.
+  const SPEED_MODES = ['walking', 'flying', 'swimming', 'climbing', 'burrowing'] as const;
+  const RACE_KEY: Record<string, string> = { walking: 'walk', flying: 'fly', swimming: 'swim', climbing: 'climb', burrowing: 'burrow' };
+  const raceSpeeds = (data as { race?: { weightSpeeds?: { normal?: Record<string, number | null> } } }).race?.weightSpeeds?.normal ?? {};
+  const unconditional = (type: string, sub: string) => modsBy(type, sub).filter((m) => !hasRestriction(m));
+  const flatBonus = (sub: string) => unconditional('bonus', sub).reduce((t, m) => t + (typeof m.value === 'number' ? m.value : 0), 0);
+  const armoured = (data.inventory ?? []).some((it) => it?.equipped && typeof (it.definition as { armorTypeId?: number } | undefined)?.armorTypeId === 'number');
+  const baseWalk = Math.max(raceSpeeds.walk ?? 30, ...unconditional('set', 'innate-speed-walking').map((m) => m.value ?? 0));
+  const walk = baseWalk + flatBonus('speed') + flatBonus('speed-walking') + (armoured ? 0 : flatBonus('unarmored-movement'));
+  // A speed the player typed on the sheet (D&D Beyond "Speeds" override) replaces the computed one.
+  const MOVEMENT_ID: Record<number, string> = { 1: 'walking', 2: 'burrowing', 3: 'climbing', 4: 'flying', 5: 'swimming' };
+  const custom = new Map<string, number>();
+  for (const c of (data as { customSpeeds?: { movementId?: number; distance?: number | null }[] | null }).customSpeeds ?? []) {
+    const mode = MOVEMENT_ID[c?.movementId ?? 0];
+    if (mode && typeof c.distance === 'number') custom.set(mode, c.distance);
+  }
+  const speeds: { type: string; value: number }[] = [];
+  for (const mode of SPEED_MODES) {
+    if (mode === 'walking') { speeds.push({ type: mode, value: custom.get(mode) ?? walk }); continue; }
+    const set = unconditional('set', `innate-speed-${mode}`).map((m) => (typeof m.value === 'number' ? m.value : walk));
+    const base = Math.max(raceSpeeds[RACE_KEY[mode]!] ?? 0, ...set);
+    const value = custom.get(mode) ?? (base > 0 ? base + flatBonus(`speed-${mode}`) : 0);
+    if (value > 0) speeds.push({ type: mode, value });
+  }
+
   const model: RollModel = {
     name: data.name,
     level: totalLevel,
@@ -326,7 +391,8 @@ export function computeRollModel(data: CharacterData): RollModel {
     skills,
     passives,
     initiative,
-    speed: (data as { race?: { weightSpeeds?: { normal?: { walk?: number } } } }).race?.weightSpeeds?.normal?.walk ?? 30,
+    speed: speeds[0]!.value,
+    ...(speeds.length > 1 ? { speeds } : {}),
     conditional,
   };
   return model;

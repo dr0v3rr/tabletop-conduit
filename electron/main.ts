@@ -14,6 +14,7 @@ import { buildSendExpression } from "../src/roll20/inject.js";
 import { displayCard } from "../src/roll20/format.js";
 import { r20TokenExpr } from "../src/roll20/token.js";
 import { ddbSlotsExpr, ddbHitDiceExpr, ddbInventoryExpr, ddbFetchCharExpr, type DdbHitDiceMethod } from "../src/ddb/inject.js";
+import { alwaysPreparedRequests, alwaysPreparedUrl, mergeAlwaysPrepared } from "../src/ddb/always-prepared.js";
 import { extractReadKey, fetchTrainer, trainerToRollModel, trainerExtras, buildInventory, fetchTrainerFeats, updateTrainerHp, updateTrainerMoney, trainerMoney, updatePokemonHp, updatePokemonStatus, updatePokemonExp, updateMovePp, updateInventoryItem, addInventoryItem, fetchItemsCatalog, fetchHeldItems, addHeldItem, removeHeldItem, addPokemonToTeam, removePokemon, evolvePokemon, deleteTrainer, setPoke5eCredentials, getPoke5eCredentials } from "../src/poke5e/source.js";
 import { buildPokedex } from "../src/poke5e/pokedex.js";
 import type { DexEntry } from "../src/poke5e/pokedex.js";
@@ -1029,6 +1030,29 @@ ipcMain.handle("load-poke5e", async (_e, input: string) => {
 
 // ---- IPC: character loading + rolling --------------------------------------
 
+// Always-prepared spells (Oath / Domain spells, 2024 class spells) live outside the character JSON —
+// fetch them per class and subclass and fold them in. Game data, so cached for the session; a failed
+// or slow lookup just leaves those spells out rather than holding up the load.
+const alwaysPreparedCache = new Map<string, any[]>();
+async function withAlwaysPrepared(data: CharacterData): Promise<CharacterData> {
+  const byClass = new Map<number, any[]>();
+  await Promise.all(alwaysPreparedRequests(data).map(async ({ classEntryId, defId, level }) => {
+    const key = `${defId}@${level}`;
+    let spells = alwaysPreparedCache.get(key);
+    if (!spells) {
+      try {
+        const res = await fetch(alwaysPreparedUrl(defId, level), { signal: AbortSignal.timeout(5000) });
+        const json: any = res.ok ? await res.json() : null;
+        if (!json?.success || !Array.isArray(json.data)) return;
+        spells = json.data as any[];
+        alwaysPreparedCache.set(key, spells);
+      } catch { return; }
+    }
+    byClass.set(classEntryId, [...(byClass.get(classEntryId) ?? []), ...spells]);
+  }));
+  return byClass.size ? mergeAlwaysPrepared(data, byClass) : data;
+}
+
 ipcMain.handle("load-character", async (_e, id: string) => {
   try {
     const cleanId = String(id).trim().match(/\d+/)?.[0];
@@ -1054,6 +1078,7 @@ ipcMain.handle("load-character", async (_e, id: string) => {
     }
     // Point the embedded DDB sheet at this character so slot writes hit the right sheet.
     ddbView.webContents.loadURL(`https://www.dndbeyond.com/characters/${cleanId}`);
+    data = await withAlwaysPrepared(data);
     const character = buildCharacter(data);
     current = { data, name: data.name, id: cleanId, model: character.model };
     // Writable only if the signed-in user OWNS this character; a public/other's sheet loads

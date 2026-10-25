@@ -153,6 +153,8 @@ export interface AttackDamageRollOptions {
   damageFormula?: string;
   damageMod: number;
   damageBonusDice?: string[];
+  /** extra crit dice, added once to the crit roll only (Brutal Critical). */
+  critOnlyDice?: string[];
   damageReroll?: number;
   damageMin?: number;
   damageType?: string;
@@ -204,9 +206,10 @@ export function attackDamageRoll(o: AttackDamageRollOptions): string {
   parts.push(`{{dmg1=[[${dmg.formula}]]}}`);
   if (o.damageType) parts.push(`{{dmg1type=${o.damageType}}}`);
 
-  if (o.crit && dmg.critDice) {
+  const critRoll = [dmg.critDice, ...(o.critOnlyDice ?? [])].filter(Boolean).join(' + ');
+  if (o.crit && critRoll) {
     parts.push('{{crit=1}}');
-    parts.push(`{{crit1=[[${dmg.critDice}]]}}`);
+    parts.push(`{{crit1=[[${critRoll}]]}}`);
   }
 
   return parts.join(' ');

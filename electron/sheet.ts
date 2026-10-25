@@ -1,6 +1,6 @@
 // Sheet renderer — thin client over window.api (preload IPC). No engine here.
 import { aggregate } from "../src/stats/roll-stats.js"; // pure stats, safe in the renderer bundle
-import { CONDITIONS } from "../src/engine/conditions.js"; // pure data catalog
+import { CONDITIONS, EXHAUSTION_ID, EXHAUSTION_MAX, exhaustionEffects, exhaustionSpeed } from "../src/engine/conditions.js"; // pure data catalog + exhaustion rules
 import { POKE5E_STATUSES, poke5eStatusName } from "../src/poke5e/status.js"; // poke5e's own status list
 import { buildSheetDto } from "../src/sheet/sheet-pdf.js"; // printable-sheet DTO builder (pure)
 import { expandAttacks } from "../src/compose/index.js"; // fan a FIXED multi-attack move into N cards (pure)
@@ -822,9 +822,11 @@ function speedModesShort(modes: { type: string; value: number }[]): string {
 
 function renderVitals() {
   if (!model) return;
-  const modes = model.speeds || [];
+  const exh = exhaustionLevel();
+  const modes: { type: string; value: number }[] = (model.speeds || []).map((m: { type: string; value: number }) => ({ ...m, value: exhaustionSpeed(m.value, exh, characterRules()) }));
   const multiSpeed = modes.length > 1;
-  const speedVal = multiSpeed && showAllSpeeds ? speedModesShort(modes) : `${model.speed} ft`;
+  const speed = exhaustionSpeed(model.speed, exh, characterRules());
+  const speedVal = multiSpeed && showAllSpeeds ? speedModesShort(modes) : `${speed} ft${exh ? " ⚠" : ""}`;
   const items: { label: string; value: string | number; key?: string }[] = [
     { label: "AC", value: acValue ?? "—" },
     { label: "Speed", value: speedVal, key: "speed" },
@@ -863,11 +865,20 @@ function renderConditions() {
 
   // Inline: only the ACTIVE conditions (click the ✕ to clear). Usually empty → near-zero space.
   const on = CONDITIONS.filter((c) => activeConditions.has(c.id));
+  const exh = exhaustionLevel();
   active.innerHTML = on
-    .map((c) => `<button class="cond-chip on${c.effects.length ? " affects" : ""}" data-id="${c.id}" title="Clear ${esc(c.name)}">${esc(c.name)} <span class="cx">✕</span></button>`)
+    .map((c) => c.id === EXHAUSTION_ID
+      ? `<span class="cond-chip on affects exh-chip" title="${esc(exhaustionTip(exh))}">` +
+        `<button class="exh-step" data-step="-1" title="Lower Exhaustion">−</button>Exhaustion ${exh}` +
+        `<button class="exh-step" data-step="1" title="Raise Exhaustion"${exh >= EXHAUSTION_MAX ? " disabled" : ""}>+</button>` +
+        `<button class="cx" data-id="${c.id}" title="Clear Exhaustion">✕</button></span>`
+      : `<button class="cond-chip on${c.effects.length ? " affects" : ""}" data-id="${c.id}" title="Clear ${esc(c.name)}">${esc(c.name)} <span class="cx">✕</span></button>`)
     .join("");
-  active.querySelectorAll<HTMLElement>(".cond-chip").forEach((chip) => {
+  active.querySelectorAll<HTMLElement>("button.cond-chip, .exh-chip .cx").forEach((chip) => {
     chip.onclick = () => toggleCondition(Number(chip.dataset.id));
+  });
+  active.querySelectorAll<HTMLElement>(".exh-step").forEach((b) => {
+    b.onclick = () => setExhaustion(exh + Number(b.dataset.step));
   });
   addBtn.textContent = on.length ? "＋" : "＋ Condition";
 
@@ -875,15 +886,64 @@ function renderConditions() {
   list.innerHTML = CONDITIONS
     .map((c) => {
       const isOn = activeConditions.has(c.id);
-      return `<button class="cond-opt${isOn ? " on" : ""}" data-id="${c.id}"><span class="cond-tick">${isOn ? "✓" : ""}</span>${esc(c.name)}${c.effects.length ? '<span class="cond-dot" title="affects your rolls">●</span>' : ""}</button>`;
+      const affects = c.effects.length || c.id === EXHAUSTION_ID;
+      return `<button class="cond-opt${isOn ? " on" : ""}" data-id="${c.id}"><span class="cond-tick">${isOn ? "✓" : ""}</span>${esc(c.name)}${affects ? '<span class="cond-dot" title="affects your rolls">●</span>' : ""}</button>`;
     })
     .join("");
   list.querySelectorAll<HTMLElement>(".cond-opt").forEach((opt) => {
     opt.onclick = (e) => { e.stopPropagation(); toggleCondition(Number(opt.dataset.id)); };
   });
+  renderVitals(); // speed follows the Exhaustion level
+}
+
+// Exhaustion has levels (1-6). D&D Beyond reports the level on the condition; a level-less entry
+// counts as 1.
+function exhaustionLevel(): number {
+  if (!activeConditions.has(EXHAUSTION_ID)) return 0;
+  const lvl = Math.floor(Number(activeConditions.get(EXHAUSTION_ID))); // from D&D Beyond — keep it a number
+  return lvl >= 1 ? Math.min(EXHAUSTION_MAX, lvl) : 1;
+}
+/** Which edition's character-wide rules apply (Exhaustion, the concentration DC cap). Feats and features
+ *  follow their own source book instead; for these D&D Beyond has no edition flag, so take the sheet's
+ *  long-rest setting — "recover half Hit Dice" is the 2014 rule — as the character's edition. */
+function characterRules(): "2024" | "2014" {
+  return hitDice?.longRest === "half" ? "2014" : "2024";
+}
+function exhaustionTip(level: number): string {
+  if (characterRules() === "2024") return `Exhaustion ${level}: −${2 * level} to every d20 Test, −${5 * level} ft speed${level >= EXHAUSTION_MAX ? " — death" : ""}`;
+  const bits = ["disadvantage on ability checks"];
+  if (level >= 2) bits.push(level >= 5 ? "speed 0" : "speed halved");
+  if (level >= 3) bits.push("disadvantage on attacks and saves");
+  if (level >= 4) bits.push("HP maximum halved");
+  if (level >= 6) bits.push("death");
+  return `Exhaustion ${level}: ${bits.join(", ")}`;
+}
+
+/** Set the Exhaustion level (0 clears it), syncing to D&D Beyond when connected. */
+async function setExhaustion(next: number) {
+  const level = Math.max(0, Math.min(EXHAUSTION_MAX, next));
+  const prev = exhaustionLevel();
+  if (level === prev) return;
+  const restore = () => { if (prev) activeConditions.set(EXHAUSTION_ID, prev); else activeConditions.delete(EXHAUSTION_ID); renderConditions(); };
+  if (level) activeConditions.set(EXHAUSTION_ID, level); else activeConditions.delete(EXHAUSTION_ID);
+  renderConditions();
+  ($("condList") as HTMLElement).hidden = true;
+  const syncToDdb = activeSource === "ddb" && writable;
+  if (syncToDdb) {
+    const res = await window.api.ddbSetCondition(EXHAUSTION_ID, level > 0, level || null).catch(() => ({ ok: false, error: "failed" } as any));
+    if (!res.ok) { restore(); setStatus(res.error || "Couldn't update Exhaustion on D&D Beyond", true); return; }
+  }
+  const what = level ? `Exhaustion ${level}` : "Exhaustion cleared";
+  setStatus(`${what}${syncToDdb ? " on D&D Beyond ✓" : ""}`);
+  if (model?.name) {
+    const label = level > prev ? "Condition Gained" : "Condition Cleared";
+    const value = level ? `Exhaustion ${level}${level >= EXHAUSTION_MAX ? " (death)" : ""}` : "Exhaustion";
+    window.api.roll20Say(`&{template:default} {{${label}=${value}}}`, model.name).catch(() => {});
+  }
 }
 
 async function toggleCondition(id: number) {
+  if (id === EXHAUSTION_ID) return setExhaustion(exhaustionLevel() ? 0 : 1);
   const wasActive = activeConditions.has(id);
   // Optimistic
   if (wasActive) activeConditions.delete(id);
@@ -1385,7 +1445,7 @@ async function applyHp(kind: "damage" | "heal") {
   amtEl.value = "";
   await commitHp(removed, temp);
   if (dmgTaken > 0) setStatus(`Took ${dmgTaken} damage${effect}`);
-  // Concentration: taking damage forces a CON save (DC 10 or half the damage, whichever higher).
+  // Concentration: taking damage forces a CON save (DC 10 or half the damage, whichever higher; max 30 in 2024).
   if (concentrating && hp.current > 0 && dmgTaken > 0) promptConcentration(dmgTaken);
   if (hp.current <= 0 && concentrating) { concentrating = null; renderConcentration(); } // 0 HP drops concentration
 }
@@ -1393,7 +1453,8 @@ async function applyHp(kind: "damage" | "heal") {
 // On taking damage while concentrating, auto-roll the CON save into Roll20 and show the DC.
 function promptConcentration(dmgTaken: number) {
   if (!concentrating) return;
-  const dc = Math.max(10, Math.floor(dmgTaken / 2));
+  let dc = Math.max(10, Math.floor(dmgTaken / 2));
+  if (characterRules() === "2024") dc = Math.min(30, dc); // 2024 caps it at DC 30
   setStatus(`Concentration! CON save DC ${dc} to keep ${concentrating.name}`, true);
   doRoll({ kind: "save", key: "CON" }); // one-click: post the CON save
 }
@@ -1598,7 +1659,7 @@ function renderAttacks() {
       two.className = "mini-btn two-hand";
       two.textContent = "2H";
       two.title = `Roll two-handed (${w.versatileDamage})`;
-      two.onclick = () => sendRoll(weaponReq({ ...w, name: `${w.name} (2H)`, damageDice: w.versatileDamage }));
+      two.onclick = () => sendRoll(weaponReq({ ...w, name: `${w.name} (2H)`, damageDice: w.versatileDamage }, true));
     }
     const meta = [w.damageType, w.range].filter(Boolean).join(" · ");
     const display = makeDisplayBtn({ name: w.name, description: w.description, meta, label: "Weapon" });
@@ -1990,6 +2051,8 @@ function slotPips(level: number): string {
 
 function spellTags(sp: any): string {
   let t = "";
+  if (sp.fromItem) t += `<span class="stag item" title="Cast from an item — uses its charges, not your spell slots">ITEM</span>`;
+  else if (sp.noSlot) t += `<span class="stag item" title="Free casting (e.g. once per Long Rest from a feat) — doesn't use a spell slot">FREE</span>`;
   if (sp.concentration) t += `<span class="stag conc" title="Concentration">C</span>`;
   if (sp.ritual) t += `<span class="stag rit" title="Ritual">R</span>`;
   if (sp.castingTime === "bonus") t += `<span class="stag ba" title="Bonus action — costs your bonus action this turn">BA</span>`;
@@ -2004,7 +2067,7 @@ function spellRow(sp: any): HTMLElement {
   const lvl = sp.isCantrip ? 0 : sp.level;
   // A leveled spell whose slot pool for its level is empty can't be cast — mark it so the UI
   // reads as unavailable (castSpell also hard-blocks the cast).
-  const usesSlot = lvl > 0 && spellSlots.some((s) => s.level === lvl);
+  const usesSlot = lvl > 0 && !sp.noSlot && spellSlots.some((s) => s.level === lvl);
   const outOfPp = !!(sp.pp && sp.pp.max > 0 && sp.pp.current <= 0);
   const depleted = (usesSlot && (remaining[lvl] ?? 0) <= 0) || outOfPp;
   b.className = "roll-line spell " + sp.casting + (depleted ? " depleted" : "");
@@ -2019,7 +2082,7 @@ function spellRow(sp: any): HTMLElement {
   if (sp.casting === "attack") right = `<span class="mod"${tip(sp.attackTip)}>${sgn(sp.attackBonus)}</span><span class="dmg"${tip(sp.damageTip)}>${esc(upDice)} ${esc(sd.type || "")}</span>`;
   else if (sp.casting === "save") right = `<span class="dmg"${tip([sp.saveTip, sp.damageTip].filter(Boolean).join(" · "))}>${esc(sp.saveAbility || "")} DC ${esc(sp.saveDc)} · ${esc(upDice || "—")}</span>`;
   else if (sp.healDice) right = `<span class="dmg heal"${tip(sp.damageTip)}>heal ${esc(sp.healDice)}</span>`;
-  else if (sp.autoHit && sp.damageDice) right = `<span class="dmg"${tip(sp.damageTip)}>${esc(sp.damageDice)} ${esc(sp.damageType || "")}</span>`; // guaranteed-hit damage
+  else if (sp.autoHit && sp.damageDice) right = `<span class="dmg"${tip(sp.damageTip)}>${esc(upDice || sp.damageDice)} ${esc(sp.damageType || "")}</span>`; // guaranteed-hit damage
   else if (sp.rollDie) right = `<span class="dmg">roll ${esc(sp.rollDie)}</span>`; // OHKO / prose die
   else right = `<span class="dmg util">cast</span>`;
   const pp = sp.pp && sp.pp.max > 0 ? `<span class="pp">${sp.pp.current}/${sp.pp.max} PP</span>` : "";
@@ -2040,16 +2103,25 @@ function ordLvl(n: number): string { return ORD[n] ?? `${n}th`; }
 
 /** Distinct slot levels (any track) at or above `base`, ascending — the levels a base-`base` spell
  *  can be cast in (its own level, or higher via up-casting). */
-function slotLevelsFrom(base: number): number[] {
-  return [...new Set(spellSlots.map((s) => s.level as number))].filter((L) => L >= base).sort((a, b) => a - b);
+function slotLevelsFrom(base: number, max = 9): number[] {
+  return [...new Set(spellSlots.map((s) => s.level as number))].filter((L) => L >= base && L <= max).sort((a, b) => a - b);
 }
 
 /** The slot level a spell will be cast at: the chosen up-cast level, else the spell's own level. */
 function castLevelFor(sp: any): number {
   if (sp.isCantrip) return 0;
+  if (sp.noSlot) return sp.level; // a free / item cast is at the spell's own level
   const base = sp.level as number;
   const sel = upcastSel[spellKey(sp)];
-  return sel && sel > base ? sel : base;
+  if (sel) return sel > base ? sel : base;
+  // Pact Magic slots are all one level, and a Warlock spell cast with one is cast at that level
+  // (Antagonize from a 5th-level Pact slot deals 6d4, not 4d4). Only when Pact slots are all there is:
+  // a multiclass caster with ordinary slots too picks the slot with the up-cast picker (as on DDB).
+  if (sp.className === "Warlock" && spellSlots.every((s: any) => s.pact)) {
+    const pact = spellSlots.find((s: any) => s.pact && s.level >= base);
+    if (pact) return pact.level;
+  }
+  return base;
 }
 
 /** Slot pips for a specific slot entry (so overlapping tracks — e.g. a Vancian L2 and a Pact L2 —
@@ -2066,9 +2138,9 @@ function slotPipsFor(slot: any): string {
  *  level up to the highest slot the character has, previewing the scaled damage. Null when the
  *  spell doesn't scale on a damage die, or there's no higher slot to choose. */
 function upcastControl(sp: any): HTMLElement | null {
-  if (sp.isCantrip || !sp.higherLevelDice) return null;
+  if (sp.isCantrip || sp.noSlot || !sp.higherLevelDice) return null;
   const base = sp.level as number;
-  const levels = slotLevelsFrom(base);
+  const levels = slotLevelsFrom(base, sp.maxCastLevel ?? 9);
   if (levels.length <= 1) return null; // only the base slot exists — nothing to up-cast into
   const sel = document.createElement("select");
   sel.className = "upcast";
@@ -2292,7 +2364,8 @@ function applyAbilityMods(sp: any): { eff: any; advantage: AdvMode | null; notes
 async function castSpell(sp: any) {
   const base = sp.isCantrip ? 0 : sp.level;
   const lvl = castLevelFor(sp); // the slot level actually consumed (base, or higher when up-cast)
-  const usesSlot = lvl > 0 && spellSlots.some((s) => s.level === lvl);
+  // A feat's free casting or an item's charges don't touch your spell slots.
+  const usesSlot = lvl > 0 && !sp.noSlot && spellSlots.some((s) => s.level === lvl);
   // Instant, local-only guard (no network): don't cast when you can already see there are no
   // slots left. Beyond that we trust the local count and stay responsive.
   if (usesSlot && (remaining[lvl] ?? 0) <= 0) { setStatus(`No level ${lvl} spell slots left`, true); return; }
@@ -2366,11 +2439,15 @@ async function castSpell(sp: any) {
   if (sp.concentration) { concentrating = { name: sp.name }; renderConcentration(); setStatus(`Concentrating on ${sp.name}`); }
 }
 
-function weaponReq(w: any) {
+function weaponReq(w: any, twoHands = false) {
   const dmg = w.damageMod ? `${w.damageDice} ${w.damageMod >= 0 ? "+" : "-"} ${Math.abs(w.damageMod)}` : w.damageDice;
   // Save-based action → a damage roll labelled with the DC (targets roll the save); no to-hit.
   if (w.save) return { kind: "damage", key: `${w.name} (DC ${w.save.dc} ${w.save.ability})`, baseDamage: dmg, damageType: w.damageType };
-  return { kind: "attack", key: w.name, baseAttackMod: w.attackMod, baseDamage: dmg, damageType: w.damageType, advantage: adv };
+  // What the weapon is, for rules that only touch some weapons (Great Weapon Fighting, Rage).
+  const props: string[] = (w.properties ?? []).map((p: string) => p.toLowerCase());
+  const melee = !props.includes("ammunition") && !props.includes("range");
+  const weapon = { ability: w.attackAbility, melee, twoHanded: twoHands || props.includes("two-handed") };
+  return { kind: "attack", key: w.name, baseAttackMod: w.attackMod, baseDamage: dmg, damageType: w.damageType, advantage: adv, weapon };
 }
 
 // A spell's FULL damage — combines every component (e.g. Ice Knife's piercing + cold), so the
@@ -2424,7 +2501,8 @@ async function refreshToggles() {
   // Show toggles applicable to this character. Probe with a save AND an attack request so a
   // toggle that only applies to one target still surfaces; merge, de-duped by id.
   const list = await window.api.listToggles({ kind: "save", key: "CON" });
-  const attackList = await window.api.listToggles({ kind: "attack" });
+  // List what could apply to a STR melee weapon attack too, so weapon-only options (Rage) appear.
+  const attackList = await window.api.listToggles({ kind: "attack", weapon: { ability: "STR", melee: true, twoHanded: false } });
   const byId = new Map<string, string>();
   [...list, ...attackList].forEach((t) => byId.set(t.id, t.name));
   const sec = sectionEl("options");
@@ -2484,6 +2562,8 @@ async function sendRoll(request: any, onTotal?: (total: number | null) => void) 
   delete req.hitDie;
   if (adhocMod && !hitDie) { req.adhocMod = adhocMod; resetAdhoc(); } // one-off: applies to this roll, then clears
   if (critNext && !hitDie) { req.crit = true; setCritNext(false); } // one-off: double the damage dice on this attack
+  const exhEffects = hitDie ? [] : exhaustionEffects(exhaustionLevel(), characterRules());
+  if (exhEffects.length) req.effects = [...(req.effects ?? []), ...exhEffects]; // Exhaustion applies to every d20 Test
   // Alt/Shift-click hold-to-modify: one-off advantage/disadvantage for THIS roll without touching the
   // sticky Adv/Dis control (Beyond20 convention). Leaves super-advantage (e.g. Elven Accuracy) intact.
   if (clickAdv && !String(req.advantage || "").startsWith("super")) {
@@ -2504,7 +2584,10 @@ async function sendRoll(request: any, onTotal?: (total: number | null) => void) 
   const initCtx = request.kind === "initiative"
     ? { token: boundToken?.id ?? null, label: model?.name || "Initiative" }
     : null;
-  if (inj?.ok) pollRollResult(beforeIds, req.name, initCtx, onTotal); // read the total back and show it
+  // Only attack rolls crit or auto-miss (2024 d20 Tests): a natural 20/1 on a save, check or initiative
+  // is just a number, and a 1 on a damage or healing die isn't a fumble — so no 🎯/💀 for those.
+  const canCrit = !["check", "skill", "save", "initiative", "damage"].includes(request.kind);
+  if (inj?.ok) pollRollResult(beforeIds, req.name, initCtx, onTotal, canCrit); // read the total back and show it
   else onTotal?.(null);
 }
 
@@ -2513,7 +2596,7 @@ async function sendRoll(request: any, onTotal?: (total: number | null) => void) 
 // rolls), so matching on it silently failed for most rolls. Instead take the newest record that's NEW
 // since we snapshotted (almost always ours), preferring one that matches our character or this roll's
 // name when several land in the same window.
-async function pollRollResult(beforeIds: Set<string>, rollName?: string, initCtx?: { token: string | null; label: string } | null, onTotal?: (total: number | null) => void) {
+async function pollRollResult(beforeIds: Set<string>, rollName?: string, initCtx?: { token: string | null; label: string } | null, onTotal?: (total: number | null) => void, canCrit = true) {
   const myName = (model?.name || "").toLowerCase();
   const want = String(rollName || "").toLowerCase();
   // Resolve our Roll20 display name once so we can pick OUR OWN rolls out of the shared chat — several
@@ -2533,7 +2616,7 @@ async function pollRollResult(beforeIds: Set<string>, rollName?: string, initCtx
         (myName && pool.find((r: any) => String(r.character || "").toLowerCase() === myName)) ||
         (want && pool.find((r: any) => String(r.name || "").toLowerCase() === want)) ||
         pool[pool.length - 1]; // newest in the pool
-      showRollResult(match);
+      showRollResult(match, canCrit);
       onTotal?.(typeof match?.total === "number" ? match.total : null);
       if (initCtx) {
         if (typeof match?.total === "number") await addInitiativeToTurnOrder(initCtx, match.total);
@@ -2554,10 +2637,11 @@ async function addInitiativeToTurnOrder(ctx: { token: string | null; label: stri
   else setStatus(`Rolled initiative ${total} — couldn't add to the turn order${r?.reason ? ` (${r.reason})` : ""}`, true);
 }
 
-function showRollResult(r: any) {
+function showRollResult(r: any, canCrit = true) {
   const lr = $("lastRoll");
-  const cls = r.crit ? "res-crit" : r.fumble ? "res-fumble" : "";
-  const badge = r.crit ? " 🎯" : r.fumble ? " 💀" : "";
+  const crit = canCrit && r.crit, fumble = canCrit && r.fumble;
+  const cls = crit ? "res-crit" : fumble ? "res-fumble" : "";
+  const badge = crit ? " 🎯" : fumble ? " 💀" : "";
   const dmg = r.damage ? `  ·  ${esc(r.damage)} dmg` : "";
   lr.innerHTML = `<b class="${cls}">${esc(r.name || "Roll")}: ${esc(r.total)}${badge}</b>${dmg}`;
 }
@@ -2738,9 +2822,9 @@ $("longRest").onclick = async () => {
   renderHitDice();
   for (const s of spellSlots) remaining[s.level] = s.total;
   renderSpells();
-  const exh = activeConditions.get(4); // Exhaustion drops one level
-  if (exh != null) { if (exh > 1) activeConditions.set(4, exh - 1); else activeConditions.delete(4); renderConditions(); }
-  else if (activeConditions.has(4)) { activeConditions.delete(4); renderConditions(); }
+  const exh = exhaustionLevel(); // Exhaustion drops one level
+  if (exh > 1) activeConditions.set(EXHAUSTION_ID, exh - 1); else activeConditions.delete(EXHAUSTION_ID);
+  if (exh) renderConditions();
   if (hp) commitHp(0, 0); // full HP; temporary HP ends with a Long Rest
   setStatus(`Long rest (local) — full HP, slots and ${rule} back`);
 };

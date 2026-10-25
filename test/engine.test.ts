@@ -2,6 +2,8 @@
 import { describe, it, expect } from 'vitest';
 import { computeRollModel } from '../src/engine';
 import { computeSpells } from '../src/engine/spells';
+import { computeDefenses } from '../src/engine/defenses';
+import { computeWeapons } from '../src/engine/weapons';
 import type { CharacterData, RollModel, SkillKey } from '../src/engine';
 import fixture from './fixtures/aldric-144074405.json';
 
@@ -186,6 +188,28 @@ describe('bug — ungranted RACE ability increase (2024 origin rules) is not app
   });
 });
 
+describe('bonus equal to an ability modifier (statId, no value)', () => {
+  // D&D Beyond encodes "add your Charisma modifier" (Aura of Protection) as a bonus with value null
+  // and statId 6 — it used to count as 0.
+  const withStatBonus = (subType: string, statId: number, restriction = ''): CharacterData => {
+    const d = clone(data);
+    const mods = d.modifiers as Record<string, unknown[]>;
+    mods.class = [...(mods.class ?? []), { type: 'bonus', subType, value: null, statId, restriction }];
+    return d;
+  };
+  it('adds the named ability modifier to every save', () => {
+    const m = computeRollModel(withStatBonus('saving-throws', 6));
+    const cha = model.abilities.CHA.mod;
+    for (const ab of ['STR', 'DEX', 'CON', 'INT', 'WIS', 'CHA'] as const) expect(m.saves[ab].mod).toBe(model.saves[ab].mod + cha);
+  });
+  it('adds it to initiative', () => {
+    expect(computeRollModel(withStatBonus('initiative', 5)).initiative).toBe(model.initiative + model.abilities.WIS.mod);
+  });
+  it('a restricted one stays conditional', () => {
+    expect(computeRollModel(withStatBonus('initiative', 5, 'while raging')).initiative).toBe(model.initiative);
+  });
+});
+
 describe('bug #2 — `set`-type ability-score modifiers', () => {
   it('an equipped+attuned item that SETs STR to 21 raises the score and cascades', () => {
     const d = clone(data);
@@ -366,3 +390,250 @@ describe('golden fixture cross-check (skipped if absent)', () => {
     }
   });
 });
+
+describe('spellcasting focus bonuses only count while the item is in use', () => {
+  // A +2 focus (Rod of the Pact Keeper style): bonus spell-attacks / spell-save-dc, attunement required.
+  const withFocus = (equipped: boolean, attuned: boolean): CharacterData => {
+    const d = clone(data);
+    (d.inventory ??= []).push({
+      id: 990002001, equipped, isAttuned: attuned,
+      definition: { id: 990002, name: 'Focus (synthetic)', requiresAttunement: true },
+    } as never);
+    const mods = d.modifiers as Record<string, unknown[]>;
+    mods.item = [...(mods.item ?? []),
+      { type: 'bonus', subType: 'spell-attacks', value: 2, componentId: 990002 },
+      { type: 'bonus', subType: 'spell-save-dc', value: 2, componentId: 990002 }];
+    return d;
+  };
+  const base = computeSpells(data, model).classes[0]!;
+  const cast = (d: CharacterData) => computeSpells(d, computeRollModel(d)).classes[0]!;
+  it('equipped and attuned → +2 to spell attack and save DC', () => {
+    const c = cast(withFocus(true, true));
+    expect(c.attackBonus).toBe(base.attackBonus + 2);
+    expect(c.saveDc).toBe(base.saveDc + 2);
+  });
+  it('carried but not attuned → no bonus', () => {
+    const c = cast(withFocus(true, false));
+    expect([c.attackBonus, c.saveDc]).toEqual([base.attackBonus, base.saveDc]);
+  });
+  it('not equipped → no bonus', () => {
+    const c = cast(withFocus(false, true));
+    expect([c.attackBonus, c.saveDc]).toEqual([base.attackBonus, base.saveDc]);
+  });
+});
+
+describe('multiclass: only the starting class grants its starting proficiencies', () => {
+  // D&D Beyond flags a class's starting proficiencies availableToMulticlass:false. Seen live: a
+  // Rogue-first Rogue/Ranger was given Ranger's STR save proficiency.
+  const multiclass = (rangerFirst: boolean): CharacterData => {
+    const d = clone(data);
+    d.classes = [
+      { level: 5, isStartingClass: rangerFirst, definition: { name: 'Ranger' }, classFeatures: [{ definition: { id: 9001, name: 'Proficiencies' } }] },
+      { level: 15, isStartingClass: !rangerFirst, definition: { name: 'Rogue' }, classFeatures: [{ definition: { id: 9002, name: 'Proficiencies' } }] },
+    ] as never;
+    const mods = d.modifiers as Record<string, unknown[]>;
+    mods.class = [
+      { type: 'proficiency', subType: 'strength-saving-throws', componentId: 9001, availableToMulticlass: false },
+      { type: 'proficiency', subType: 'intelligence-saving-throws', componentId: 9002, availableToMulticlass: false },
+    ];
+    return d;
+  };
+  it('Rogue first → INT save proficient, STR not', () => {
+    const m = computeRollModel(multiclass(false));
+    expect(m.saves.INT.proficient).toBe(true);
+    expect(m.saves.STR.proficient).toBe(false);
+  });
+  it('Ranger first → STR save proficient, INT not', () => {
+    const m = computeRollModel(multiclass(true));
+    expect(m.saves.STR.proficient).toBe(true);
+    expect(m.saves.INT.proficient).toBe(false);
+  });
+});
+
+describe('speed comes from the species plus speed modifiers', () => {
+  const withSpeedMods = (mods: unknown[], armour = false): CharacterData => {
+    const d = clone(data);
+    (d.race as { weightSpeeds?: unknown }).weightSpeeds = { normal: { walk: 30, fly: 0, swim: 0, climb: 0, burrow: 0 } };
+    (d.modifiers as Record<string, unknown[]>).feat = [...((d.modifiers as Record<string, unknown[]>).feat ?? []), ...mods];
+    d.inventory = (d.inventory ?? []).filter((it) => typeof (it.definition as { armorTypeId?: unknown } | undefined)?.armorTypeId !== 'number');
+    if (armour) d.inventory.push({ id: 1, equipped: true, definition: { id: 1, name: 'Chain Mail', armorTypeId: 3 } } as never);
+    return d;
+  };
+  it('"your walking speed is 35" then +10 (Fleet of Foot + Mobile) → 45', () => {
+    const m = computeRollModel(withSpeedMods([
+      { type: 'set', subType: 'innate-speed-walking', value: 35 },
+      { type: 'bonus', subType: 'speed', value: 10 },
+    ]));
+    expect(m.speed).toBe(45);
+  });
+  it('a fly speed "equal to your walking speed" lists alongside walking; a conditional one does not', () => {
+    const m = computeRollModel(withSpeedMods([
+      { type: 'set', subType: 'innate-speed-flying', value: null },
+      { type: 'set', subType: 'innate-speed-swimming', value: 40, restriction: 'In dim light' },
+    ]));
+    expect(m.speeds).toEqual([{ type: 'walking', value: 30 }, { type: 'flying', value: 30 }]);
+  });
+  it('Unarmored Movement only without armour', () => {
+    const um = [{ type: 'bonus', subType: 'unarmored-movement', value: 15 }];
+    expect(computeRollModel(withSpeedMods(um)).speed).toBe(45);
+    expect(computeRollModel(withSpeedMods(um, true)).speed).toBe(30);
+  });
+});
+
+describe('an item\'s spells and resistances need the item in use', () => {
+  // Staff of Fire (requires attunement): fire resistance "while held" and three spells cast from charges.
+  const withStaff = (equipped: boolean, attuned: boolean): CharacterData => {
+    const d = clone(data);
+    (d.inventory ??= []).push({ id: 990003001, equipped, isAttuned: attuned, definition: { id: 990003, name: 'Staff of Fire', requiresAttunement: true } } as never);
+    const mods = d.modifiers as Record<string, unknown[]>;
+    mods.item = [...(mods.item ?? []), { type: 'resistance', subType: 'fire', componentId: 990003, restriction: 'While Staff is Held' }];
+    const spells = (d as unknown as { spells: Record<string, unknown[]> }).spells;
+    spells.item = [...(spells.item ?? []), { componentId: 990003, usesSpellSlot: false, definition: { name: 'Fireball (synthetic)', level: 3 } }];
+    return d;
+  };
+  const fireball = (d: CharacterData) => computeSpells(d, computeRollModel(d)).spells.find((s) => s.name === 'Fireball (synthetic)');
+  it('in use → resistance and the spell, cast from the item without a slot', () => {
+    const d = withStaff(true, true);
+    expect(computeDefenses(d).resist).toContain('fire');
+    expect(fireball(d)).toMatchObject({ fromItem: true, noSlot: true });
+  });
+  it('carried unequipped or unattuned → neither', () => {
+    for (const d of [withStaff(false, false), withStaff(true, false)]) {
+      expect(computeDefenses(d).resist).not.toContain('fire');
+      expect(fireball(d)).toBeUndefined();
+    }
+  });
+});
+
+describe('2014 Divine Smite is castable like a spell', () => {
+  const paladin = (sourceId: number): CharacterData => {
+    const d = clone(data);
+    d.classes = [{ level: 6, definition: { name: 'Paladin' }, classFeatures: [{ definition: { id: 1, name: 'Divine Smite', requiredLevel: 2, sources: [{ sourceId }] } }] }] as never;
+    return d;
+  };
+  const smite = (d: CharacterData) => computeSpells(d, computeRollModel(d)).spells.find((s) => s.name === 'Divine Smite');
+  it('2014: 2d8 radiant, +1d8 per slot level, capped at a 4th-level slot (5d8)', () => {
+    expect(smite(paladin(2))).toMatchObject({ level: 1, autoHit: true, damageDice: '2d8', damageType: 'Radiant', higherLevelDice: '1d8', maxCastLevel: 4 });
+  });
+  it('2024: not added — the 2024 Divine Smite is a real spell', () => {
+    expect(smite(paladin(145))).toBeUndefined();
+  });
+});
+
+describe('weapon-style actions add the ability modifier to damage; spell-style ones do not', () => {
+  const withAction = (a: Record<string, unknown>): CharacterData => {
+    const d = clone(data);
+    (d as unknown as { actions: Record<string, unknown[]> }).actions = { feat: [{ name: 'Test Attack', dice: { diceString: '1d4' }, attackTypeRange: 1, damageTypeId: 1, abilityModifierStatId: 1, isProficient: true, ...a }] };
+    return d;
+  };
+  const dmgMod = (d: CharacterData) => computeWeapons(d, computeRollModel(d)).find((w) => w.name === 'Test Attack')!.damageMod;
+  it("Polearm Master's butt end: 1d4 + STR", () => {
+    expect(dmgMod(withAction({ actionType: 3 }))).toBe(model.abilities.STR.mod);
+  });
+  it('Eldritch Cannon (spell-style): dice only', () => {
+    expect(dmgMod(withAction({ actionType: 2, spellRangeType: 3 }))).toBe(0);
+  });
+});
+
+describe('cross-check against D&D Beyond sheets (Oct 2026)', () => {
+  const spellsOf = (d: CharacterData) => computeSpells(d, computeRollModel(d)).spells;
+  const withSpell = (bucket: string, entry: Record<string, unknown>, extra: (d: CharacterData) => void = () => {}): CharacterData => {
+    const d = clone(data);
+    const sp = (d as unknown as { spells: Record<string, unknown[]> }).spells;
+    sp[bucket] = [...(sp[bucket] ?? []), entry];
+    extra(d);
+    return d;
+  };
+
+  it('a choice of damage type is one roll (Absorb Elements 1d6, not 5d6); two real types both roll (Meteor Swarm)', () => {
+    const choice = 'Triggering damage - acid, cold, fire, lightning, or thunder damage';
+    const ae = withSpell('race', { definition: { name: 'Absorb Elements (synthetic)', level: 1, modifiers: ['acid', 'cold', 'fire'].map((t) => ({ type: 'damage', subType: t, die: { diceString: '1d6' }, restriction: choice })) } });
+    expect(spellsOf(ae).find((s) => s.name === 'Absorb Elements (synthetic)')!.damages).toEqual([{ dice: '1d6', type: 'Acid/Cold/Fire' }]);
+    const ms = withSpell('race', { definition: { name: 'Meteor Swarm (synthetic)', level: 9, modifiers: ['fire', 'bludgeoning'].map((t) => ({ type: 'damage', subType: t, die: { diceString: '20d6' }, restriction: '' })) } });
+    expect(spellsOf(ms).find((s) => s.name === 'Meteor Swarm (synthetic)')!.damages!.map((x) => x.dice)).toEqual(['20d6', '20d6']);
+  });
+
+  it('Agonizing Blast adds CHA to each beam; Eldritch Blast fires 1 + beams by character level', () => {
+    const eb = withSpell('race', {
+      definition: { name: 'Eldritch Blast', level: 0, requiresAttackRoll: true, scaleType: 'characterlevel',
+        modifiers: [{ type: 'damage', subType: 'force', die: { diceString: '1d10' } }],
+        atHigherLevels: { higherLevelDefinitions: [{ level: 5, value: 1, details: 'Beams' }, { level: 11, value: 2, details: 'Beams' }, { level: 17, value: 3, details: 'Beams' }] } },
+    }, (d) => { ((d.modifiers as Record<string, unknown[]>).class ??= []).push({ type: 'eldritch-blast', subType: 'bonus-damage', value: null, statId: 6 }); });
+    const s = spellsOf(eb).find((x) => x.name === 'Eldritch Blast')!;
+    const cha = computeRollModel(eb).abilities.CHA.mod;
+    expect(s.damageDice).toBe(cha >= 0 ? `1d10 + ${cha}` : `1d10 - ${-cha}`);
+    expect(s.attacks).toBe(computeRollModel(eb).level >= 11 ? 3 : 2); // Aldric fixture is level 8 → 2 beams
+  });
+
+  it("a class's focus bonus applies to spells its features grant, not to a chosen option's, a species' or a feat's", () => {
+    const focus = (d: CharacterData) => {
+      (d.inventory ??= []).push({ id: 990004001, equipped: true, isAttuned: true, definition: { id: 990004, name: 'Focus', requiresAttunement: true } } as never);
+      ((d.modifiers as Record<string, unknown[]>).item ??= []).push({ type: 'bonus', subType: 'artificer-spell-attacks', value: 3, componentId: 990004 });
+    };
+    const ray = (componentId: number) => withSpell('class', { componentId, definition: { name: 'Ray (synthetic)', level: 2, requiresAttackRoll: true } }, focus);
+    const featureId = (data.classes![0]!.classFeatures![0]!.definition as { id: number }).id;
+    const base = spellsOf(ray(featureId)).find((s) => s.name === 'Ray (synthetic)')!.attackBonus!;
+    expect(spellsOf(ray(123456789)).find((s) => s.name === 'Ray (synthetic)')!.attackBonus).toBe(base - 3);
+  });
+
+  it('a speed typed on the sheet overrides the computed one', () => {
+    const d = clone(data);
+    (d as unknown as { customSpeeds: unknown[] }).customSpeeds = [{ movementId: 1, distance: 40 }, { movementId: 4, distance: 60 }];
+    const m = computeRollModel(d);
+    expect(m.speed).toBe(40);
+    expect(m.speeds).toContainEqual({ type: 'flying', value: 60 });
+  });
+
+  it('only equipped weapons are attacks', () => {
+    const names = (d: CharacterData) => computeWeapons(d, computeRollModel(d)).filter((w) => w.source === 'inventory').map((w) => w.name);
+    const d = clone(data);
+    const dagger = (d.inventory ?? []).find((it) => it.definition?.name === 'Dagger')!;
+    dagger.equipped = false;
+    expect(names(d)).not.toContain('Dagger');
+    dagger.equipped = true;
+    expect(names(d)).toContain('Dagger');
+  });
+
+  it('an action D&D Beyond does not list as an attack (Eldritch Cannon) adds no ability mod', () => {
+    const d = clone(data);
+    (d as unknown as { actions: Record<string, unknown[]> }).actions = { class: [{ name: 'Cannon (synthetic)', dice: { diceString: '2d8' }, attackTypeRange: 2, damageTypeId: 13, abilityModifierStatId: 4, isProficient: true, actionType: 3, displayAsAttack: false }] };
+    expect(computeWeapons(d, computeRollModel(d)).find((w) => w.name === 'Cannon (synthetic)')!.damageMod).toBe(0);
+  });
+});
+
+describe('2024 background increases on an __INITIAL_ASI feat; customised weapons', () => {
+  // A Gem Dragonborn with a 2024 background: the species' legacy +2 CHA is ungranted, and the
+  // background's increases sit on a background "feat" tagged __INITIAL_ASI, not in the background bucket.
+  const gem = (): CharacterData => {
+    const d = clone(data);
+    d.feats = [...(d.feats ?? []), { definition: { id: 777001, name: 'Charlatan Ability Score Improvements', categories: [{ tagName: '__INITIAL_ASI' }] } }] as never;
+    const mods = d.modifiers as Record<string, unknown[]>;
+    mods.background = [];
+    mods.race = [...(mods.race ?? []), { type: 'bonus', subType: 'charisma-score', value: 2, isGranted: false }];
+    mods.feat = [...(mods.feat ?? []),
+      { type: 'bonus', subType: 'charisma-score', value: 2, isGranted: false, componentId: 777001 },
+      // Resilient: the restriction describes the choice, it isn't a condition
+      { type: 'bonus', subType: 'constitution-score', value: 1, isGranted: false, restriction: 'That you do not have Saving Throw Proficiency in.' }];
+    return d;
+  };
+  it('drops the species +2 and applies the background +2 and Resilient +1', () => {
+    const m = computeRollModel(gem());
+    expect(m.abilities.CHA.score).toBe(model.abilities.CHA.score + 2);
+    expect(m.abilities.CON.score).toBe(model.abilities.CON.score + 1);
+  });
+  it("a weapon customised on the sheet adds its to-hit and damage bonus", () => {
+    const d = equipDagger(clone(data));
+    const dagger = d.inventory!.find((it) => it.definition?.name === 'Dagger')! as { id?: number };
+    (d as unknown as { characterValues: unknown[] }).characterValues = [
+      { typeId: 10, value: 2, valueId: String(dagger.id), valueTypeId: '1439493548' },
+      { typeId: 12, value: 2, valueId: String(dagger.id), valueTypeId: '1439493548' },
+    ];
+    const before = computeWeapons(equipDagger(clone(data)), model).find((w) => w.name === 'Dagger')!;
+    const after = computeWeapons(d, model).find((w) => w.name === 'Dagger')!;
+    expect([after.attackMod - before.attackMod, after.damageMod - before.damageMod]).toEqual([2, 2]);
+  });
+});
+function equipDagger(d: CharacterData): CharacterData {
+  for (const it of d.inventory ?? []) if (it.definition?.name === 'Dagger') it.equipped = true;
+  return d;
+}

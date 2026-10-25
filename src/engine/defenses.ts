@@ -6,6 +6,7 @@
 // damage of a given type.
 
 import type { CharacterData } from "./types";
+import { activeModifiers } from "./rollmodel";
 
 /** The 13 standard 5e damage types (kebab, matching DDB subTypes). */
 export const DAMAGE_TYPES = [
@@ -37,21 +38,20 @@ export interface Defenses {
 
 const TYPES = new Set<string>(DAMAGE_TYPES);
 
-/** Scan every modifier bucket for damage resistances / immunities / vulnerabilities. */
+/** Scan the modifiers in effect for damage resistances / immunities / vulnerabilities — an item's only
+ *  while it's equipped (and attuned when required): an unequipped Staff of Fire grants nothing. */
 export function computeDefenses(data: CharacterData): Defenses {
   const resist = new Set<DamageType>();
   const immune = new Set<DamageType>();
   const vulnerable = new Set<DamageType>();
-  for (const arr of Object.values(data.modifiers ?? {})) {
-    for (const m of arr ?? []) {
-      const sub = (m.subType || "").toLowerCase();
-      if (!TYPES.has(sub)) continue;
-      const dt = sub as DamageType;
-      // Immunity dominates resistance which dominates vulnerability if a type appears twice.
-      if (m.type === "immunity") immune.add(dt);
-      else if (m.type === "resistance") resist.add(dt);
-      else if (m.type === "vulnerability") vulnerable.add(dt);
-    }
+  for (const m of activeModifiers(data)) {
+    const sub = (m.subType || "").toLowerCase();
+    if (!TYPES.has(sub)) continue;
+    const dt = sub as DamageType;
+    // Immunity dominates resistance which dominates vulnerability if a type appears twice.
+    if (m.type === "immunity") immune.add(dt);
+    else if (m.type === "resistance") resist.add(dt);
+    else if (m.type === "vulnerability") vulnerable.add(dt);
   }
   // A type can technically be flagged twice; immunity > resistance > vulnerability.
   for (const dt of immune) { resist.delete(dt); vulnerable.delete(dt); }

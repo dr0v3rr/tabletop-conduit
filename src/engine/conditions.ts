@@ -57,3 +57,32 @@ export function computeConditions(data: CharacterData): ActiveCondition[] {
   }
   return out;
 }
+
+// ── Exhaustion ──────────────────────────────────────────────────────────────────────────────────
+// Exhaustion stacks in levels (1-6; level 6 is death), and the two rule sets differ:
+//   2024: each level is -2 to every d20 Test (attack, check, save, initiative) and -5 ft speed.
+//   2014: 1 = disadvantage on checks, 2 = speed halved, 3 = disadvantage on attacks and saves,
+//         4 = HP max halved (not modelled), 5 = speed 0.
+export const EXHAUSTION_ID = 4;
+export const EXHAUSTION_MAX = 6;
+export type ExhaustionRules = "2024" | "2014";
+
+/** Roll effects for an Exhaustion level (0 or less → none). */
+export function exhaustionEffects(level: number, rules: ExhaustionRules): RuleEffect[] {
+  const lvl = Math.min(EXHAUSTION_MAX, Math.max(0, Math.floor(level)));
+  if (!lvl) return [];
+  const label = `Exhaustion ${lvl}`;
+  if (rules === "2024") return [{ op: "flat", target: "d20", value: -2 * lvl, label }];
+  const out: RuleEffect[] = [dis("check", label)];
+  if (lvl >= 3) out.push(dis("attack", label), dis("save", label));
+  return out;
+}
+
+/** Speed after Exhaustion (never below 0). */
+export function exhaustionSpeed(speed: number, level: number, rules: ExhaustionRules): number {
+  const lvl = Math.min(EXHAUSTION_MAX, Math.max(0, Math.floor(level)));
+  if (!lvl) return speed;
+  if (rules === "2024") return Math.max(0, speed - 5 * lvl);
+  if (lvl >= 5) return 0;
+  return lvl >= 2 ? Math.floor(speed / 2) : speed;
+}

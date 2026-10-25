@@ -5,6 +5,8 @@
 
 import type { Ability, CharacterData, RollModel } from './types';
 import { evalDdbTokens } from '../ddb-tokens';
+import { activeModifiers, itemInUse } from './rollmodel';
+import { editionOf } from './edition';
 
 // ---- Local input shapes (fields we read off DDB spell data). ----
 // CharacterData (types.ts) intentionally does not declare these, so we describe the
@@ -30,6 +32,9 @@ interface SpellDamageModifier {
   dice?: DdbDie | null;
   fixedValue?: number | null;
   friendlySubtypeName?: string | null;
+  /** e.g. "Triggering damage - acid, cold, fire, lightning, or thunder damage" — shared by a spell's
+   *  alternative damage types (pick one), empty for damage it always deals. */
+  restriction?: string | null;
   atHigherLevels?: { higherLevelDefinitions?: HigherLevelDefinition[] | null } | null;
 }
 
@@ -48,6 +53,10 @@ interface SpellDefinition {
 interface SpellEntry {
   definition?: SpellDefinition | null;
   spellCastingAbilityId?: number | null;
+  /** the feat / item / feature granting it (an item's definition id for item spells). */
+  componentId?: number | null;
+  /** false = cast without a spell slot (a feat's free casting, an item's charges). */
+  usesSpellSlot?: boolean | null;
 }
 
 interface ClassSpellGroup {
@@ -108,6 +117,18 @@ export interface Spell {
   castingTime?: 'action' | 'bonus' | 'reaction' | 'other';
   /** the spell's full wording (raw DDB HTML — sanitized at display time) — for "Display in VTT". */
   description?: string;
+  /** Cast without a spell slot — a feat's free casting (Fey Touched's Misty Step) or an item's charges. */
+  noSlot?: boolean;
+  /** Granted by an item (Staff of Fire), so it's cast from the item. */
+  fromItem?: boolean;
+  /** Damage with no attack roll or save (rolled on its own) — e.g. the 2014 Divine Smite. */
+  autoHit?: boolean;
+  /** Separate attack rolls per cast — Eldritch Blast's beams (2/3/4 at character level 5/11/17). */
+  attacks?: number;
+  /** The class it's cast as (for a Warlock spell: always at the Pact Magic slot level). */
+  className?: string;
+  /** Highest slot level it can usefully be cast with (2014 Divine Smite tops out at 5d8 = a 4th slot). */
+  maxCastLevel?: number;
 }
 
 export interface SpellcastingInfo {
@@ -237,6 +258,11 @@ interface CollectedSpell {
   entry: SpellEntry;
   /** Name of the class this spell is cast by, from its `classSpells[]` group (else undefined). */
   className?: string;
+  fromItem?: boolean;
+  /** Granted by a chosen option, species, feat, item or background rather than by the class — a
+   *  class's focus bonus doesn't apply (D&D Beyond gives a Divine Soul's affinity spell and a Drow's
+   *  Faerie Fire no Sorcerer +3). */
+  notClass?: boolean;
 }
 
 /**
@@ -250,8 +276,22 @@ function collectSpellEntries(
   classIdToName: Map<number, string>,
 ): CollectedSpell[] {
   const out: CollectedSpell[] = [];
-  for (const arr of Object.values(data.spells ?? {})) {
-    if (Array.isArray(arr)) for (const entry of arr) out.push({ entry });
+  // A spell a class FEATURE grants (Artillerist Spells, Gloom Stalker Magic) is that class's spell;
+  // one from a chosen option (a Divine Soul's affinity), species, feat or item isn't.
+  const featureClass = new Map<number, string>();
+  for (const c of (data as unknown as CharacterData).classes ?? []) {
+    for (const f of c?.classFeatures ?? []) {
+      if (typeof f?.definition?.id === 'number' && c.definition?.name) featureClass.set(f.definition.id, c.definition.name);
+    }
+  }
+  for (const [bucket, arr] of Object.entries(data.spells ?? {})) {
+    if (!Array.isArray(arr)) continue;
+    for (const entry of arr) {
+      // An item's spells are only castable while it's equipped (and attuned when required).
+      if (bucket === 'item' && !itemInUse(data as unknown as CharacterData, entry?.componentId)) continue;
+      const className = bucket === 'class' && entry?.componentId != null ? featureClass.get(entry.componentId) : undefined;
+      out.push(className ? { entry, className } : { entry, fromItem: bucket === 'item', notClass: true });
+    }
   }
   for (const group of data.classSpells ?? []) {
     const className =
@@ -264,7 +304,8 @@ function collectSpellEntries(
 /**
  * Sum flat item/feature bonuses to spell attack or save DC — e.g. a "+3 spellcasting focus"
  * (All-Purpose Tool, Rod of the Pact Keeper) grants `bonus / <class>-spell-attacks` and
- * `bonus / <class>-spell-save-dc`, or the generic `spell-attacks` / `spell-save-dc`.
+ * `bonus / <class>-spell-save-dc`, or the generic `spell-attacks` / `spell-save-dc`. Only modifiers
+ * in effect count — a focus that isn't equipped (or attuned, when it needs it) adds nothing.
  */
 function spellFocusBonus(
   data: CharacterData,
@@ -273,13 +314,10 @@ function spellFocusBonus(
 ): number {
   const cls = className.toLowerCase();
   let total = 0;
-  const buckets = (data as unknown as { modifiers?: Record<string, any[]> }).modifiers ?? {};
-  for (const arr of Object.values(buckets)) {
-    for (const m of arr ?? []) {
-      if (m?.type !== 'bonus') continue;
-      const st = String(m.subType ?? '');
-      if (st === kind || st === `${cls}-${kind}`) total += m.value ?? 0;
-    }
+  for (const m of activeModifiers(data)) {
+    if (m.type !== 'bonus') continue;
+    const st = String(m.subType ?? '');
+    if (st === kind || st === `${cls}-${kind}`) total += m.value ?? 0;
   }
   return total;
 }
@@ -358,6 +396,18 @@ export function computeSpells(data: CharacterData, model: RollModel): Spellcasti
     return evalDdbTokens(dice, { abilityMods, proficiency: model.profBonus, level: model.level });
   };
 
+  const mods = activeModifiers(data);
+  const spellDamageBonus = (name: string): number => {
+    const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    let total = 0;
+    for (const m of mods) {
+      if (m.type !== slug || m.subType !== 'bonus-damage' || (m.restriction ?? '').trim()) continue;
+      if (typeof m.value === 'number') total += m.value;
+      else if (m.statId) total += model.abilities[STAT_ID_TO_ABILITY[m.statId] ?? 'STR'].mod;
+    }
+    return total;
+  };
+
   for (const collected of collectSpellEntries(src, classIdToName)) {
     const { entry } = collected;
     const def = entry.definition;
@@ -376,9 +426,11 @@ export function computeSpells(data: CharacterData, model: RollModel): Spellcasti
     const ability = abilityForStatId(entry.spellCastingAbilityId) ?? defaultAbility;
     const abilMod = model.abilities[ability].mod;
     // The class whose focus item applies is the spell's own class: prefer its `classSpells[]`
-    // group, else the class matching the spell's casting ability, else the primary class.
-    const spellClass =
-      collected.className ?? abilityToClassName.get(ability) ?? primaryClass;
+    // group, else the class matching the spell's casting ability, else the primary class. A spell
+    // granted from outside the class list (see notClass) gets only generic (all-spells) bonuses.
+    const spellClass = collected.notClass
+      ? ''
+      : collected.className ?? abilityToClassName.get(ability) ?? primaryClass;
     const focus = focusFor(spellClass);
     const attackBonus = model.profBonus + abilMod + focus.atk;
     const saveDc = 8 + model.profBonus + abilMod + focus.dc;
@@ -390,13 +442,22 @@ export function computeSpells(data: CharacterData, model: RollModel): Spellcasti
     const dmg = primaryDamage(def);
     const baseDice = dmg ? dieString(dmg.die ?? dmg.dice) : undefined;
 
-    // All damage components (a spell may deal two types — e.g. Ice Knife's pierce + cold).
+    // All damage components (a spell may deal two types — e.g. Ice Knife's pierce + cold, Meteor
+    // Swarm's fire + bludgeoning). But D&D Beyond also lists a CHOICE of type as separate components
+    // sharing one restriction ("Triggering damage - acid, cold, fire…" for Absorb Elements, "Weapon
+    // Damage Type - …" for Hunter's Mark): those are one roll of the dice, of one of the types.
     const damages: SpellDamage[] = [];
+    const choiceOf = new Map<string, SpellDamage>();
     for (const m of allDamage(def)) {
       const dice = resolveDamageDice(m, isCantrip);
       if (!dice) continue;
       const dt = damageType(m);
-      damages.push(dt ? { dice, type: dt } : { dice });
+      const choice = (m.restriction ?? '').trim();
+      const alt = choice ? choiceOf.get(`${choice}|${dice}`) : undefined;
+      if (alt) { if (dt) alt.type = alt.type ? `${alt.type}/${dt}` : dt; continue; }
+      const d: SpellDamage = dt ? { dice, type: dt } : { dice };
+      if (choice) choiceOf.set(`${choice}|${dice}`, d);
+      damages.push(d);
     }
 
     let damageDice: string | undefined;
@@ -459,9 +520,68 @@ export function computeSpells(data: CharacterData, model: RollModel): Spellcasti
     const textDef = def as unknown as { description?: string; snippet?: string };
     const wording = textDef.description || textDef.snippet;
     if (wording && String(wording).trim()) spell.description = String(wording);
+    if (entry.usesSpellSlot === false && !isCantrip) spell.noSlot = true;
+    if (spellClass) spell.className = spellClass;
+    if (collected.fromItem) spell.fromItem = true;
+
+    // A flat bonus to this spell's damage comes as a modifier named after the spell — Agonizing Blast
+    // is `eldritch-blast` / `bonus-damage` worth your CHA modifier — and applies to each hit.
+    const bonus = spellDamageBonus(def.name);
+    if (bonus && spell.damageDice) {
+      const withBonus = (dice: string) => `${dice} ${bonus > 0 ? '+' : '-'} ${Math.abs(bonus)}`;
+      spell.damageDice = withBonus(spell.damageDice);
+      if (spell.damages?.[0]) spell.damages[0] = { ...spell.damages[0], dice: withBonus(spell.damages[0].dice) };
+    }
+    // A cantrip that fires more beams as you level (Eldritch Blast) — each beam is its own attack.
+    const beams = beamsAt(def, model.level);
+    if (beams > 1 && casting === 'attack') spell.attacks = beams;
 
     spells.push(spell);
   }
 
+  const smite = divineSmite2014(data);
+  if (smite && !spells.some((s) => s.name === smite.name)) spells.push(smite);
+
   return { classes, spells };
+}
+
+/**
+ * The 2014 Paladin's Divine Smite is a class FEATURE, not a spell, so D&D Beyond lists it nowhere
+ * castable — but it's cast exactly like one: on a melee weapon hit, expend a slot for 2d8 radiant,
+ * +1d8 per slot level above 1st, to a maximum of 5d8. Offer it in the spell list so it spends the slot
+ * and up-casts like any spell. (The 2024 Divine Smite IS a spell and arrives as one.)
+ */
+function divineSmite2014(data: CharacterData): Spell | undefined {
+  const has = (data.classes ?? []).some((c) =>
+    (c?.classFeatures ?? []).some((f) => {
+      const def = f?.definition as { name?: string; requiredLevel?: number } | null | undefined;
+      return def?.name === 'Divine Smite' && (def.requiredLevel ?? 0) <= (c.level ?? 0) && editionOf(def) === '2014';
+    }),
+  );
+  if (!has) return undefined;
+  return {
+    name: 'Divine Smite',
+    level: 1,
+    casting: 'utility',
+    autoHit: true,
+    damageDice: '2d8',
+    damageType: 'Radiant',
+    damages: [{ dice: '2d8', type: 'Radiant' }],
+    scalesWithLevel: true,
+    higherLevelDice: '1d8',
+    maxCastLevel: 4,
+    isCantrip: false,
+    description:
+      'When you hit a creature with a melee weapon attack, you can expend one spell slot to deal radiant damage to the target, in addition to the weapon\'s damage. The extra damage is 2d8 for a 1st-level spell slot, plus 1d8 for each spell level higher than 1st, to a maximum of 5d8. The damage increases by 1d8 if the target is an undead or a fiend.',
+  };
+}
+
+/** Total beams of a cantrip that adds beams by character level ("Beams" scaling: +1 at 5, 11, 17). */
+function beamsAt(def: SpellDefinition, level: number): number {
+  const scaling = (def as { atHigherLevels?: { higherLevelDefinitions?: { level?: number; value?: number; details?: string; dice?: unknown }[] } }).atHigherLevels;
+  let extra = 0;
+  for (const h of scaling?.higherLevelDefinitions ?? []) {
+    if (!h.dice && /beam/i.test(h.details ?? '') && (h.level ?? 99) <= level) extra = Math.max(extra, h.value ?? 0);
+  }
+  return 1 + extra;
 }

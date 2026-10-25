@@ -64,6 +64,8 @@ export interface Modifier {
    *  bonus" option, an ASI assigned elsewhere, a conditional not met. Such modifiers must NOT apply
    *  (DDB doesn't). Absent/true = granted. */
   isGranted?: boolean | null;
+  /** false = a class's starting proficiency, which applies only if that class is the starting class. */
+  availableToMulticlass?: boolean | null;
   friendlyTypeName?: string | null;
   friendlySubtypeName?: string | null;
 }
@@ -80,6 +82,8 @@ export interface CharacterClass {
   definition?: ClassDefinition | null;
   subclassDefinition?: { name?: string } | null;
   classFeatures?: Array<{ definition?: { id?: number; name?: string } | null }> | null;
+  /** The class taken at 1st level — the only one whose starting proficiencies apply when multiclassed. */
+  isStartingClass?: boolean | null;
 }
 
 /** An inventory item's definition (only the fields the engine reads). */

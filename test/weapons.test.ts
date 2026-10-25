@@ -3,13 +3,19 @@ import { describe, it, expect } from 'vitest';
 import { computeRollModel } from '../src/engine';
 import type { CharacterData, RollModel } from '../src/engine';
 import { computeWeapons } from '../src/engine/weapons';
+
+// These tests check weapon maths, not which weapons are listed — and only EQUIPPED weapons are listed
+// (see 'only equipped weapons'), so roll every weapon in the inventory as if equipped.
+const equipAll = (d: CharacterData): CharacterData =>
+  ({ ...d, inventory: (d.inventory ?? []).map((it) => ({ ...it, equipped: true })) }) as CharacterData;
+const weaponsOf = (d: CharacterData, m: RollModel) => computeWeapons(equipAll(d), m);
 import type { Weapon } from '../src/engine/weapons';
 import fixture from './fixtures/aldric-144074405.json';
 import fixtureL11 from './fixtures/aldric-160931906.json';
 
 const data = (fixture as { data: CharacterData }).data;
 const model: RollModel = computeRollModel(data);
-const weapons = computeWeapons(data, model);
+const weapons = weaponsOf(data, model);
 
 const byName = (n: string): Weapon | undefined =>
   weapons.find((w) => w.name.toLowerCase() === n.toLowerCase());
@@ -143,7 +149,7 @@ describe('computeWeapons — Aldric (Artificer 8, Vedalken)', () => {
 describe('computeWeapons — Aldric L11 (Artificer 11) support-action guard', () => {
   const dataL11 = (fixtureL11 as { data: CharacterData }).data;
   const modelL11: RollModel = computeRollModel(dataL11);
-  const weaponsL11 = computeWeapons(dataL11, modelL11);
+  const weaponsL11 = weaponsOf(dataL11, modelL11);
   const byNameL11 = (n: string): Weapon | undefined =>
     weaponsL11.find((w) => w.name.toLowerCase() === n.toLowerCase());
 
@@ -193,7 +199,7 @@ function hexbladeChar(replaceCharisma: boolean): CharacterData {
 }
 
 describe('computeWeapons — Hex Warrior / Pact of the Blade (replace-weapon-ability)', () => {
-  const dagger = (data: CharacterData, model: RollModel) => computeWeapons(data, model).find((w) => w.name === 'Dagger')!;
+  const dagger = (data: CharacterData, model: RollModel) => weaponsOf(data, model).find((w) => w.name === 'Dagger')!;
 
   it('uses Charisma for a proficient weapon when the replace-weapon-ability modifier is present and CHA is better', () => {
     const w = dagger(hexbladeChar(true), makeModel({ DEX: 3, CHA: 4, STR: -1 }, 5));
@@ -217,7 +223,7 @@ describe('computeWeapons — Hex Warrior / Pact of the Blade (replace-weapon-abi
   it('does not apply the replacement to a weapon the character is NOT proficient with', () => {
     const data = { inventory: [{ definition: { name: 'Greatsword', filterType: 'Weapon', damage: { diceString: '2d6' }, damageType: 'Slashing', attackType: 1, categoryId: 2, properties: [] } }],
       modifiers: { class: [{ type: 'replace-weapon-ability', subType: 'charisma-score' }] } } as unknown as CharacterData;
-    const w = computeWeapons(data, makeModel({ STR: 0, CHA: 5 }, 5)).find((x) => x.name === 'Greatsword')!;
+    const w = weaponsOf(data, makeModel({ STR: 0, CHA: 5 }, 5)).find((x) => x.name === 'Greatsword')!;
     expect(w.proficient).toBe(false);
     expect(w.attackAbility).toBe('STR'); // not proficient → no CHA substitution
   });
@@ -242,7 +248,7 @@ describe('computeWeapons — synthetic regressions', () => {
       },
     } as unknown as CharacterData;
     // INT +4, prof +3 would give +7 if computed; fixedToHit must override to exactly 9.
-    const w = computeWeapons(synth, makeModel({ INT: 4 })).find(
+    const w = weaponsOf(synth, makeModel({ INT: 4 })).find(
       (x) => x.name === 'Fixed To-Hit Action',
     );
     expect(w).toBeDefined();
@@ -268,7 +274,7 @@ describe('computeWeapons — synthetic regressions', () => {
       ],
       modifiers: { class: [{ type: 'proficiency', subType: 'simple-weapons' }] },
     } as unknown as CharacterData;
-    const w = computeWeapons(synth, makeModel({ STR: 0 })).find(
+    const w = weaponsOf(synth, makeModel({ STR: 0 })).find(
       (x) => x.name === 'Doubly-Enchanted Sword',
     );
     expect(w).toBeDefined();
@@ -297,7 +303,7 @@ describe('computeWeapons — synthetic regressions', () => {
       ],
       modifiers: { class: [{ type: 'proficiency', subType: 'light-crossbow' }] },
     } as unknown as CharacterData;
-    const w = computeWeapons(synth, makeModel({ DEX: 2 })).find(
+    const w = weaponsOf(synth, makeModel({ DEX: 2 })).find(
       (x) => x.name === 'Crossbow, Light',
     );
     expect(w).toBeDefined();
@@ -312,12 +318,12 @@ describe('computeWeapons — duplicate inventory entries', () => {
 
   it('lists two identical daggers (separate DDB entries) as one attack', () => {
     const d = withInventory([dagger(), dagger()]);
-    expect(computeWeapons(d, computeRollModel(d)).filter((w) => w.name === 'Dagger')).toHaveLength(1);
+    expect(weaponsOf(d, computeRollModel(d)).filter((w) => w.name === 'Dagger')).toHaveLength(1);
   });
 
   it('keeps copies that roll differently (a +1 dagger and a plain one)', () => {
     const d = withInventory([dagger(), dagger({ grantedModifiers: [{ type: 'bonus', subType: 'magic', value: 1 }] })]);
-    const daggers = computeWeapons(d, computeRollModel(d)).filter((w) => w.name === 'Dagger');
+    const daggers = weaponsOf(d, computeRollModel(d)).filter((w) => w.name === 'Dagger');
     expect(daggers.map((w) => w.magicBonus).sort()).toEqual([0, 1]);
   });
 });

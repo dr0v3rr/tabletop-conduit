@@ -14,6 +14,7 @@ import type { CharacterData, RollModel } from "../engine/types.js";
 import type { Rule, RuleKind } from "./types.js";
 import rawCatalog from "../../reference/roll-options-catalog.json" with { type: "json" };
 import { CONDITIONS } from "../engine/conditions.js";
+import { editionOf, type Edition, type SourcedDef } from "../engine/edition.js";
 
 // ---------------------------------------------------------------------------
 // Raw catalog shape
@@ -39,34 +40,106 @@ function norm(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
-/** true if any candidate name matches `target` (equal, or candidate contains target). */
-function hasNamed(candidates: string[], target: string): boolean {
+/** true if any candidate name matches `target`: equal, or the candidate contains the target as whole
+ *  words ("Brutal Critical (2 dice)" has "Brutal Critical"). Whole words, so "Aura of Courage" doesn't
+ *  have "Rage". With `either`, the target may also contain the candidate — only for species traits,
+ *  whose catalog names carry the species ("Bugbear Surprise Attack" ↔ trait "Surprise Attack"). It is
+ *  NOT used for class features: "Improved Divine Smite" contains "Divine Smite", which every Paladin has. */
+function hasNamed(candidates: string[], target: string, either = false): boolean {
   const t = norm(target);
   if (!t) return false;
+  const within = (outer: string, inner: string) => ` ${outer} `.includes(` ${inner} `);
   return candidates.some((c) => {
     const cn = norm(c);
-    return cn === t || cn.includes(t) || t.includes(cn);
+    return !!cn && (within(cn, t) || (either && within(t, cn)));
   });
 }
 
+/** A catalog ownership name, cleaned: a compound "Hunter's Prey: Colossus Slayer" names the chosen
+ *  option (the last part), and a trailing "(paladin-sacred-weapon" style note is dropped. */
+function catalogName(raw: string): string {
+  const parts = raw.replace(/\s*\(.*$/, "").split(":");
+  return parts[parts.length - 1]!.trim();
+}
+
+// ---------------------------------------------------------------------------
+// Owned feats / features / options, with their rules edition (see engine/edition.ts)
+// ---------------------------------------------------------------------------
+interface Named { name: string; edition: Edition }
+
+function named(defs: Array<SourcedDef | null | undefined>): Named[] {
+  return defs.filter((d): d is SourcedDef => !!d?.name).map((d) => ({ name: d.name!, edition: editionOf(d) }));
+}
+
+/** Names of the owned items that fit `edition` (null = either). */
+function ofEdition(items: Named[], edition: Edition | null): string[] {
+  return items.filter((i) => !edition || i.edition === edition).map((i) => i.name);
+}
+
+function feats(data: CharacterData): Named[] {
+  return named((data.feats ?? []).map((f) => f?.definition as SourcedDef | undefined));
+}
+
+/** Class and subclass features the character HAS. D&D Beyond lists every feature of the class up to
+ *  20th level, so keep only those at or below the class's level — otherwise a 6th-level Paladin "has"
+ *  Improved Divine Smite (11th) and a 3rd-level Champion "has" Superior Critical (15th). */
+function features(data: CharacterData): Named[] {
+  // Tasha's optional class features: D&D Beyond records each one taken and the feature it REPLACES
+  // (Favored Foe for Favored Enemy, Deft Explorer for Natural Explorer). The replaced feature is gone;
+  // the chosen one's definition isn't in the character data, but its action is, under its name.
+  const optional = (data as { optionalClassFeatures?: { classFeatureId?: number; affectedClassFeatureId?: number | null }[] }).optionalClassFeatures ?? [];
+  const replaced = new Set(optional.map((o) => o.affectedClassFeatureId).filter((n): n is number => typeof n === "number"));
+  const defs: Array<SourcedDef | null | undefined> = [];
+  for (const c of data.classes ?? []) {
+    defs.push(c?.subclassDefinition as SourcedDef | undefined);
+    for (const f of c?.classFeatures ?? []) {
+      const def = f?.definition as (SourcedDef & { id?: number; requiredLevel?: number }) | undefined;
+      if (typeof def?.requiredLevel === "number" && def.requiredLevel > (c.level ?? 0)) continue;
+      if (typeof def?.id === "number" && replaced.has(def.id)) continue;
+      defs.push(def);
+    }
+  }
+  const chosen = new Set(optional.map((o) => o.classFeatureId));
+  const actions = (data as { actions?: Record<string, { componentId?: number; name?: string }[] | null> }).actions ?? {};
+  const optionalNamed: Named[] = Object.values(actions).flatMap((arr) => arr ?? [])
+    .filter((a) => chosen.has(a.componentId) && a.name)
+    .map((a) => ({ name: a.name!, edition: "2014" as Edition })); // optional class features are Tasha's (2014)
+  return [...named(defs), ...optionalNamed];
+}
+
+/** Chosen options (a 2014 Fighting Style is an option of the "Fighting Style" feature). */
+function options(data: CharacterData): Named[] {
+  const opts = (data as unknown as { options?: Record<string, Array<{ definition?: SourcedDef | null } | null> | null> }).options ?? {};
+  return named(Object.values(opts).flatMap((arr) => (arr ?? []).map((o) => o?.definition)));
+}
+
 function featNames(data: CharacterData): string[] {
-  return (data.feats ?? [])
-    .map((f) => f?.definition?.name)
-    .filter((n): n is string => !!n);
+  return feats(data).map((f) => f.name);
 }
 
 function featureNames(data: CharacterData): string[] {
-  const out: string[] = [];
-  for (const c of data.classes ?? []) {
-    const sub = c?.subclassDefinition?.name;
-    if (sub) out.push(sub);
-    for (const f of c?.classFeatures ?? []) {
-      const n = f?.definition?.name;
-      if (n) out.push(n);
-    }
-  }
-  return out;
+  return features(data).map((f) => f.name);
 }
+
+// Catalog entries for the 2014 version of a feat/feature whose 2024 version shares its name (or
+// has no catalog entry because it works differently, e.g. 2024 Sharpshooter has no -5/+10).
+const LEGACY_RULES = new Set([
+  "great-weapon-master",
+  "sharpshooter",
+  "champion-remarkable-athlete", // 2024: advantage on Initiative and Athletics instead
+  "rogue-assassinate",
+  "cleric-blessed-strikes-tasha",
+  "cleric-divine-strike", // 2024: the Blessed Strikes option of the same name
+]);
+
+/** The rules edition a catalog entry is written for (null = both), and its ownership name minus
+ *  any "2024" tag ("Great Weapon Master 2024" → "Great Weapon Master"). */
+function ruleEdition(entry: RawEntry, name?: string): Edition | null {
+  if (/-2024$/.test(entry.id) || (name && /\b2024\b/.test(name))) return "2024";
+  if (/-2014$/.test(entry.id) || LEGACY_RULES.has(entry.id)) return "2014";
+  return null;
+}
+const untagged = (name: string) => name.replace(/\b2024\b/g, " ").replace(/\s+/g, " ").trim();
 
 function traitNames(data: CharacterData): string[] {
   return (data.race?.racialTraits ?? [])
@@ -102,22 +175,26 @@ function genericAppliesTo(entry: RawEntry, data: CharacterData): boolean {
   if (!cond) return true; // null condition => generic user-controlled toggle
 
   const featM = cond.match(/hasFeat\s*\(?\s*['"]?([^'")]+)/i);
-  if (featM && featM[1]) return hasNamed(featNames(data), featM[1]);
+  if (featM && featM[1]) return hasNamed(ofEdition(feats(data), ruleEdition(entry, featM[1])), untagged(featM[1]));
 
-  // Fighting-style helper in the catalog notes/condition. BOTH the 2014 and 2024
-  // catalog entries carry this token, so if we accepted both a character with the
-  // style would stack reroll (2014) AND min-die (2024). Keep only ONE — the 2014
-  // reroll-2 variant — by declining the 2024 entry here.
+  // Great Weapon Fighting: a 2014 Fighting Style option (reroll 1s and 2s) or a 2024 Fighting Style
+  // feat (1s and 2s count as 3). Each catalog entry applies only to its own edition, so a character
+  // gets exactly one of them.
   if (/hasGreatWeaponFighting/i.test(cond)) {
-    if (/2024/.test(cond)) return false;
-    return hasNamed(featureNames(data), "Great Weapon Fighting");
+    const owned = [...feats(data), ...features(data), ...options(data)];
+    return hasNamed(ofEdition(owned, ruleEdition(entry)), "Great Weapon Fighting");
   }
 
+  // Class features include chosen options (Hunter's Prey → Colossus Slayer, Blessed Strikes → Divine
+  // Strike), since the catalog often names the option.
   const cfM = cond.match(/hasClassFeature\s*\(?\s*['"]?([^'")]+)/i);
-  if (cfM && cfM[1]) return hasNamed(featureNames(data), cfM[1]);
+  if (cfM && cfM[1]) {
+    const owned = ofEdition([...features(data), ...options(data)], ruleEdition(entry, cfM[1]));
+    return hasNamed(owned, catalogName(untagged(cfM[1])));
+  }
 
   const rtM = cond.match(/hasRacialTrait\s*\(?\s*['"]?([^'")]+)/i);
-  if (rtM && rtM[1]) return hasNamed(traitNames(data), rtM[1]);
+  if (rtM && rtM[1]) return hasNamed(traitNames(data), rtM[1], true);
 
   // Bare class-name references (e.g. "Barbarian", "Warlock with Lifedrinker …").
   const owned = classNames(data);
@@ -135,7 +212,7 @@ function genericAppliesTo(entry: RawEntry, data: CharacterData): boolean {
   // them (the bug that surfaced a non-Halfling seeing "Lucky").
   const quoted = [...cond.matchAll(/'([^']+)'/g)].map((m) => m[1]).filter((q): q is string => !!q);
   if (quoted.length) {
-    if (/racial trait/i.test(cond)) return quoted.some((q) => hasNamed(traitNames(data), q));
+    if (/racial trait/i.test(cond)) return quoted.some((q) => hasNamed(traitNames(data), q, true));
     if (/\bfeat\b/i.test(cond)) return quoted.some((q) => hasNamed(featNames(data), q));
     if (/class feature|\bfeature\b/i.test(cond)) return quoted.some((q) => hasNamed(featureNames(data), q));
   }
@@ -214,7 +291,70 @@ type EffectBuilder = (
   request: RollRequest,
 ) => RuleEffect[];
 
+// What a roll's weapon is (see RollRequest.weapon) — absent for spells and other attacks.
+const twoHandedMelee = (r: RollRequest) => !!r.weapon?.melee && r.weapon.twoHanded;
+const strengthAttack = (r: RollRequest) => r.weapon?.ability === "STR";
+/** The weapon's damage die size, from its damage formula ("1d12 + 4" → 12). */
+const weaponDie = (r: RollRequest) => Number(/\d*d(\d+)/.exec(r.baseDamage ?? "")?.[1] ?? 0);
+/** Dice that grow with a class level: [[minLevel, dice], …] highest first. */
+const byLevel = (lvl: number, steps: [number, string][]) => steps.find(([min]) => lvl >= min)?.[1] ?? steps[steps.length - 1]![1];
+
 const SPECIAL_EFFECTS: Record<string, EffectBuilder> = {
+  // Rage: +2/+3/+4 damage (Barbarian 1/9/16) on attacks using Strength — not spells or DEX weapons.
+  "barbarian-rage": (data, _m, request) => {
+    const lvl = classLevel(data, "Barbarian");
+    if (!lvl || !strengthAttack(request)) return [];
+    return [{ op: "flat", target: "damage", value: lvl >= 16 ? 4 : lvl >= 9 ? 3 : 2, label: "Rage" }];
+  },
+  // Zealot's Divine Fury: 1d6 + half your Barbarian level, first hit each turn while raging.
+  "barbarian-divine-fury": (data) => {
+    const lvl = classLevel(data, "Barbarian");
+    return [
+      { op: "add-dice", target: "damage", dice: "1d6", label: "Divine Fury" },
+      { op: "flat", target: "damage", value: Math.floor(lvl / 2), label: "Divine Fury" },
+    ];
+  },
+  // Brutal Strike (2024): 1d10, 2d10 from Improved Brutal Strike at Barbarian 17.
+  "brutal-strike": (data) => [
+    { op: "add-dice", target: "damage", dice: byLevel(classLevel(data, "Barbarian"), [[17, "2d10"], [0, "1d10"]]), label: "Brutal Strike" },
+  ],
+  // Divine Strike (2014 domains) and the 2024 Blessed Strikes option: 1d8, 2d8 at Cleric 14.
+  "cleric-divine-strike": (data) => [
+    { op: "add-dice", target: "damage", dice: byLevel(classLevel(data, "Cleric"), [[14, "2d8"], [0, "1d8"]]), label: "Divine Strike" },
+  ],
+  "cleric-blessed-strikes": (data) => [
+    { op: "add-dice", target: "damage", dice: byLevel(classLevel(data, "Cleric"), [[14, "2d8"], [0, "1d8"]]), label: "Divine Strike" },
+  ],
+  // Rune Knight's Giant's Might: 1d6, 1d8 at Fighter 10, 1d10 at 18.
+  "fighter-giant-might": (data) => [
+    { op: "add-dice", target: "damage", dice: byLevel(classLevel(data, "Fighter"), [[18, "1d10"], [10, "1d8"], [0, "1d6"]]), label: "Giant's Might" },
+  ],
+  // Favored Foe (Tasha's): 1d4, 1d6 at Ranger 6, 1d8 at 14.
+  "ranger-favored-foe": (data) => [
+    { op: "add-dice", target: "damage", dice: byLevel(classLevel(data, "Ranger"), [[14, "1d8"], [6, "1d6"], [0, "1d4"]]), label: "Favored Foe" },
+  ],
+  // Charger: 2014 +5 damage; 2024 +1d8 (once per turn).
+  "charger-feat": (data) => {
+    const f = feats(data).find((n) => hasNamed([n.name], "Charger"));
+    return f?.edition === "2014"
+      ? [{ op: "flat", target: "damage", value: 5, label: "Charger" }]
+      : [{ op: "add-dice", target: "damage", dice: "1d8", label: "Charger" }];
+  },
+  // Lifedrinker (Pact of the Blade invocation) on a pact-weapon hit: 2014 +CHA necrotic; 2024 +1d6
+  // necrotic/psychic/radiant once per turn. Its catalog condition only names "Warlock", so check the
+  // invocation is actually taken; weapon attacks only.
+  "eldritch-invocation-lifedrinker": (data, rollModel, request) => {
+    const inv = options(data).find((o) => hasNamed([o.name], "Lifedrinker"));
+    if (!inv || !request.weapon) return [];
+    return inv.edition === "2014"
+      ? [{ op: "flat", target: "damage", value: rollModel.abilities.CHA.mod, label: "Lifedrinker" }]
+      : [{ op: "add-dice", target: "damage", dice: "1d6", label: "Lifedrinker" }];
+  },
+  // Assassinate (2024): advantage in the first round, and a Sneak Attack hit then adds your Rogue level.
+  "rogue-assassinate-2024": (data) => [
+    { op: "advantage", target: "attack", mode: "advantage", label: "Assassinate" },
+    { op: "flat", target: "damage", value: classLevel(data, "Rogue"), label: "Assassinate" },
+  ],
   sharpshooter: () => [
     { op: "flat", target: "attack", value: -5, label: "Sharpshooter" },
     { op: "flat", target: "damage", value: 10, label: "Sharpshooter" },
@@ -234,12 +374,14 @@ const SPECIAL_EFFECTS: Record<string, EffectBuilder> = {
     { op: "add-dice", target: "attack", dice: "-1d4", label: "Bane" },
     { op: "add-dice", target: "save", dice: "-1d4", label: "Bane" },
   ],
-  "great-weapon-fighting-2014": () => [
+  // Great Weapon Fighting only touches a melee weapon held in two hands — not spells, bows or a
+  // one-handed swing.
+  "great-weapon-fighting-2014": (_d, _m, request) => twoHandedMelee(request) ? [
     { op: "reroll", target: "damage", threshold: 2, label: "Great Weapon Fighting" },
-  ],
-  "great-weapon-fighting-2024": () => [
+  ] : [],
+  "great-weapon-fighting-2024": (_d, _m, request) => twoHandedMelee(request) ? [
     { op: "min-die", target: "damage", min: 3, label: "Great Weapon Fighting" },
-  ],
+  ] : [],
   // Halfling Lucky rerolls a natural 1 on EVERY d20 (attack/check/save/initiative),
   // so it targets 'd20' (all d20 rolls), not just attacks.
   "halfling-lucky": () => [
@@ -271,6 +413,12 @@ const SPECIAL_EFFECTS: Record<string, EffectBuilder> = {
     const lvl = classLevel(data, "Rogue");
     if (lvl <= 0) return [];
     return [{ op: "add-dice", target: "damage", dice: `${Math.ceil(lvl / 2)}d6`, label: "Sneak Attack" }];
+  },
+  // Gloom Stalker's extra hit: 2014 Dread Ambusher adds 1d8; the 2024 Dreadful Strike adds 2d6 Psychic.
+  // One catalog entry covers both, and the generic mapper read its prose as 1d6 — so pick by edition.
+  "ranger-dread-ambusher": (data) => {
+    const f = features(data).find((n) => hasNamed([n.name], "Dread Ambusher"));
+    return [{ op: "add-dice", target: "damage", dice: f?.edition === "2014" ? "1d8" : "2d6", label: "Dread Ambusher" }];
   },
   // One catalog entry covers BOTH Improved Critical (19-20 -> 19) and Superior Critical
   // (18-20 -> 18). Derive the range from whichever feature the character actually has
@@ -428,10 +576,35 @@ const CONDITION_RULES: Rule[] = CONDITIONS.filter((c) => c.effects.length > 0).m
   toEffects: () => c.effects,
 }));
 
+// Brutal Critical (2014 Barbarian 9/13/17: 1/2/3 dice) and Savage Attacks (2014 Half-Orc: 1 die) add
+// extra WEAPON damage dice to a melee crit — rolled once, on the crit only. Automatic: it applies
+// whenever you roll a crit, rather than being a box to remember to tick.
+const BRUTAL_CRITICAL: Rule = {
+  id: "brutal-critical-auto",
+  name: "Brutal Critical / Savage Attacks",
+  kind: "add-dice",
+  target: "damage",
+  toggle: false,
+  condition: "hasClassFeature('Brutal Critical') or hasRacialTrait('Savage Attacks'), on a melee weapon crit",
+  appliesTo(data, request) {
+    return !!request.crit && !!request.weapon?.melee && brutalDice(data) > 0;
+  },
+  toEffects(data, _m, request) {
+    const n = brutalDice(data), die = weaponDie(request);
+    return n && die ? [{ op: "add-dice", target: "damage", dice: `${n}d${die}`, critOnly: true, label: "Brutal Critical" }] : [];
+  },
+};
+function brutalDice(data: CharacterData): number {
+  const lvl = classLevel(data, "Barbarian");
+  const brutal = hasNamed(ofEdition(features(data), "2014"), "Brutal Critical") ? (lvl >= 17 ? 3 : lvl >= 13 ? 2 : 1) : 0;
+  return brutal + (hasNamed(traitNames(data), "Savage Attacks") ? 1 : 0);
+}
+
 export const RULES: Rule[] = [
   ...CATALOG.map(toRule),
   ELVEN_ACCURACY,
   SAVAGE_ATTACKER,
+  BRUTAL_CRITICAL,
   ...CONDITION_RULES,
 ];
 
@@ -447,6 +620,11 @@ export const CONFIG_ONLY_IDS = new Set<string>([
   "custom-critical-limit",
   "critical-homebrew",
   "roll-type-global", // duplicates the app's own Adv / Normal / Dis control
+  "brutal-critical", // replaced by the automatic BRUTAL_CRITICAL rule (crit-only weapon dice)
+  // Exhaustion comes from the character's Exhaustion condition and its level (exhaustionEffects in
+  // engine/conditions.ts); a separate level-less toggle would double-count it.
+  "effects-exhaustion-2024",
+  "effects-exhaustion-2014",
   "versatile-choice",
   "toll-choice",
   // These add-dice features have no parseable die in their catalog prose, so the generic mapper
@@ -454,7 +632,6 @@ export const CONFIG_ONLY_IDS = new Set<string>([
   // them rather than roll a wrong bonus. (Sneak Attack is modeled correctly in SPECIAL_EFFECTS.)
   "rogue-cunning-strike",   // spends sneak-attack dice — adds nothing
   "bard-psychic-blades",    // variable, spends Bardic Inspiration
-  "ranger-favored-foe",     // 1d4, not derivable from prose
   "ranger-planar-warrior",  // 1d8, not derivable from prose
   "ranger-gathered-swarm",  // 1d4, not derivable from prose
 ]);

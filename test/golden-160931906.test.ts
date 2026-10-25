@@ -16,6 +16,12 @@
 import { describe, it, expect } from 'vitest';
 import { computeRollModel } from '../src/engine';
 import { computeWeapons } from '../src/engine/weapons';
+
+// These tests check weapon maths, not which weapons are listed — and only EQUIPPED weapons are listed
+// (see 'only equipped weapons'), so roll every weapon in the inventory as if equipped.
+const equipAll = (d: CharacterData): CharacterData =>
+  ({ ...d, inventory: (d.inventory ?? []).map((it) => ({ ...it, equipped: true })) }) as CharacterData;
+const weaponsOf = (d: CharacterData, m: RollModel) => computeWeapons(equipAll(d), m);
 import { computeSpells } from '../src/engine/spells';
 import type { CharacterData, RollModel, SkillKey, Ability } from '../src/engine';
 import fixture from './fixtures/aldric-160931906.json';
@@ -23,7 +29,7 @@ import golden from './fixtures/aldric-160931906-golden.json';
 
 const data = (fixture as { data: CharacterData }).data;
 const model: RollModel = computeRollModel(data);
-const weapons = computeWeapons(data, model);
+const weapons = weaponsOf(data, model);
 const spellInfo = computeSpells(data, model);
 
 describe('golden 160931906 — Aldric (Artificer/Artillerist 11) vs DDB sheet', () => {

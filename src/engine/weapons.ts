@@ -263,12 +263,16 @@ function computeInventoryWeapons(data: CharacterData, model: RollModel): Weapon[
   const profSet = weaponProficiencySet(data);
   const styles = detectFightingStyles(data);
   const replaceAbilities = weaponAbilityReplacements(data); // Hex Warrior / Pact of the Blade → CHA, etc.
+  const customBonuses = itemCustomBonuses(data);
   const out: Weapon[] = [];
 
   for (const rawItem of inventory) {
-    const item = rawItem as { definition?: Record<string, unknown> };
+    const item = rawItem as { definition?: Record<string, unknown>; equipped?: boolean };
     const def = item.definition;
     if (!def) continue;
+    // Only weapons you have equipped — as D&D Beyond's Actions list does. A dagger in the pack isn't
+    // one of your attacks (and an unequipped magic weapon's bonus doesn't apply).
+    if (item.equipped !== true) continue;
 
     const isWeapon =
       def.filterType === 'Weapon' ||
@@ -320,9 +324,10 @@ function computeInventoryWeapons(data: CharacterData, model: RollModel): Weapon[
     // dependent; apply the deterministic melee/one-handed portion.
     if (styles.dueling && !isRanged && !hasProp(properties, 'Two-Handed')) fsDamage += 2;
 
+    const custom = customBonuses.get(Number((rawItem as { id?: number }).id));
     const attackMod =
-      abilityMod + (proficient ? model.profBonus : 0) + magicBonus + fsAttack;
-    const damageMod = abilityMod + magicBonus + fsDamage;
+      abilityMod + (proficient ? model.profBonus : 0) + magicBonus + fsAttack + (custom?.toHit ?? 0);
+    const damageMod = abilityMod + magicBonus + fsDamage + (custom?.damage ?? 0);
 
     const damageType =
       typeof def.damageType === 'string' && def.damageType ? String(def.damageType) : 'Untyped';
@@ -349,6 +354,24 @@ function computeInventoryWeapons(data: CharacterData, model: RollModel): Weapon[
       if (vd) w.versatileDamage = vd;
     }
     out.push(w);
+  }
+  return out;
+}
+
+/** A player's edits to an item on their sheet ("Customize" — the weapon shows with a * on D&D Beyond)
+ *  live in `characterValues`, keyed by the inventory entry's id: typeId 10 = to-hit bonus, 12 = damage
+ *  bonus (seen live: a customised +2 Dragonstooth, +2 / +2). */
+function itemCustomBonuses(data: CharacterData): Map<number, { toHit: number; damage: number }> {
+  const out = new Map<number, { toHit: number; damage: number }>();
+  const values = (data as unknown as { characterValues?: { typeId?: number; value?: unknown; valueId?: string | number }[] | null }).characterValues ?? [];
+  for (const v of values) {
+    if (v?.typeId !== 10 && v?.typeId !== 12) continue;
+    const n = Number(v.value);
+    const id = Number(v.valueId);
+    if (!Number.isFinite(n) || !Number.isFinite(id)) continue;
+    const cur = out.get(id) ?? { toHit: 0, damage: 0 };
+    if (v.typeId === 10) cur.toHit += n; else cur.damage += n;
+    out.set(id, cur);
   }
   return out;
 }
@@ -392,13 +415,16 @@ function computeActionWeapons(data: CharacterData, model: RollModel): Weapon[] {
 
       // Custom action to-hit. `fixedToHit` is DDB's authored TOTAL to-hit override;
       // when present it REPLACES the ability+prof computation (do not add to it).
-      // Otherwise: ability mod + prof (if proficient). Damage is the dice as
-      // authored (DDB does not auto-add the ability mod to cannon damage).
+      // Otherwise: ability mod + prof (if proficient). Damage: a weapon-style attack adds the ability
+      // mod like any weapon (Polearm Master's butt end: 1d4 + STR, natural claws); a spell-style one
+      // (actionType 2 / a spell range) or one D&D Beyond doesn't list as an attack (Eldritch Cannon,
+      // displayAsAttack:false — older sheets mark it neither of the other ways) rolls its dice as authored.
       const attackMod =
         typeof a.fixedToHit === 'number'
           ? a.fixedToHit
           : abilityMod + (proficient ? model.profBonus : 0);
-      const damageMod = 0;
+      const spellLike = a.actionType === 2 || a.spellRangeType != null || a.displayAsAttack === false;
+      const damageMod = spellLike ? 0 : abilityMod;
 
       const damageType = DAMAGE_TYPE_BY_ID[Number(a.damageTypeId)] ?? 'Untyped';
       const rangeObj = a.range as { range?: number; longRange?: number } | null | undefined;
