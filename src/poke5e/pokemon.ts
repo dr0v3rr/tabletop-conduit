@@ -174,7 +174,8 @@ function parseDamageFlat(
   let hasStabToken = false;
   for (const t of m == null ? [] : String(m).split("+").map((x) => x.trim()).filter(Boolean)) {
     const up = t.toUpperCase();
-    if (up === "MOVE") { if (ctx.mod) parts.push({ label: ctx.ability || "move", value: ctx.mod }); }
+    // MOVE is listed even at +0 (it adds nothing) so the tooltip shows it was counted ("+0 CHA").
+    if (up === "MOVE") { if (ctx.mod || ctx.ability) parts.push({ label: ctx.ability || "move", value: ctx.mod }); }
     else if (up === "LEVEL") { if (ctx.level) parts.push({ label: "level", value: ctx.level }); }
     else if (up === "STAB") { hasStabToken = true; if (ctx.stab) parts.push({ label: "STAB", value: ctx.stab }); }
     else if (/^-?\d+$/.test(t)) { const n = Number(t); if (n) parts.push({ label: "flat", value: n }); }

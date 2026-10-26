@@ -18,6 +18,16 @@ describe("moveStat — STAB + damage-modifier parsing", () => {
     expect(s.damageTip).toBe("1d8 +1 WIS +2 STAB");
   });
 
+  it("Disarming Voice: 1d4 + CHA (MOVE) + STAB — a +0 CHA still shows in the tooltip", () => {
+    const voice = { name: "Disarming Voice", type: "fairy", power: ["cha"], damage: { dice: { "1": "1d4", "5": "2d4", "10": "1d12", "17": "4d4" }, modifier: "MOVE", type: ["fairy"] } };
+    const s = moveStat(voice, ralts());              // CHA 10 → +0
+    expect(s.damageDice).toBe("1d4 + 2");
+    expect(s.damageTip).toBe("1d4 +0 CHA +2 STAB");
+    const charming = moveStat(voice, { ...ralts(), charisma: 14 }); // CHA 14 → +2
+    expect(charming.damageDice).toBe("1d4 + 4");
+    expect(charming.damageTip).toBe("1d4 +2 CHA +2 STAB");
+  });
+
   it("does NOT add STAB to an off-type move (Magical Leaf is Grass on a Psychic/Fairy Pokémon)", () => {
     const magicalLeaf = { name: "Magical Leaf", type: "grass", power: ["dex"], damage: { dice: { "1": "1d6" }, modifier: "MOVE", type: ["grass"] } };
     const s = moveStat(magicalLeaf, ralts());
