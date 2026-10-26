@@ -1138,7 +1138,8 @@ function renderDeathSaves() {
 }
 
 // Post a plain d20 death save to Roll20 (players mark the result on the pips themselves).
-function rollDeathSave() {
+async function rollDeathSave() {
+  await detectTemplateStyle(); // the Roll20 pane may be on another game since the character loaded
   const msg = templateStyle === "sheet"
     ? `&{template:simple} {{rname=Death Saving Throw}} {{mod=+0}} {{r1=[[1d20]]}}`
     : `&{template:default} {{name=Death Saving Throw}} {{Roll=[[1d20]]}}`;
@@ -1973,11 +1974,12 @@ async function useItem(it: any) {
 
 // Announce a no-dice consumable (Potion of Fire Resistance, etc.) on the table so a "Use" is
 // visible in Roll20 even when there's nothing to roll. Respects the detected sheet style.
-function announceUse(it: any) {
+async function announceUse(it: any) {
   const name = it.name || "item";
   // Capture items read as a throw; everything else is "Uses". Match on the poke5e item TYPE
   // (e.g. "pokeball") only — not the display name, which would misfire on "Snowball"/"Eyeball".
   const line = /ball/i.test(String(it.itemType || "")) ? `Threw a ${name}` : `Uses ${name}`;
+  await detectTemplateStyle();
   window.api.roll20Say(announceTemplate(line), model?.name).catch(() => {});
 }
 
@@ -2569,6 +2571,9 @@ async function sendRoll(request: any, onTotal?: (total: number | null) => void) 
     lastRollRequest = request;
     ($("rerollBtn") as HTMLButtonElement).disabled = false;
   }
+  // The Roll20 pane may have moved to another game since the character loaded — re-check which cards it
+  // can render (cached per game in main, so this is cheap).
+  if (!request.templateStyle) await detectTemplateStyle();
   const req = { ...request, whisper: whisperOn || request.whisper, templateStyle: request.templateStyle ?? templateStyle };
   delete req.hitDie;
   if (adhocMod && !hitDie) { req.adhocMod = adhocMod; resetAdhoc(); } // one-off: applies to this roll, then clears
@@ -2588,7 +2593,10 @@ async function sendRoll(request: any, onTotal?: (total: number | null) => void) 
   const lr = $("lastRoll");
   if (!res.ok) { lr.innerHTML = `<b>Error:</b> ${esc(String(res.error ?? ""))}`; onTotal?.(null); return; }
   const inj = res.injected;
-  const landed = inj?.ok ? "✓ sent to Roll20" : `⚠ ${inj?.error || "not sent — open a Roll20 game"}`;
+  // Roll20 showed the D&D card empty in this game, so it was re-posted on the universal card — use that
+  // from now on (main remembers it for this game too).
+  if (inj?.fellBack) templateStyle = "default";
+  const landed = inj?.ok ? (inj?.fellBack ? "✓ sent to Roll20 (this game can't show D&D cards — re-sent as a plain card)" : "✓ sent to Roll20") : `⚠ ${inj?.error || "not sent — open a Roll20 game"}`;
   lr.innerHTML = `<b>${landed}</b> &nbsp; <code>${(res.command || "").replace(/</g, "&lt;")}</code>`;
   // For an initiative roll, once the result lands we also add it to Roll20's turn order automatically —
   // using the bound token when there is one, else a name-labelled custom row.

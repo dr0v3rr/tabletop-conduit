@@ -11,7 +11,7 @@ import { renderSheetHtml } from "../src/sheet/sheet-pdf.js";
 import { rollFrom, buildCharacter, availableToggles } from "../src/pipeline.js";
 import type { CharacterData, RollRequest } from "../src/pipeline.js";
 import { buildSendExpression } from "../src/roll20/inject.js";
-import { displayCard } from "../src/roll20/format.js";
+import { displayCard, toDefaultTemplate } from "../src/roll20/format.js";
 import { r20TokenExpr } from "../src/roll20/token.js";
 import { ddbSlotsExpr, ddbHitDiceExpr, ddbInventoryExpr, ddbFetchCharExpr, type DdbHitDiceMethod } from "../src/ddb/inject.js";
 import { alwaysPreparedRequests, alwaysPreparedUrl, mergeAlwaysPrepared } from "../src/ddb/always-prepared.js";
@@ -1124,16 +1124,57 @@ ipcMain.handle("list-toggles", async (_e, request: RollRequest) => {
   return availableToggles(current.data, request).map((r) => ({ id: r.id, name: r.name }));
 });
 
+// ---- Never post a blank card ---------------------------------------------------------------------
+// A message naming a roll template the game's character sheet doesn't define renders EMPTY in Roll20
+// (or not at all). The sheet-style check picks the universal `default` template for such games; as a
+// final guarantee, every message on a D&D sheet template (`simple` / `atkdmg`) is read back after
+// posting. If the new chat message is empty — or none appears — the same roll is re-posted on
+// `default`, which every game has, and that game is remembered as default-only. It only acts on an
+// empty message seen twice, or on no message at all, so a roll that rendered is never duplicated.
+// Posts are serialized so one check can't mistake another post's message for its own.
+const SHEET_TEMPLATE_RE = /&\{template:(?:simple|atkdmg)\}/;
+const CHAT_MARK_JS = `(function(){var ms=document.querySelectorAll('#textchat .content .message');for(var i=0;i<ms.length;i++)ms[i].setAttribute('data-conduit-seen','1');return ms.length;})()`;
+const CHAT_CHECK_JS = `(function(){var key=String(window.campaign_id||(window.Campaign&&window.Campaign.id)||'');var ms=document.querySelectorAll('#textchat .content .message:not([data-conduit-seen])');var blank=0;for(var i=0;i<ms.length;i++){var c=ms[i].cloneNode(true);var junk=c.querySelectorAll('.by,.tstamp,.avatar,.spacer,.flyout');for(var j=0;j<junk.length;j++)junk[j].remove();if(!(c.textContent||'').trim()&&!c.querySelector('.inlinerollresult,img'))blank++;}return{key:key,count:ms.length,blank:blank};})()`;
+let chatChain: Promise<unknown> = Promise.resolve();
+
+/** Post `command` to the Roll20 chat (as `speakingAs`). A sheet-template message is verified as above and
+ *  re-posted as `fallback()` if it didn't render. Resolves to the injector's result (+ fellBack). */
+function postToChat(command: string, speakingAs: string | undefined, fallback: () => string): Promise<any> {
+  const run = async () => {
+    const send = (cmd: string) => roll20View.webContents.executeJavaScript(buildSendExpression(cmd, speakingAs), true).catch((err) => ({ ok: false, error: String(err) }));
+    if (!SHEET_TEMPLATE_RE.test(command)) return send(command);
+    await roll20View.webContents.executeJavaScript(CHAT_MARK_JS, true).catch(() => 0);
+    const injected: any = await send(command);
+    if (!injected?.ok) return injected;
+    const check = (): Promise<{ key: string; count: number; blank: number } | null> => roll20View.webContents.executeJavaScript(CHAT_CHECK_JS, true).catch(() => null);
+    let state: { key: string; count: number; blank: number } | null = null;
+    for (let waited = 0; waited < 3000; waited += 200) {
+      await sleep(200);
+      state = await check();
+      if (state && state.count > state.blank) return injected; // a message rendered with content — done
+      if (state && state.blank > 0) {
+        await sleep(600); // give a slow render one more chance before deciding it's blank
+        state = await check();
+        if (state && state.count > state.blank) return injected;
+        break;
+      }
+    }
+    // Empty, or nothing appeared at all: this game can't show the D&D card — post it on `default`.
+    if (state?.key) sheetStyleCache = { key: state.key, style: "default" };
+    const again: any = await send(fallback());
+    return { ...again, fellBack: true };
+  };
+  const p = chatChain.then(run, run);
+  chatChain = p.catch(() => {});
+  return p;
+}
+
 ipcMain.handle("roll", async (_e, request: RollRequest, enabledToggleIds: string[]) => {
   if (!current) return { ok: false, error: "No character loaded" };
   const { command, request: merged } = rollFrom(current.data, request, enabledToggleIds ?? [], current.model);
-  const expr = buildSendExpression(command, merged.speakingAs);
-  let injected: any;
-  try {
-    injected = await roll20View.webContents.executeJavaScript(expr, true);
-  } catch (err) {
-    injected = { ok: false, error: String(err) };
-  }
+  const cur = current;
+  const injected: any = await postToChat(command, merged.speakingAs, () =>
+    rollFrom(cur.data, { ...request, templateStyle: "default" }, enabledToggleIds ?? [], cur.model).command);
   // Only record the action once it actually reached Roll20 — don't log rolls that never sent.
   if (injected?.ok) {
     actionLog.push({ at: Date.now(), character: merged.speakingAs, name: request.key ?? request.kind, command });
@@ -1696,13 +1737,23 @@ ipcMain.handle("r20-token-rename", async (_e, id: string, name: string) => {
  *  its own built-in default card with `sheet-rolltemplate-default` in every game, so a bare
  *  `[class*=sheet-rolltemplate-]` match on chat history misreports a non-5e game (e.g. Pokémon) as
  *  "sheet" — and every 5e card then renders as an empty message. */
+// Which roll-card style the open Roll20 game can render. The D&D 5e sheet cards need BOTH templates we
+// emit — `simple` (checks, saves) and `atkdmg` (attacks) — so "sheet" only when both exist; a game whose
+// own sheet defines just one of those names (or an unrelated `spell` / `atk`) got empty attack cards.
+// Asked before every roll, so switching the Roll20 pane to another game is picked up. Roll20's game URL
+// is the same for every game (/editor/), so the answer is cached per CAMPAIGN id, checked in the page.
+let sheetStyleCache: { key: string; style: "sheet" | "default" } | null = null;
 ipcMain.handle("roll20-sheet-style", async () => {
   try {
-    const has5e = await roll20View.webContents.executeJavaScript(
-      `(function(){var re=/sheet-rolltemplate-(simple|atkdmg|atk|dmg|spell)\\b/;try{for(const ss of document.styleSheets){let rules;try{rules=ss.cssRules;}catch(e){continue;}if(!rules)continue;for(const r of rules){if(r.selectorText&&re.test(r.selectorText))return true;}}}catch(e){}return Array.prototype.some.call(document.querySelectorAll('[class*=sheet-rolltemplate-]'),function(el){return re.test(el.className);});})()`,
+    const res: { key: string; found?: string[] } = await roll20View.webContents.executeJavaScript(
+      `(function(cached){var key=String(window.campaign_id||(window.Campaign&&window.Campaign.id)||'');if(key&&key===cached)return{key:key};var re=/sheet-rolltemplate-(simple|atkdmg)\\b/g,seen={};function scan(t){var m;re.lastIndex=0;while((m=re.exec(t)))seen[m[1]]=1;}try{for(const ss of document.styleSheets){let rules;try{rules=ss.cssRules;}catch(e){continue;}if(!rules)continue;for(const r of rules){if(r.selectorText)scan(r.selectorText);}}}catch(e){}Array.prototype.forEach.call(document.querySelectorAll('[class*=sheet-rolltemplate-]'),function(el){scan(el.className);});return{key:key,found:Object.keys(seen)};})(${JSON.stringify(sheetStyleCache?.key ?? "")})`,
       true,
     );
-    return { style: has5e ? "sheet" : "default" };
+    if (!res.found && sheetStyleCache && res.key === sheetStyleCache.key) return { style: sheetStyleCache.style };
+    const found = res.found ?? [];
+    const style = found.includes("simple") && found.includes("atkdmg") ? "sheet" : "default";
+    sheetStyleCache = res.key ? { key: res.key, style } : null; // cache only once inside a game
+    return { style };
   } catch {
     return { style: "default" };
   }
@@ -1711,11 +1762,8 @@ ipcMain.handle("roll20-sheet-style", async () => {
 /** Post a plain message to the Roll20 chat as the given character (e.g. a condition announcement).
  *  Reuses the same chat injector rolls use. Fails softly if no game is open. */
 ipcMain.handle("roll20-say", async (_e, message: string, speakingAs?: string) => {
-  try {
-    return await roll20View.webContents.executeJavaScript(buildSendExpression(String(message), speakingAs), true);
-  } catch (err) {
-    return { ok: false, error: String(err) };
-  }
+  const msg = String(message);
+  return postToChat(msg, speakingAs, () => toDefaultTemplate(msg));
 });
 
 // Ball-throw animation: expand the transparent overlay to the whole window, raise it to the top, run

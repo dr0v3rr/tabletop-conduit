@@ -310,3 +310,25 @@ export function displayCard(o: DisplayCardOptions): string {
   parts.push(`{{${label}=${body}}}`);
   return parts.join(' ');
 }
+
+/** Re-express a sheet-template message (`simple` / `atkdmg`) on Roll20's built-in `default` template,
+ *  which every game has — the fallback when a game turns out not to render the D&D 5e cards. Known
+ *  fields get readable labels; on/off flags (`{{attack=1}}`) are dropped, except advantage /
+ *  disadvantage, which become a note on which roll to keep. Anything else is passed through. */
+export function toDefaultTemplate(cmd: string): string {
+  const LABEL: Record<string, string> = {
+    rname: 'name', r1: 'Roll', r2: 'Roll 2', dmg1: 'Damage', dmg2: 'Damage 2', crit1: 'Crit', crit2: 'Crit 2', dmg1type: 'Type',
+  };
+  return cmd
+    .replace(/&\{template:(?:simple|atkdmg)\}/, '&{template:default}')
+    .replace(/\{\{([^=}]+)=([^}]*)\}\}/g, (all, key: string, value: string) => {
+      const k = key.trim();
+      if (LABEL[k]) return `{{${LABEL[k]}=${value}}}`;
+      if (k === 'advantage' && value === '1') return '{{Advantage=keep the highest}}';
+      if (k === 'disadvantage' && value === '1') return '{{Disadvantage=keep the lowest}}';
+      if (k === 'mod' || value === '1') return '';
+      return all;
+    })
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}

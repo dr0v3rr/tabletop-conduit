@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { sanitizeCardText, displayCard } from "../src/roll20/format";
+import { sanitizeCardText, displayCard, toDefaultTemplate } from "../src/roll20/format";
 
 // "Display in VTT" posts untrusted, possibly-HTML wording (scraped/API text) into a Roll20
 // `&{template:default}` card. The one invariant that matters: the body can never break OUT of or
@@ -59,5 +59,22 @@ describe("displayCard", () => {
     // exactly the template's own delimiters remain — 3 field pairs → 6 braces of each
     expect((cmd.match(/\{\{/g) || []).length).toBe(2);
     expect((cmd.match(/\}\}/g) || []).length).toBe(2);
+  });
+});
+
+describe('toDefaultTemplate — re-post a D&D card on the universal template', () => {
+  it('death save (simple) → default with a Roll field', () => {
+    expect(toDefaultTemplate('&{template:simple} {{rname=Death Saving Throw}} {{mod=+0}} {{r1=[[1d20]]}}'))
+      .toBe('&{template:default} {{name=Death Saving Throw}} {{Roll=[[1d20]]}}');
+  });
+  it('announcement (simple, name only)', () => {
+    expect(toDefaultTemplate('&{template:simple} {{rname=Uses Potion of Healing}}')).toBe('&{template:default} {{name=Uses Potion of Healing}}');
+  });
+  it('attack (atkdmg) keeps rolls, damage and the advantage note; drops flags', () => {
+    const cmd = '/w gm &{template:atkdmg} {{rname=Longsword}} {{mod=+7}} {{r1=[[1d20cs>20 + 7]]}} {{r2=[[1d20cs>20 + 7]]}} {{attack=1}} {{advantage=1}} {{damage=1}} {{dmg1flag=1}} {{dmg1=[[1d8 + 4]]}} {{dmg1type=Slashing}}';
+    expect(toDefaultTemplate(cmd)).toBe('/w gm &{template:default} {{name=Longsword}} {{Roll=[[1d20cs>20 + 7]]}} {{Roll 2=[[1d20cs>20 + 7]]}} {{Advantage=keep the highest}} {{Damage=[[1d8 + 4]]}} {{Type=Slashing}}');
+  });
+  it('a default message is left alone', () => {
+    expect(toDefaultTemplate('&{template:default} {{name=X}} {{Roll=[[1d20]]}}')).toBe('&{template:default} {{name=X}} {{Roll=[[1d20]]}}');
   });
 });
