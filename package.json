@@ -1,6 +1,6 @@
 {
   "name": "tabletop-conduit",
-  "version": "0.2.43",
+  "version": "0.2.44",
   "description": "Conduit — a bridge between your character sheets (D&D Beyond, poke5e, monsters) and your virtual tabletop.",
   "license": "GPL-3.0-or-later",
   "type": "module",
@@ -28,6 +28,7 @@
     "appId": "com.hwest.conduit",
     "productName": "Conduit",
     "afterPack": "scripts/afterpack-fuses.mjs",
+    "afterSign": "scripts/aftersign-mac.mjs",
     "publish": [
       {
         "provider": "github",

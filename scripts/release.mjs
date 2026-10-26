@@ -66,7 +66,9 @@ if (uploadOnly) {
   // --- Build (fresh; one consistent source state) -----------------------------------------------
   rmSync(REL, { recursive: true, force: true }); // no stale artifacts from a previous version can leak in
   run("npm run shell:build");
-  run("npx electron-builder --mac --publish never");            // macOS arm64 dmg + zip
+  // macOS must be signed with the stable local signing identity (see scripts/aftersign-mac.mjs) — an
+  // ad-hoc release would log every Mac user out on update — so a release build fails rather than fall back.
+  run("CONDUIT_REQUIRE_SIGNING=1 npx electron-builder --mac --publish never"); // macOS arm64 dmg + zip
   run("npx electron-builder --win --x64 --publish never");      // Windows x64 nsis + portable
   run("npx electron-builder --linux --x64 --arm64 --publish never"); // Linux x64 + arm64 AppImage (one pass → one consistent latest-linux.yml)
 
