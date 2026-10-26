@@ -344,6 +344,13 @@ function raiseRightPane() {
   win.contentView.addChildView(sheetView);
 }
 
+/** Write the shared session's cookies and site storage (localStorage etc.) to disk now. Set up by
+ *  setupPersistentSession; awaited before an update hands over to the installer (see autoUpdate). */
+let flushSessionToDisk: () => Promise<void> = async () => {};
+/** Set once the session has been flushed for an update install, so before-quit doesn't hold the exit
+ *  open: the Windows installer force-closes Conduit ~1.3s after it starts. */
+let quittingForUpdate = false;
+
 /** Shared, persistent session for both remote sites. We rewrite incoming Set-Cookie headers so
  *  that pure session cookies (no Expires/Max-Age) get a long Max-Age — Electron only persists
  *  cookies with an expiry to disk, so this is what keeps D&D Beyond and Roll20 logged in across
@@ -364,14 +371,18 @@ function setupPersistentSession(): string {
   // quit (or a Set-Cookie still inside the debounce window) can't be lost. Electron would otherwise
   // tear down while the async flush is still in flight. A `flushing` guard + safety timeout make sure
   // the quit always proceeds even if flushStore stalls.
+  flushSessionToDisk = async () => {
+    try { s.flushStorageData(); } catch { /* best effort */ } // localStorage / site data
+    await s.cookies.flushStore().catch(() => {});
+  };
   let flushing = false;
   app.on("before-quit", (e) => {
-    if (flushing) return; // second pass (after our flush) — let the quit through
+    if (flushing || quittingForUpdate) return; // second pass (after our flush), or already flushed for an update
     flushing = true;
     e.preventDefault();
     const proceed = () => app.quit();
     const guard = setTimeout(proceed, 800); // never hang the quit
-    s.cookies.flushStore().catch(() => {}).finally(() => { clearTimeout(guard); proceed(); });
+    flushSessionToDisk().finally(() => { clearTimeout(guard); proceed(); });
   });
   s.webRequest.onHeadersReceived((details, cb) => {
     const headers = details.responseHeaders ?? {};
@@ -2535,7 +2546,14 @@ function autoUpdate(manual = false): void {
         type: "info", title: "Update ready", message: `Conduit v${info.version} downloaded`,
         detail: "Restart now to finish installing?", buttons: ["Restart now", "Later"], defaultId: 0, cancelId: 1,
       });
-      if (response === 0) autoUpdater.quitAndInstall();
+      if (response === 0) {
+        // quitAndInstall starts the installer straight away, and on Windows it force-closes Conduit about
+        // 1.3s later — mid-shutdown, before the cookie / site-storage write had finished, which logged
+        // people out of Roll20 on update. Save everything first, then exit without delaying.
+        await Promise.race([flushSessionToDisk(), new Promise((r) => setTimeout(r, 3000))]);
+        quittingForUpdate = true;
+        autoUpdater.quitAndInstall();
+      }
     });
     autoUpdater.on("error", () => { try { win.setTitle(`Conduit v${app.getVersion()}`); } catch { /* restore title if a download errored mid-way */ } void checkForUpdate(manual); }); // no feed yet / offline → notifier fallback
   }
