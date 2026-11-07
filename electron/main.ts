@@ -11,7 +11,7 @@ import { renderSheetHtml } from "../src/sheet/sheet-pdf.js";
 import { rollFrom, buildCharacter, availableToggles } from "../src/pipeline.js";
 import type { CharacterData, RollRequest } from "../src/pipeline.js";
 import { buildSendExpression } from "../src/roll20/inject.js";
-import { displayCard, toDefaultTemplate } from "../src/roll20/format.js";
+import { displayCard, toDefaultTemplate, toPlainText } from "../src/roll20/format.js";
 import { r20TokenExpr } from "../src/roll20/token.js";
 import { ddbSlotsExpr, ddbHitDiceExpr, ddbInventoryExpr, ddbFetchCharExpr, type DdbHitDiceMethod } from "../src/ddb/inject.js";
 import { alwaysPreparedRequests, alwaysPreparedUrl, mergeAlwaysPrepared } from "../src/ddb/always-prepared.js";
@@ -1126,43 +1126,69 @@ ipcMain.handle("list-toggles", async (_e, request: RollRequest) => {
 
 // ---- Never post a blank card ---------------------------------------------------------------------
 // A message naming a roll template the game's character sheet doesn't define renders EMPTY in Roll20
-// (or not at all). The sheet-style check picks the universal `default` template for such games; as a
-// final guarantee, every message on a D&D sheet template (`simple` / `atkdmg`) is read back after
-// posting. If the new chat message is empty — or none appears — the same roll is re-posted on
-// `default`, which every game has, and that game is remembered as default-only. It only acts on an
-// empty message seen twice, or on no message at all, so a roll that rendered is never duplicated.
+// (or not at all), and some sheets restyle even the built-in `default` card. So every card message is
+// read back after posting. If the new chat message is empty — or none appears — it is re-posted one
+// step plainer: a D&D sheet card (`simple` / `atkdmg`) on `default` (and that game is remembered as
+// default-only), then a `default` card as plain chat text, which always shows. It only acts on an
+// empty message seen twice, or on no message at all, so a card that rendered is never duplicated.
 // Posts are serialized so one check can't mistake another post's message for its own.
+const TEMPLATE_RE = /&\{template:[^}]+\}/;
 const SHEET_TEMPLATE_RE = /&\{template:(?:simple|atkdmg)\}/;
 const CHAT_MARK_JS = `(function(){var ms=document.querySelectorAll('#textchat .content .message');for(var i=0;i<ms.length;i++)ms[i].setAttribute('data-conduit-seen','1');return ms.length;})()`;
 const CHAT_CHECK_JS = `(function(){var key=String(window.campaign_id||(window.Campaign&&window.Campaign.id)||'');var ms=document.querySelectorAll('#textchat .content .message:not([data-conduit-seen])');var blank=0;for(var i=0;i<ms.length;i++){var c=ms[i].cloneNode(true);var junk=c.querySelectorAll('.by,.tstamp,.avatar,.spacer,.flyout');for(var j=0;j<junk.length;j++)junk[j].remove();if(!(c.textContent||'').trim()&&!c.querySelector('.inlinerollresult,img'))blank++;}return{key:key,count:ms.length,blank:blank};})()`;
 let chatChain: Promise<unknown> = Promise.resolve();
 
-/** Post `command` to the Roll20 chat (as `speakingAs`). A sheet-template message is verified as above and
- *  re-posted as `fallback()` if it didn't render. Resolves to the injector's result (+ fellBack). */
+/** The injector's errors are DOM-level ("no #textchat-input"); say what the player can do about it. */
+function friendlySendError(err?: string): string {
+  if (!err || /textchat|textarea|button/i.test(err)) return "open a Roll20 game first";
+  return err;
+}
+
+/** Post `command` to the Roll20 chat (as `speakingAs`). A card is verified as above: a sheet card is
+ *  re-posted as `fallback()` and then as plain text, a `default` card as plain text, if it didn't
+ *  render. Resolves to the injector's result (+ fellBack when a plainer version was posted). */
 function postToChat(command: string, speakingAs: string | undefined, fallback: () => string): Promise<any> {
   const run = async () => {
+    if (!roll20View) return { ok: false, error: friendlySendError() };
     const send = (cmd: string) => roll20View.webContents.executeJavaScript(buildSendExpression(cmd, speakingAs), true).catch((err) => ({ ok: false, error: String(err) }));
-    if (!SHEET_TEMPLATE_RE.test(command)) return send(command);
-    await roll20View.webContents.executeJavaScript(CHAT_MARK_JS, true).catch(() => 0);
-    const injected: any = await send(command);
-    if (!injected?.ok) return injected;
     const check = (): Promise<{ key: string; count: number; blank: number } | null> => roll20View.webContents.executeJavaScript(CHAT_CHECK_JS, true).catch(() => null);
-    let state: { key: string; count: number; blank: number } | null = null;
-    for (let waited = 0; waited < 3000; waited += 200) {
-      await sleep(200);
-      state = await check();
-      if (state && state.count > state.blank) return injected; // a message rendered with content — done
-      if (state && state.blank > 0) {
-        await sleep(600); // give a slow render one more chance before deciding it's blank
+    // Send one message and watch for it: rendered = a new message with content appeared.
+    const post = async (cmd: string) => {
+      await roll20View.webContents.executeJavaScript(CHAT_MARK_JS, true).catch(() => 0);
+      const injected: any = await send(cmd);
+      if (!injected?.ok) return { injected, rendered: true, key: "" }; // not sent at all — nothing to fall back from
+      let state: { key: string; count: number; blank: number } | null = null;
+      for (let waited = 0; waited < 3000; waited += 200) {
+        await sleep(200);
         state = await check();
-        if (state && state.count > state.blank) return injected;
-        break;
+        if (state && state.count > state.blank) return { injected, rendered: true, key: state.key };
+        if (state && state.blank > 0) {
+          await sleep(600); // give a slow render one more chance before deciding it's blank
+          state = await check();
+          if (state && state.count > state.blank) return { injected, rendered: true, key: state.key };
+          break;
+        }
       }
+      return { injected, rendered: false, key: state?.key ?? "" };
+    };
+    // `delivery` tells the sheet how it arrived: "card" as sent, "default" re-sent on the plain card,
+    // "plain" re-sent as text, or "unconfirmed" — sent, but no new chat message was seen.
+    const done = (r: { injected: any; rendered: boolean }, delivery: string, fellBack = delivery !== "card") =>
+      r.injected?.ok ? { ...r.injected, fellBack, delivery: r.rendered ? delivery : "unconfirmed" } : { ...r.injected, error: friendlySendError(r.injected?.error) };
+    let r = await post(command);
+    if (r.rendered || !TEMPLATE_RE.test(command)) return done(r, "card");
+    let last = command;
+    if (SHEET_TEMPLATE_RE.test(command)) {
+      // This game can't show the D&D card — post it on `default`.
+      if (r.key) sheetStyleCache = { key: r.key, style: "default" };
+      last = fallback();
+      r = await post(last);
+      if (r.rendered) return done(r, "default");
     }
-    // Empty, or nothing appeared at all: this game can't show the D&D card — post it on `default`.
-    if (state?.key) sheetStyleCache = { key: state.key, style: "default" };
-    const again: any = await send(fallback());
-    return { ...again, fellBack: true };
+    // Not even the `default` card showed: post the same thing as plain text.
+    const plain = toPlainText(last);
+    if (!plain) return done(r, "default");
+    return done(await post(plain), "plain", true);
   };
   const p = chatChain.then(run, run);
   chatChain = p.catch(() => {});
@@ -1797,12 +1823,8 @@ ipcMain.handle("throw-ball-anim", async (_e, ballId: string) => {
 ipcMain.handle("display-in-vtt", async (_e, payload: { name?: string; body?: string; meta?: string; label?: string; speakingAs?: string }) => {
   const command = displayCard({ name: payload?.name ?? "", body: payload?.body ?? "", meta: payload?.meta, label: payload?.label });
   if (!command) return { ok: false, error: "nothing to display" };
-  try {
-    const injected: any = await roll20View.webContents.executeJavaScript(buildSendExpression(command, payload?.speakingAs), true);
-    return { ok: injected?.ok === true, command, injected };
-  } catch (err) {
-    return { ok: false, error: String(err) };
-  }
+  const injected: any = await postToChat(command, payload?.speakingAs, () => command);
+  return { ...injected, ok: injected?.ok === true, command };
 });
 
 // ---- Pokédex: species reference + seen/caught collection --------------------------------------

@@ -67,9 +67,9 @@ declare global {
       captureRoll20(): Promise<{ ok: boolean; dataUrl?: string; error?: string }>;
       notebookOpen(): Promise<{ ok: boolean; dir: string; error?: string }>;
       roll20Scrape(): Promise<any[]>;
-      roll20Say(message: string, speakingAs?: string): Promise<{ ok: boolean; error?: string }>;
+      roll20Say(message: string, speakingAs?: string): Promise<Sent>;
       throwBallAnim(ballId: string): Promise<{ ok: boolean }>; // full-window ball-throw animation overlay
-      displayInVtt(payload: { name: string; body: string; meta?: string; label?: string; speakingAs?: string }): Promise<{ ok: boolean; command?: string; error?: string }>;
+      displayInVtt(payload: { name: string; body: string; meta?: string; label?: string; speakingAs?: string }): Promise<Sent & { command?: string }>;
       pokedexLoad(): Promise<{ ok: boolean; species: any[]; collection: Record<string, "seen" | "caught">; error?: string }>;
       pokedexView(open: boolean): Promise<{ ok: boolean }>;
       pokedexMark(id: string, state: "seen" | "caught" | null): Promise<{ ok: boolean }>;
@@ -938,7 +938,7 @@ async function setExhaustion(next: number) {
   if (model?.name) {
     const label = level > prev ? "Condition Gained" : "Condition Cleared";
     const value = level ? `Exhaustion ${level}${level >= EXHAUSTION_MAX ? " (death)" : ""}` : "Exhaustion";
-    window.api.roll20Say(`&{template:default} {{${label}=${value}}}`, model.name).catch(() => {});
+    say(`&{template:default} {{${label}=${value}}}`, model.name);
   }
 }
 
@@ -971,7 +971,7 @@ async function toggleCondition(id: number) {
   // sender's name itself. A clean, symmetric one-line template — no dice, no repeated name.
   if (model?.name) {
     const label = wasActive ? "Condition Cleared" : "Condition Gained";
-    window.api.roll20Say(`&{template:default} {{${label}=${name}}}`, model.name).catch(() => {});
+    say(`&{template:default} {{${label}=${name}}}`, model.name);
   }
 }
 
@@ -1031,7 +1031,7 @@ async function setPoke5eStatus(statusId: string | null) {
   setStatus(`${changed}${writable ? " on poke5e ✓" : ""}`);
   if (model?.name) {
     const label = next ? "Condition Gained" : "Condition Cleared";
-    window.api.roll20Say(`&{template:default} {{${label}=${next ? poke5eStatusName(next) : poke5eStatusName(prev)}}}`, model.name).catch(() => {});
+    say(`&{template:default} {{${label}=${next ? poke5eStatusName(next) : poke5eStatusName(prev)}}}`, model.name);
   }
 }
 
@@ -1143,7 +1143,7 @@ async function rollDeathSave() {
   const msg = templateStyle === "sheet"
     ? `&{template:simple} {{rname=Death Saving Throw}} {{mod=+0}} {{r1=[[1d20]]}}`
     : `&{template:default} {{name=Death Saving Throw}} {{Roll=[[1d20]]}}`;
-  window.api.roll20Say(msg, model?.name).catch(() => {});
+  say(msg, model?.name);
   setStatus("Death save rolled — mark success (≥10) or failure (<10); nat 20 = regain 1 HP");
 }
 
@@ -1387,9 +1387,10 @@ async function detectTemplateStyle() {
 // frequently have the D&D `atkdmg` template (so dice rolls render) but NOT `simple` — which made
 // text-only announcements render as an empty card. Use the universal `default` template for poke5e
 // announcements so they always show; D&D 5e keeps its nicer `simple` card.
-function announceTemplate(line: string): string {
+function announceTemplate(line: string, detail?: [string, string]): string {
   if (activeSource !== "poke5e" && templateStyle === "sheet") return `&{template:simple} {{rname=${line}}}`;
-  return `&{template:default} {{name=${line}}}`;
+  // A title-only `default` card can render empty, so give it a row when there's something to say.
+  return `&{template:default} {{name=${line}}}${detail ? ` {{${detail[0]}=${detail[1]}}}` : ""}`;
 }
 
 // Watch the Roll20 turn order and alert when it becomes this character's turn.
@@ -1540,8 +1541,42 @@ function spendHitDie(idx: number) {
 // sanitization happen in main via the pure displayCard). Attributed to the active character.
 function doDisplay(name: string, body: string, meta?: string, label?: string) {
   window.api.displayInVtt({ name, body, meta, label, speakingAs: model?.name })
-    .then((r) => setStatus(r?.ok ? `📖 Displayed ${name} in Roll20` : `Couldn't display ${name}${r?.error ? ": " + r.error : ""}`, !r?.ok))
-    .catch(() => setStatus(`Couldn't display ${name}`, true));
+    .catch((e) => ({ ok: false, error: String(e) }))
+    .then((r) => showSent(`📖 ${name}`, r));
+}
+
+// --- Send feedback ---------------------------------------------------------------------------------
+// Every message Conduit posts to Roll20 reports back here, so nothing fails silently: a small pill says
+// whether it arrived as sent, was re-sent plainer (the game showed the card blank), wasn't seen in chat,
+// or never went out (no game open).
+type Sent = { ok: boolean; error?: string; delivery?: "card" | "default" | "plain" | "unconfirmed"; fellBack?: boolean };
+let sentTimer: ReturnType<typeof setTimeout> | null = null;
+function showSent(what: string, r: Sent | null | undefined) {
+  const el = $("sendPill");
+  const d = r?.ok ? r.delivery ?? "card" : "failed";
+  const text = {
+    card: `✓ Sent to Roll20 · ${what}`,
+    default: `✓ Sent to Roll20 · ${what} — as a plain card (this game can't show D&D cards)`,
+    plain: `✓ Sent to Roll20 · ${what} — as text (the card showed blank)`,
+    unconfirmed: `? ${what} was sent but hasn't appeared in chat — check Roll20`,
+    failed: `✕ Not sent · ${what} — ${r?.error || "open a Roll20 game first"}`,
+  }[d];
+  el.textContent = text;
+  el.className = `send-pill show ${d}`;
+  if (sentTimer) clearTimeout(sentTimer);
+  sentTimer = setTimeout(() => el.classList.remove("show"), d === "card" ? 2500 : 7000);
+}
+/** What a chat message is about, for the pill: its card title, else its first field or text. */
+function sentLabel(message: string): string {
+  const m = /\{\{(?:r?name)=([^}]*)\}\}/.exec(message) ?? /\{\{([^=}]+)=/.exec(message);
+  const label = (m?.[1] ?? message.replace(/^\/w\s+gm\s+/, "")).trim();
+  return label.length > 48 ? label.slice(0, 47) + "…" : label || "message";
+}
+/** Post a message to the Roll20 chat and report how it went. Never throws. */
+async function say(message: string, speakingAs?: string): Promise<Sent> {
+  const r = await window.api.roll20Say(message, speakingAs).catch((e) => ({ ok: false, error: String(e) }));
+  showSent(sentLabel(message), r);
+  return r;
 }
 
 // --- Hover detail tooltip -------------------------------------------------------------------------
@@ -1980,7 +2015,8 @@ async function announceUse(it: any) {
   // (e.g. "pokeball") only — not the display name, which would misfire on "Snowball"/"Eyeball".
   const line = /ball/i.test(String(it.itemType || "")) ? `Threw a ${name}` : `Uses ${name}`;
   await detectTemplateStyle();
-  window.api.roll20Say(announceTemplate(line), model?.name).catch(() => {});
+  const left = Math.max(0, (Number(it.quantity) || 1) - 1); // announced before the count drops
+  say(announceTemplate(tclean(line), ["Remaining", String(left)]), model?.name);
 }
 
 // Adjust an item's quantity by ±1, writing back to D&D Beyond. Targets the right underlying row:
@@ -2090,8 +2126,10 @@ function spellRow(sp: any): HTMLElement {
   const pp = sp.pp && sp.pp.max > 0 ? `<span class="pp">${sp.pp.current}/${sp.pp.max} PP</span>` : "";
   b.innerHTML = `<span class="label">${esc(sp.name)}<span class="stags">${spellTags(sp)}${abilityBadge(sp)}</span></span><span class="atk-nums">${right}${pp}</span>`;
   b.onclick = () => castSpell(sp);
-  const meta = [sp.type || sp.school, sp.casting, sp.range, sp.pp && sp.pp.max ? `${sp.pp.current}/${sp.pp.max} PP` : null].filter(Boolean).join(" · ");
-  const display = makeDisplayBtn({ name: sp.name, description: sp.description, meta, label: pokeMeta ? "Move" : "Spell" });
+  const shown = [sp.type || sp.school, sp.casting, sp.range].filter(Boolean).join(" · ");
+  const meta = [shown, sp.pp && sp.pp.max ? `${sp.pp.current}/${sp.pp.max} PP` : null].filter(Boolean).join(" · ");
+  // The table card leaves PP out: a GM showing an enemy's move mustn't reveal how many uses it has left.
+  const display = makeDisplayBtn({ name: sp.name, description: sp.description, meta: shown, label: pokeMeta ? "Move" : "Spell" });
   // Hover the row to read the full wording in-app (no need to push it to Roll20 to see it).
   attachTip(b, detailTipHtml({ name: sp.name, meta, description: sp.description }));
   return rowWithActions(b, [upcastControl(sp) as any, display]);
@@ -2591,12 +2629,17 @@ async function sendRoll(request: any, onTotal?: (total: number | null) => void) 
   const toggles = [...enabled, ...activeConditionRuleIds()]; // active conditions auto-apply
   const res = await window.api.roll(req, toggles);
   const lr = $("lastRoll");
-  if (!res.ok) { lr.innerHTML = `<b>Error:</b> ${esc(String(res.error ?? ""))}`; onTotal?.(null); return; }
+  const what = sentLabel(res.command || "") || request.key || "roll";
   const inj = res.injected;
-  // Roll20 showed the D&D card empty in this game, so it was re-posted on the universal card — use that
+  showSent(what, inj ?? res);
+  if (!res.ok) { lr.innerHTML = `<b>⚠ not sent</b> — ${esc(String(inj?.error || res.error || "open a Roll20 game first"))}`; onTotal?.(null); return; }
+  // Roll20 showed the D&D card empty in this game, so it was re-posted plainer — use the universal card
   // from now on (main remembers it for this game too).
   if (inj?.fellBack) templateStyle = "default";
-  const landed = inj?.ok ? (inj?.fellBack ? "✓ sent to Roll20 (this game can't show D&D cards — re-sent as a plain card)" : "✓ sent to Roll20") : `⚠ ${inj?.error || "not sent — open a Roll20 game"}`;
+  const landed = inj.delivery === "plain" ? "✓ sent to Roll20 (the card showed blank — re-sent as text)"
+    : inj.fellBack ? "✓ sent to Roll20 (this game can't show D&D cards — re-sent as a plain card)"
+    : inj.delivery === "unconfirmed" ? "? sent, but not seen in Roll20 chat"
+    : "✓ sent to Roll20";
   lr.innerHTML = `<b>${landed}</b> &nbsp; <code>${(res.command || "").replace(/</g, "&lt;")}</code>`;
   // For an initiative roll, once the result lands we also add it to Roll20's turn order automatically —
   // using the bound token when there is one, else a name-labelled custom row.
@@ -2705,12 +2748,12 @@ async function poke5eLongRest() {
     await restorePokemonPp();                          // every move's PP → max
     if (pokeMeta?.status) await setPoke5eStatus(null);  // cure status
   }
-  window.api.roll20Say(`&{template:default} {{name=Long Rest}} {{${tclean(model?.name || "Trainer")}=Full HP${pk ? ", all PP restored, status cured" : ""}}}`, model?.name).catch(() => {});
+  say(`&{template:default} {{name=Long Rest}} {{${tclean(model?.name || "Trainer")}=Full HP${pk ? ", all PP restored, status cured" : ""}}}`, model?.name);
   setStatus(`Long rest — ${pk ? "HP, PP and status restored" : "HP restored"} ✓`);
 }
 function poke5eShortRest() {
   if (activeSource !== "poke5e") return;
-  window.api.roll20Say(`&{template:default} {{name=Short Rest}} {{${tclean(model?.name || "Trainer")}=Recover HP by spending Hit Dice}} {{PP=not recovered}}`, model?.name).catch(() => {});
+  say(`&{template:default} {{name=Short Rest}} {{${tclean(model?.name || "Trainer")}=Recover HP by spending Hit Dice}} {{PP=not recovered}}`, model?.name);
   setStatus("Short rest — spend Hit Dice to recover HP (via the HP controls); PP is not recovered");
 }
 
@@ -2720,7 +2763,7 @@ async function longRestTeam() {
   setStatus("Long rest — resting the whole team…");
   const r = await window.api.poke5eLongRestTeam().catch(() => ({ ok: false } as any));
   if (!r?.ok) { setStatus(r?.error || "Couldn't long rest the team", true); return; }
-  window.api.roll20Say(`&{template:default} {{name=Long Rest}} {{${tclean(model?.name || "Trainer")}=Whole team — full HP, all PP restored, status cured}}`, model?.name).catch(() => {});
+  say(`&{template:default} {{name=Long Rest}} {{${tclean(model?.name || "Trainer")}=Whole team — full HP, all PP restored, status cured}}`, model?.name);
   setStatus(r.failed ? `Long rest — team rested (${r.failed} write${r.failed === 1 ? "" : "s"} not saved)` : `Long rest — whole team restored ✓ (${r.rested} Pokémon)`, !!r.failed);
   await reloadCurrent(); // refresh the active sheet so its HP/PP/status reflect the rest
 }
@@ -3722,7 +3765,7 @@ async function rollHpOnVtt(die: number, mod: number, name: string): Promise<numb
   const before = new Set((await window.api.roll20Scrape().catch(() => [])).map((r: any) => r.id));
   const modStr = mod ? (mod > 0 ? ` + ${mod}` : ` - ${Math.abs(mod)}`) : "";
   const card = `&{template:default} {{name=${name}}} {{HP roll=[[1d${die}${modStr}]]}}`;
-  const inj = await window.api.roll20Say(card, speaker || undefined).catch(() => ({ ok: false }));
+  const inj = await say(card, speaker || undefined);
   if (!inj?.ok) return null;
   const sp = speaker.toLowerCase();
   for (let i = 0; i < 12; i++) { // up to ~6s for Roll20 to render the result
@@ -4808,16 +4851,16 @@ function rollCatch(ball: any | null, speciesName?: string) {
     const eff = ballEffect(ball.itemId);
     consumeBall(ball); // decrement this ball (poke5e write + local), re-render
     if (eff.auto) { // Master Ball
-      window.api.roll20Say(`&{template:default} {{name=${title}}} {{Ball=${tclean(ball.name)}}} {{Result=Automatic catch}}`, model?.name).catch(() => {});
+      say(`&{template:default} {{name=${title}}} {{Ball=${tclean(ball.name)}}} {{Result=Automatic catch}}`, model?.name);
       setStatus(`Threw a ${ball.name} — automatic catch`);
       return;
     }
     let ballField = "";
     if (eff.skill) { const skMod = -eff.flat; if (skMod !== 0) ballField = ` {{Ball effect=${sgn(-skMod)} to DC (your ${tclean(SKILL_NAMES[eff.skill] || cap(eff.skill))} ${sgn(skMod)})}}`; }
-    window.api.roll20Say(`&{template:default} {{name=${title}}} {{Ball=${tclean(ball.name)}}}${ballField} {{Animal Handling=[[${die}${modStr}]]}}${advField}`, model?.name).catch(() => {});
+    say(`&{template:default} {{name=${title}}} {{Ball=${tclean(ball.name)}}}${ballField} {{Animal Handling=[[${die}${modStr}]]}}${advField}`, model?.name);
     setStatus(`Threw a ${ball.name} — Animal Handling catch roll sent to Roll20`);
   } else {
-    window.api.roll20Say(`&{template:default} {{name=${title}}} {{Animal Handling=[[${die}${modStr}]]}}${advField}`, model?.name).catch(() => {});
+    say(`&{template:default} {{name=${title}}} {{Animal Handling=[[${die}${modStr}]]}}${advField}`, model?.name);
     setStatus("Animal Handling catch roll sent to Roll20");
   }
 }
@@ -4835,7 +4878,7 @@ function doThrow() {
   consumeBall(ball);
   const res = document.getElementById("cmResult");
   if (eff.auto) {
-    window.api.roll20Say(`&{template:default} {{name=Catch — ${tclean(sp.name)}}} {{Ball=${tclean(ball.name)}}} {{Result=Automatic catch}}`, model?.name).catch(() => {});
+    say(`&{template:default} {{name=Catch — ${tclean(sp.name)}}} {{Ball=${tclean(ball.name)}}} {{Result=Automatic catch}}`, model?.name);
     if (res) { res.className = "result show hit"; res.innerHTML = `Threw a <b>${esc(ball.name)}</b> — automatic catch. Recording…`; }
     recordCatch(sp); return;
   }
@@ -4855,7 +4898,7 @@ function doThrow() {
     if (skMod !== 0) ballField = ` {{Ball effect=${sgn(-skMod)} to DC (your ${tclean(SKILL_NAMES[eff.skill] || cap(eff.skill))} ${sgn(skMod)})}}`;
   }
   const card = `&{template:default} {{name=Catch — ${tclean(sp.name)}}} {{Ball=${tclean(ball.name)}}}${ballField} {{Animal Handling=[[${die}${modStr}]]}}` + (catchCtx.adv ? ` {{Advantage=yes}}` : "");
-  window.api.roll20Say(card, model?.name).catch(() => {});
+  say(card, model?.name);
   if (res) {
     const rec = (activeSource === "poke5e" && writable) ? "Add to poke5e" : "Mark caught";
     res.className = "result show"; res.innerHTML = `Threw a <b>${esc(ball.name)}</b> — catch roll sent to Roll20. If the GM confirms the catch, hit <b>${rec}</b>.`;

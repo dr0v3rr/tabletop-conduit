@@ -332,3 +332,21 @@ export function toDefaultTemplate(cmd: string): string {
     .replace(/\s{2,}/g, ' ')
     .trim();
 }
+
+/** The last resort when not even a `default` card renders: the same message as plain chat text
+ *  ("Potion of Healing (heal) · Roll: [[2d4+2]]"). Inline rolls still roll; a `/w gm` prefix is kept. */
+export function toPlainText(cmd: string): string {
+  const card = toDefaultTemplate(cmd);
+  const whisper = /^\/w\s+gm\s+/.exec(card)?.[0] ?? '';
+  let title = '';
+  const fields: string[] = [];
+  for (const [, key, value] of card.matchAll(/\{\{([^=}]+)=([^}]*)\}\}/g)) {
+    const k = (key ?? '').trim();
+    const v = (value ?? '').trim();
+    if (!v) continue;
+    if (k === 'name') title = v;
+    else fields.push(`${k}: ${v}`);
+  }
+  const text = [title, ...fields].join(' · ') || card.replace(/&\{template:[^}]*\}/, '').replace(/^\/w\s+gm\s+/, '').trim();
+  return text ? `${whisper}${text}` : '';
+}

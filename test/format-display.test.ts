@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { sanitizeCardText, displayCard, toDefaultTemplate } from "../src/roll20/format";
+import { sanitizeCardText, displayCard, toDefaultTemplate, toPlainText } from "../src/roll20/format";
 
 // "Display in VTT" posts untrusted, possibly-HTML wording (scraped/API text) into a Roll20
 // `&{template:default}` card. The one invariant that matters: the body can never break OUT of or
@@ -76,5 +76,19 @@ describe('toDefaultTemplate — re-post a D&D card on the universal template', (
   });
   it('a default message is left alone', () => {
     expect(toDefaultTemplate('&{template:default} {{name=X}} {{Roll=[[1d20]]}}')).toBe('&{template:default} {{name=X}} {{Roll=[[1d20]]}}');
+  });
+});
+
+describe("toPlainText", () => {
+  it("turns a default card into one line of chat text, inline rolls kept", () => {
+    expect(toPlainText("&{template:default} {{name=Potion of Healing (heal)}} {{Roll=[[2d4 + 2]]}}"))
+      .toBe("Potion of Healing (heal) · Roll: [[2d4 + 2]]");
+  });
+  it("converts a sheet card via the default labels and keeps a GM whisper", () => {
+    expect(toPlainText("/w gm &{template:atkdmg} {{rname=Ember}} {{damage=1}} {{dmg1flag=1}} {{dmg1=[[1d6]]}} {{dmg1type=Fire}}"))
+      .toBe("/w gm Ember · Damage: [[1d6]] · Type: Fire");
+  });
+  it("a title-only card becomes just the title", () => {
+    expect(toPlainText("&{template:default} {{name=Uses Potion}}")).toBe("Uses Potion");
   });
 });
