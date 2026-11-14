@@ -1912,31 +1912,36 @@ ipcMain.handle("poke5e-item-qty", async (_e, item: { rowId: number; itemId?: str
 ipcMain.handle("poke5e-items-catalog", async () => {
   try { return { ok: true, items: await fetchItemsCatalog() }; } catch (err) { return { ok: false, items: [], error: String(err) }; }
 });
-
-// Add a standard item to the loaded trainer's bag. If it's already there, bump that row's quantity
-// (avoids a duplicate row); otherwise create a fresh row. Returns the rebuilt inventory.
-ipcMain.handle("poke5e-add-item", async (_e, itemId: string, quantity: number = 1) => {
-  if (!poke5eCtx?.writeKey) return { ok: false, error: "This trainer is read-only (no write key) — add items on poke5e." };
-  const qty = Math.max(1, Number(quantity) || 1);
-  try {
-    const before = await buildInventory(poke5eCtx.readKey).catch(() => [] as any[]);
-    const existing = before.find((it: any) => it.itemId && String(it.itemId) === String(itemId));
-    if (existing) await updateInventoryItem(poke5eCtx.writeKey, existing, (Number(existing.quantity) || 0) + qty);
-    else await addInventoryItem(poke5eCtx.writeKey, String(itemId), qty);
-    const inventory = await buildInventory(poke5eCtx.readKey).catch(() => [] as any[]);
-    schedulePoke5ePaneRefresh();
-    return { ok: true, inventory };
-  } catch (err) {
-    return { ok: false, error: String(err) };
-  }
-});
-
 // ---- Held items (per-Pokémon list — add/remove/get, keyed by pokémon id, NOT the trainer bag) ----
 ipcMain.handle("poke5e-held-items", async (_e, pokemonId: number) => {
   try { return { ok: true, heldItems: await fetchHeldItems(Number(pokemonId)) }; }
   catch (err) { return { ok: false, error: String(err) }; }
 });
 // Give a Pokémon a standard held item (appended at the end of its list). Returns the rebuilt list.
+// Add several catalogue items to the bag in one pass (the picker's multi-select). The bag is read once;
+// an item already held stacks onto its row, a new one gets a row. Each write is independent, so one
+// failure doesn't stop the rest — the reply lists what was added and what wasn't.
+ipcMain.handle("poke5e-add-items", async (_e, picks: { itemId: string; quantity: number }[]) => {
+  if (!poke5eCtx?.writeKey) return { ok: false, error: "This trainer is read-only (no write key) — add items on poke5e." };
+  const writeKey = poke5eCtx.writeKey;
+  const list = (Array.isArray(picks) ? picks : [])
+    .map((p) => ({ itemId: String(p?.itemId ?? ""), quantity: Math.min(99, Math.max(1, Math.floor(Number(p?.quantity) || 1))) }))
+    .filter((p) => p.itemId);
+  if (!list.length) return { ok: false, error: "Nothing selected" };
+  const before = await buildInventory(poke5eCtx.readKey).catch(() => [] as any[]);
+  const added: string[] = [], failed: string[] = [];
+  for (const p of list) {
+    const existing = before.find((it: any) => it.itemId && String(it.itemId) === p.itemId);
+    try {
+      if (existing) await updateInventoryItem(writeKey, existing, (Number(existing.quantity) || 0) + p.quantity);
+      else await addInventoryItem(writeKey, p.itemId, p.quantity);
+      added.push(p.itemId);
+    } catch { failed.push(p.itemId); }
+  }
+  const inventory = await buildInventory(poke5eCtx.readKey).catch(() => before);
+  schedulePoke5ePaneRefresh();
+  return { ok: added.length > 0, inventory, added, failed, error: added.length ? undefined : "Couldn't add those items" };
+});
 ipcMain.handle("poke5e-add-held-item", async (_e, pokemonId: number, itemId: string) => {
   if (!poke5eCtx?.writeKey) return { ok: false, error: "This trainer is read-only (no write key) — add held items on poke5e." };
   try {
@@ -1961,7 +1966,9 @@ ipcMain.handle("poke5e-remove-held-item", async (_e, pokemonId: number, rowId: n
 // Long rest the WHOLE team: every Pokémon → full HP, every move's PP → max, status cleared. (The
 // single-Pokémon long rest lives in the renderer; this is the "all Pokémon" option.) Writes each
 // Pokémon via the same RPCs as the single rest; best-effort per write, with a tally of failures.
-ipcMain.handle("poke5e-long-rest-team", async () => {
+// Heal every Pokémon on the loaded trainer's team in one pass. A long rest (`full`) also cures status
+// and refills every move's PP; a Pokécentre visit only restores HP — PP and status stay as they are.
+async function healTeam(full: boolean) {
   if (!poke5eCtx?.writeKey) return { ok: false, error: "This trainer is read-only (no write key)" };
   const writeKey = poke5eCtx.writeKey;
   const team = [...poke5eCtx.team.values()];
@@ -1969,22 +1976,26 @@ ipcMain.handle("poke5e-long-rest-team", async () => {
   for (const pk of team) {
     const maxHp = Number(pk.hp_max) || 0;
     try { if (await updatePokemonHp(writeKey, pk, maxHp, maxHp)) pk.hp_cur = maxHp; else failed++; } catch { failed++; }
-    try { if (await updatePokemonStatus(writeKey, pk, null)) pk.status = null; } catch { failed++; }
-    try {
-      const moveset = await fetchMoveset(Number(pk.id)).catch(() => [] as any[]);
-      for (const lm of moveset) {
-        const cur = Number(lm.pp_cur) || 0, max = Number(lm.pp_max) || 0;
-        if (max > 0 && cur < max) {
-          const ok = await updateMovePp(writeKey, Number(lm.id), String(lm.move_id), max, max, (lm as any).notes ?? "").catch(() => false);
-          if (!ok) failed++;
+    if (full) {
+      try { if (await updatePokemonStatus(writeKey, pk, null)) pk.status = null; } catch { failed++; }
+      try {
+        const moveset = await fetchMoveset(Number(pk.id)).catch(() => [] as any[]);
+        for (const lm of moveset) {
+          const cur = Number(lm.pp_cur) || 0, max = Number(lm.pp_max) || 0;
+          if (max > 0 && cur < max) {
+            const ok = await updateMovePp(writeKey, Number(lm.id), String(lm.move_id), max, max, (lm as any).notes ?? "").catch(() => false);
+            if (!ok) failed++;
+          }
         }
-      }
-    } catch { failed++; }
+      } catch { failed++; }
+    }
     rested++;
   }
   schedulePoke5ePaneRefresh();
   return { ok: true, rested, failed };
-});
+}
+ipcMain.handle("poke5e-long-rest-team", () => healTeam(true));
+ipcMain.handle("poke5e-pokecentre", () => healTeam(false));
 
 // Forget a trainer's keys in the poke5e web pane's own local list (so its page drops it too).
 async function forgetTrainerInPane(readKey: string) {

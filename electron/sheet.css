@@ -601,6 +601,37 @@ select.upcast:hover { border-color: var(--accent2); }
 .ip-hit .label { flex: 1; }
 .ip-hit .item-note { margin-left: auto; font-size: 10.5px; color: var(--muted); }
 .empty-note { font-size: 12px; color: var(--muted); padding: 6px 2px; }
+/* Bag picker, multi-select: type chips, tick rows, per-item quantity, one Add for the batch. */
+.ip-modal.multi { width: 440px; display: flex; flex-direction: column; overflow: hidden; }
+.ip-modal.multi .ip-list { flex: 1; max-height: 380px; min-height: 160px; }
+.ip-chips { display: flex; flex-wrap: wrap; gap: 5px; margin: 2px 0 6px; }
+.ip-chip { font: inherit; font-size: 11.5px; color: var(--ink); background: transparent; border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; cursor: pointer; }
+.ip-chip:hover { border-color: var(--muted); }
+.ip-chip.on { background: var(--accent2); border-color: var(--accent2); color: #fff; font-weight: 600; }
+.ip-bulk { display: flex; gap: 14px; margin-bottom: 4px; }
+.ip-link { font: inherit; font-size: 11.5px; font-weight: 600; color: #c6b6ff; background: none; border: none; padding: 2px 0; cursor: pointer; }
+.ip-link.muted { color: var(--muted); font-weight: 400; }
+.ip-link:hover { text-decoration: underline; }
+.ip-row { display: flex; align-items: center; gap: 6px; border: 1px solid transparent; border-radius: 7px; }
+.ip-row.on { background: color-mix(in srgb, var(--accent2) 22%, var(--bg)); border-color: var(--accent2); padding-right: 6px; }
+.ip-row .ip-hit { flex: 1; min-height: 34px; }
+.ip-row.on .ip-hit:hover { background: transparent; border-color: transparent; }
+.ip-box { width: 15px; height: 15px; flex: none; display: grid; place-items: center; border: 1.5px solid var(--muted); border-radius: 4px; font-size: 10px; font-weight: 800; color: #fff; box-sizing: border-box; }
+.ip-row.on .ip-box { background: var(--accent2); border-color: var(--accent2); }
+.ip-row.on .ip-hit .label { font-weight: 600; }
+.ip-have { font-size: 10px; color: var(--muted); background: var(--panel); border-radius: 999px; padding: 1px 7px; white-space: nowrap; }
+.ip-step { display: flex; align-items: center; gap: 1px; background: var(--bg); border-radius: 7px; padding: 2px; }
+.ip-step button { width: 24px; height: 24px; font: inherit; font-size: 14px; color: var(--ink); background: transparent; border: none; border-radius: 5px; cursor: pointer; }
+.ip-step button:hover { background: var(--panel2); }
+.ip-step span { min-width: 20px; text-align: center; font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.ip-foot { display: flex; align-items: center; gap: 10px; border-top: 1px solid var(--line); margin: 6px -16px -16px; padding: 10px 16px; background: var(--panel); }
+.ip-foot[hidden] { display: none; }
+.ip-sum { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; font-size: 12.5px; }
+.ip-sum span { font-size: 10.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ip-sum span.err { color: #ff9a8a; white-space: normal; }
+.ip-add { font: inherit; font-size: 12.5px; font-weight: 700; color: #fff; background: var(--accent); border: none; border-radius: 8px; padding: 8px 14px; cursor: pointer; white-space: nowrap; }
+.ip-add:disabled { background: var(--line); color: var(--muted); cursor: default; }
+.new-badge { margin-left: 7px; font-size: 9.5px; font-weight: 700; color: #b9f0bc; background: #2f5e33; border-radius: 999px; padding: 1px 6px; vertical-align: 1px; }
 /* Evolution bar: the Evolve button + the pending-ASI reminder banner. */
 /* NB: the `hidden` attribute must win over these flex rules, or an empty bar/banner shows. */
 .evo-bar { display: none; flex-wrap: wrap; align-items: center; gap: 6px; margin: 4px 0 2px; }

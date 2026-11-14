@@ -77,11 +77,12 @@ declare global {
       poke5eItemQty(item: unknown, quantity: number): Promise<{ ok: boolean; persisted: boolean; error?: string }>;
       poke5eItemsCatalog(): Promise<{ ok: boolean; items: { id: string; name: string; type: string }[]; error?: string }>;
       ddbCurrency(op: { set?: Partial<Coins>; add?: Partial<Coins> }): Promise<{ ok: boolean; currencies?: Coins; error?: string }>;
-      poke5eAddItem(itemId: string, quantity?: number): Promise<{ ok: boolean; inventory?: any[]; error?: string }>;
+      poke5eAddItems(picks: { itemId: string; quantity: number }[]): Promise<{ ok: boolean; inventory?: any[]; added?: string[]; failed?: string[]; error?: string }>;
       poke5eHeldItems(pokemonId: number): Promise<{ ok: boolean; heldItems?: HeldItem[]; error?: string }>;
       poke5eAddHeldItem(pokemonId: number, itemId: string): Promise<{ ok: boolean; heldItems?: HeldItem[]; error?: string }>;
       poke5eRemoveHeldItem(pokemonId: number, rowId: number): Promise<{ ok: boolean; heldItems?: HeldItem[]; error?: string }>;
       poke5eLongRestTeam(): Promise<{ ok: boolean; rested?: number; failed?: number; error?: string }>;
+      poke5ePokecentre(): Promise<{ ok: boolean; rested?: number; failed?: number; error?: string }>;
       poke5eAddTeam(speciesId: string, level: number): Promise<{ ok: boolean; error?: string }>;
       poke5eRemoveTrainer(): Promise<{ ok: boolean; readKey?: string; error?: string }>;
       poke5eRemovePokemon(pokemonId: number): Promise<{ ok: boolean; removed?: boolean; canceled?: boolean; pokemonId?: number; error?: string }>;
@@ -1468,6 +1469,7 @@ function renderRestControl() {
   const pools = hitDice?.pools ?? [];
   ($("shortRestBtn") as HTMLElement).hidden = !isPoke;
   ($("longRestBtn") as HTMLElement).hidden = !isPoke;
+  ($("pokecentreBtn") as HTMLElement).hidden = !isPoke || !(pokeTeamCount > 0 || isPoke5ePokemon());
   ($("shortRest") as HTMLElement).hidden = isPoke || !pools.length;
   ($("longRest") as HTMLElement).hidden = isPoke;
   const lrNote = $("longRest").querySelector("small");
@@ -1883,7 +1885,9 @@ function renderInventory() {
     // Poké Balls get their own art inline, so the bag shows which ball each row is at a glance.
     const isBall = String(it.itemType || "").toLowerCase() === "pokeball";
     const ballIcon = isBall ? `<span class="ball-icon" aria-hidden="true">${ballSvg(it.itemId, { title: it.name })}</span>` : "";
-    label.innerHTML = `<span class="label">${ballIcon}${esc(it.name)}</span><span class="atk-nums">${nums}</span>`;
+    const recent = it.itemId ? recentAdds.get(String(it.itemId)) : undefined;
+    const badge = recent && recent.until > Date.now() ? `<span class="new-badge">${recent.isNew ? "new" : `+${recent.add}`}</span>` : "";
+    label.innerHTML = `<span class="label">${ballIcon}${esc(it.name)}${badge}</span><span class="atk-nums">${nums}</span>`;
     if (rollable) (label as HTMLButtonElement).onclick = () => sendRoll(itemReq(it));
     row.appendChild(label);
 
@@ -2768,6 +2772,26 @@ async function longRestTeam() {
   await reloadCurrent(); // refresh the active sheet so its HP/PP/status reflect the rest
 }
 
+// Pokécentre: the team is healed to full HP, and nothing else — PP and status stay as they are (unlike
+// a long rest). Heals the whole team when the trainer is ours; otherwise just the Pokémon on screen.
+async function pokecentre() {
+  if (activeSource !== "poke5e") return;
+  const who = tclean(model?.name || "Trainer");
+  if (writable && pokeTeamCount > 0) {
+    setStatus("Pokécentre — healing the team…");
+    const r = await window.api.poke5ePokecentre().catch(() => ({ ok: false } as any));
+    if (!r?.ok) { setStatus(r?.error || "Couldn't heal the team", true); return; }
+    say(`&{template:default} {{name=Pokécentre}} {{${who}=Whole team healed to full HP}} {{PP and status=unchanged}}`, model?.name);
+    setStatus(r.failed ? `Pokécentre — team healed (${r.failed} write${r.failed === 1 ? "" : "s"} not saved)` : `Pokécentre — team at full HP ✓ (${r.rested} Pokémon) · PP not restored`, !!r.failed);
+    await reloadCurrent(); // refresh the active sheet so its HP reflects the visit
+    return;
+  }
+  if (!isPoke5ePokemon() || !hp) { setStatus("Pokécentre heals Pokémon — open one of this trainer's Pokémon", true); return; }
+  commitHp(0, hp.temp); // HP → full (writes back to poke5e when we can + syncs the Roll20 token)
+  say(`&{template:default} {{name=Pokécentre}} {{${who}=Healed to full HP}} {{PP and status=unchanged}}`, model?.name);
+  setStatus("Pokécentre — HP restored ✓ · PP not restored");
+}
+
 // Small popover on the Long Rest button offering the rest scope (this Pokémon / this trainer vs. the
 // whole team). Dismisses on selection, outside click, or scroll.
 let longRestMenuEl: HTMLDivElement | null = null;
@@ -3298,6 +3322,7 @@ $("longRestBtn").onclick = () => {
   openLongRestMenu($("restMenuBtn"));
 };
 $("shortRestBtn").onclick = () => poke5eShortRest();
+$("pokecentreBtn").onclick = () => pokecentre();
 document.querySelectorAll<HTMLElement>('[data-kind="initiative"]').forEach((b) => {
   b.onclick = () => doRoll({ kind: "initiative" });
 });
@@ -4653,21 +4678,34 @@ function ballName(id: string | null): string { return bagBalls().find((b) => b.i
 let itemCatalog: { id: string; name: string; type: string }[] | null = null;
 let itemPickerBusy = false;
 let itemPickerMode: "bag" | "held" = "bag"; // "bag" → trainer inventory; "held" → a Pokémon's held items
+// Bag mode is multi-select: tick items, set each one's quantity, add them all in one pass. Held items
+// stay one click = one item (a Pokémon holds a handful, one at a time).
+const ipSel = new Map<string, number>(); // catalogue item id → quantity to add
+let ipType = "all"; // type filter chip
+let ipView: { id: string; name: string; type: string }[] = []; // the rows currently listed
+let ipNote = ""; // a failed add, shown in the picker's footer (the status line sits behind the overlay)
+const IP_MAX_ROWS = 200;
 
 function ensureItemPicker(): HTMLElement {
   let ov = document.getElementById("itemPicker");
   if (!ov) {
     ov = document.createElement("div");
     ov.id = "itemPicker"; ov.className = "catch-overlay";
-    ov.innerHTML = `<div class="catch-modal" role="dialog" aria-modal="true" aria-label="Add item">` +
-      `<button class="cm-x" id="ipX" title="Close">✕</button>` +
+    ov.innerHTML = `<div class="catch-modal ip-modal" role="dialog" aria-modal="true" aria-label="Add items">` +
+      `<button class="cm-x" id="ipX" title="Close" aria-label="Close">✕</button>` +
       `<div class="cm-head"><div class="cm-name">Add an item</div></div>` +
-      `<input id="ipQ" class="cm-target" type="text" placeholder="Search items — e.g. Poké Ball…" autocomplete="off">` +
-      `<div class="cm-hits ip-list" id="ipList"></div></div>`;
+      `<input id="ipQ" class="cm-target" type="text" placeholder="Search items — e.g. Poké Ball…" autocomplete="off" aria-label="Search items">` +
+      `<div class="ip-chips" id="ipChips"></div>` +
+      `<div class="ip-bulk" id="ipBulk"><button id="ipAll" class="ip-link">Select all in view</button><button id="ipClear" class="ip-link muted">Clear</button></div>` +
+      `<div class="cm-hits ip-list" id="ipList"></div>` +
+      `<div class="ip-foot" id="ipFoot"><div class="ip-sum"><b id="ipSum"></b><span id="ipDet"></span></div><button id="ipAdd" class="ip-add">Add to bag</button></div></div>`;
     document.body.appendChild(ov);
     ov.addEventListener("click", (e) => { if (e.target === ov) closeItemPicker(); });
     (ov.querySelector("#ipX") as HTMLElement).onclick = closeItemPicker;
-    (ov.querySelector("#ipQ") as HTMLInputElement).addEventListener("input", (e) => renderItemHits((e.target as HTMLInputElement).value));
+    (ov.querySelector("#ipQ") as HTMLInputElement).addEventListener("input", () => renderItemHits());
+    (ov.querySelector("#ipAll") as HTMLElement).onclick = () => { for (const it of ipView) if (!ipSel.has(it.id)) ipSel.set(it.id, 1); renderItemHits(); };
+    (ov.querySelector("#ipClear") as HTMLElement).onclick = () => { ipSel.clear(); renderItemHits(); };
+    (ov.querySelector("#ipAdd") as HTMLElement).onclick = () => addPokeItems();
     document.addEventListener("keydown", (e) => { if ((e as KeyboardEvent).key === "Escape" && ov!.classList.contains("open")) closeItemPicker(); });
   }
   return ov;
@@ -4677,46 +4715,153 @@ function closeItemPicker() { document.getElementById("itemPicker")?.classList.re
 async function openItemPicker(mode: "bag" | "held" = "bag") {
   itemPickerMode = mode;
   const ov = ensureItemPicker();
-  const nameEl = ov.querySelector(".cm-name"); if (nameEl) nameEl.textContent = mode === "held" ? "Add a held item" : "Add an item";
-  const q0 = ov.querySelector("#ipQ") as HTMLInputElement; q0.placeholder = mode === "held" ? "Search held items — e.g. Leftovers…" : "Search items — e.g. Poké Ball…";
+  const bag = mode === "bag";
+  const nameEl = ov.querySelector(".cm-name"); if (nameEl) nameEl.textContent = bag ? "Add items to the bag" : "Add a held item";
+  const q0 = ov.querySelector("#ipQ") as HTMLInputElement; q0.placeholder = bag ? "Search items — e.g. berry…" : "Search held items — e.g. Leftovers…";
+  for (const id of ["ipChips", "ipBulk", "ipFoot"]) (ov.querySelector(`#${id}`) as HTMLElement).hidden = !bag;
+  ov.querySelector(".ip-modal")?.classList.toggle("multi", bag);
+  ipSel.clear(); ipType = "all"; ipNote = "";
   ov.classList.add("open");
   q0.value = ""; q0.focus();
   if (!itemCatalog) {
-    renderItemHits(""); // shows "Loading…"
+    renderItemHits(); // shows "Loading…"
     const r = await window.api.poke5eItemsCatalog().catch(() => null);
     itemCatalog = r?.ok ? r.items : [];
   }
-  renderItemHits("");
+  renderItemHits();
 }
 
-function renderItemHits(query: string) {
+/** How many of a catalogue item the bag already holds (0 if none). */
+function bagHas(itemId: string): number {
+  return inventory.filter((it: any) => it.itemId && String(it.itemId) === itemId).reduce((a: number, it: any) => a + (Number(it.quantity) || 0), 0);
+}
+
+function renderItemHits() {
   const list = document.getElementById("ipList"); if (!list) return;
+  const query = (document.getElementById("ipQ") as HTMLInputElement | null)?.value ?? "";
   if (!itemCatalog) { list.innerHTML = `<div class="cm-note">Loading items…</div>`; return; }
   const q = query.trim().toLowerCase();
+  const bag = itemPickerMode === "bag";
   // Held-item picker only offers catalogue items of type "held item"; the bag picker offers everything.
-  const pool = itemPickerMode === "held" ? itemCatalog.filter((it) => (it.type || "").toLowerCase() === "held item") : itemCatalog;
-  const hits = (q ? pool.filter((it) => it.name.toLowerCase().includes(q) || (it.type || "").toLowerCase().includes(q)) : pool).slice(0, 60);
-  if (!hits.length) { list.innerHTML = `<div class="cm-note">No matching items.</div>`; return; }
+  const pool = bag ? itemCatalog : itemCatalog.filter((it) => (it.type || "").toLowerCase() === "held item");
+  if (bag) renderItemChips(pool);
+  const typed = bag && ipType !== "all" ? pool.filter((it) => (it.type || "").toLowerCase() === ipType) : pool;
+  const hits = (q ? typed.filter((it) => it.name.toLowerCase().includes(q) || (it.type || "").toLowerCase().includes(q)) : typed).slice(0, bag ? IP_MAX_ROWS : 60);
+  ipView = hits;
+  const scroll = list.scrollTop;
   list.innerHTML = "";
+  if (!hits.length) list.innerHTML = `<div class="cm-note">No matching items.</div>`;
   for (const it of hits) {
+    if (!bag) {
+      const b = document.createElement("button");
+      b.className = "ip-hit";
+      b.innerHTML = `<span class="label">${esc(it.name)}</span>${it.type ? `<span class="item-note">${esc(cap(it.type))}</span>` : ""}`;
+      b.onclick = () => addHeldItemUi(it);
+      list.appendChild(b);
+      continue;
+    }
+    const qty = ipSel.get(it.id) ?? 0;
+    const have = bagHas(it.id);
+    const row = document.createElement("div");
+    row.className = "ip-row" + (qty ? " on" : "");
     const b = document.createElement("button");
     b.className = "ip-hit";
-    b.innerHTML = `<span class="label">${esc(it.name)}</span>${it.type ? `<span class="item-note">${esc(cap(it.type))}</span>` : ""}`;
-    b.onclick = () => (itemPickerMode === "held" ? addHeldItemUi(it) : addPokeItem(it));
-    list.appendChild(b);
+    b.setAttribute("aria-pressed", String(qty > 0));
+    b.innerHTML = `<span class="ip-box" aria-hidden="true">${qty ? "✓" : ""}</span><span class="label">${esc(it.name)}</span>` +
+      (have && !qty ? `<span class="ip-have">in bag ×${have}</span>` : "") +
+      (it.type ? `<span class="item-note">${esc(cap(it.type))}</span>` : "");
+    b.onclick = () => { if (qty) ipSel.delete(it.id); else ipSel.set(it.id, 1); renderItemHits(); };
+    row.appendChild(b);
+    if (qty) {
+      const step = document.createElement("div");
+      step.className = "ip-step";
+      const dec = document.createElement("button");
+      dec.textContent = "−"; dec.setAttribute("aria-label", `One fewer ${it.name}`);
+      dec.onclick = () => { if (qty <= 1) ipSel.delete(it.id); else ipSel.set(it.id, qty - 1); renderItemHits(); };
+      const n = document.createElement("span");
+      n.textContent = String(qty);
+      const inc = document.createElement("button");
+      inc.textContent = "+"; inc.setAttribute("aria-label", `One more ${it.name}`);
+      inc.onclick = () => { ipSel.set(it.id, Math.min(99, qty + 1)); renderItemHits(); };
+      step.append(dec, n, inc);
+      row.appendChild(step);
+    }
+    list.appendChild(row);
+  }
+  list.scrollTop = scroll;
+  if (bag) renderItemFooter();
+}
+
+// Type filter chips: All + the catalogue's types, most common first.
+function renderItemChips(pool: { type: string }[]) {
+  const box = document.getElementById("ipChips"); if (!box) return;
+  const counts = new Map<string, number>();
+  for (const it of pool) { const t = (it.type || "").toLowerCase(); if (t) counts.set(t, (counts.get(t) ?? 0) + 1); }
+  const types = [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([t]) => t);
+  box.innerHTML = "";
+  for (const t of ["all", ...types]) {
+    const c = document.createElement("button");
+    c.className = "ip-chip" + (ipType === t ? " on" : "");
+    c.setAttribute("aria-pressed", String(ipType === t));
+    c.textContent = t === "all" ? "All" : cap(t);
+    c.onclick = () => { ipType = t; renderItemHits(); };
+    box.appendChild(c);
   }
 }
 
-async function addPokeItem(it: { id: string; name: string }) {
-  if (itemPickerBusy) return;
+function renderItemFooter() {
+  const all = document.getElementById("ipAll"); if (all) all.textContent = `Select all in view (${ipView.length})`;
+  const names = itemCatalog?.filter((it) => ipSel.has(it.id)).map((it) => `${it.name} ×${ipSel.get(it.id)}`) ?? [];
+  const total = [...ipSel.values()].reduce((a, b) => a + b, 0);
+  const n = ipSel.size;
+  $("ipSum").textContent = n ? `${n} item${n === 1 ? "" : "s"} selected · ${total} total` : "Nothing selected";
+  const det = $("ipDet");
+  det.textContent = ipNote || (n ? names.join(", ") : "Tick items to add several at once");
+  det.classList.toggle("err", !!ipNote);
+  const add = $("ipAdd") as HTMLButtonElement;
+  add.disabled = !n || itemPickerBusy;
+  add.textContent = itemPickerBusy ? "Adding…" : n ? `Add ${n} item${n === 1 ? "" : "s"}` : "Add to bag";
+}
+
+// Items just added get a "new" / "+N" badge in the bag for a minute, so the change is easy to spot.
+const recentAdds = new Map<string, { add: number; isNew: boolean; until: number }>();
+
+async function addPokeItems() {
+  if (itemPickerBusy || !ipSel.size || !itemCatalog) return;
+  const picks = [...ipSel.entries()].map(([itemId, quantity]) => ({ itemId, quantity }));
+  const byId = new Map(itemCatalog.map((it) => [it.id, it]));
+  const hadBefore = new Map(picks.map((p) => [p.itemId, bagHas(p.itemId)]));
   itemPickerBusy = true;
-  setStatus(`Adding ${it.name}…`);
-  const r = await window.api.poke5eAddItem(it.id, 1).catch(() => null);
+  ipNote = "";
+  renderItemFooter();
+  setStatus(`Adding ${picks.length} item${picks.length === 1 ? "" : "s"}…`);
+  const r = await window.api.poke5eAddItems(picks).catch((e) => ({ ok: false, error: String(e) } as any));
   itemPickerBusy = false;
-  if (!r?.ok) { setStatus(r?.error || "Couldn't add that item", true); return; }
-  if (Array.isArray(r.inventory)) inventory = r.inventory;
-  renderInventory(); applyFilter();
-  setStatus(`Added ${it.name} to the bag ✓ (saved to poke5e)`);
+  if (Array.isArray(r?.inventory)) { inventory = r.inventory; renderInventory(); applyFilter(); }
+  const addedIds: string[] = r?.added ?? [];
+  const failedIds: string[] = r?.failed ?? [];
+  const until = Date.now() + 60_000;
+  for (const id of addedIds) recentAdds.set(id, { add: ipSel.get(id) ?? 1, isNew: !hadBefore.get(id), until });
+  if (addedIds.length) { renderInventory(); applyFilter(); setTimeout(() => { renderInventory(); applyFilter(); }, 61_000); }
+  // One table card for the batch, grouped by item type.
+  const groups = new Map<string, string[]>();
+  for (const id of addedIds) {
+    const it = byId.get(id); if (!it) continue;
+    const t = cap(it.type || "Item");
+    groups.set(t, [...(groups.get(t) ?? []), `${it.name} ×${ipSel.get(id) ?? 1}`]);
+  }
+  if (groups.size) say(`&{template:default} {{name=Added to bag}} ${[...groups].map(([t, xs]) => `{{${tclean(t)}=${tclean(xs.join(", "))}}}`).join(" ")}`, model?.name);
+  const total = addedIds.reduce((a, id) => a + (ipSel.get(id) ?? 1), 0);
+  for (const id of addedIds) ipSel.delete(id); // leave only the failures ticked, ready to retry
+  if (!r?.ok && !addedIds.length) { ipNote = r?.error || "Couldn't add those items — try again"; setStatus(ipNote, true); renderItemHits(); return; }
+  if (failedIds.length) {
+    const names = failedIds.map((id) => byId.get(id)?.name ?? id).join(", ");
+    ipNote = `${addedIds.length} of ${addedIds.length + failedIds.length} added — ${names} failed, still ticked: try again`;
+    setStatus(ipNote, true);
+    renderItemHits();
+    return;
+  }
+  setStatus(`Added ${addedIds.length} item${addedIds.length === 1 ? "" : "s"} (${total} total) to the bag ✓ (saved to poke5e)`);
   closeItemPicker();
 }
 
