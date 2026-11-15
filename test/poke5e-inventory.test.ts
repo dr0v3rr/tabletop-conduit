@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { addInventoryItem, fetchItemsCatalog, removePokemon, evolvePokemon } from '../src/poke5e/source';
+import { addInventoryItem, removeInventoryItem, fetchItemsCatalog, removePokemon, evolvePokemon } from '../src/poke5e/source';
 
 afterEach(() => { vi.unstubAllGlobals(); });
 
@@ -29,6 +29,29 @@ describe('poke5e addInventoryItem', () => {
     }));
     await addInventoryItem('WKEY', 'potion');
     expect(body._quantity).toBe(1);
+  });
+
+  it('re-adds a custom item (Undo on a used-up row) by name and description', async () => {
+    let body: any = null;
+    vi.stubGlobal('fetch', vi.fn(async (_u: string, init: any) => {
+      body = JSON.parse(init.body);
+      return { ok: true, json: async () => 1 } as any;
+    }));
+    await addInventoryItem('WKEY', null, 1, { name: 'Lucky Charm', description: 'Reroll once' });
+    expect(body).toMatchObject({ _item_id: null, _quantity: 1, _custom_name: 'Lucky Charm', _description: 'Reroll once' });
+  });
+});
+
+describe('poke5e removeInventoryItem', () => {
+  it('POSTs remove_inventory_item with the write key and bag row id', async () => {
+    let url = ''; let body: any = null;
+    vi.stubGlobal('fetch', vi.fn(async (u: string, init: any) => {
+      url = u; body = JSON.parse(init.body);
+      return { ok: true, json: async () => 1 } as any;
+    }));
+    expect(await removeInventoryItem('WKEY', 7)).toBe(true);
+    expect(url).toContain('/rpc/remove_inventory_item');
+    expect(body).toEqual({ _write_key: 'WKEY', _id: 7 });
   });
 });
 

@@ -50,6 +50,7 @@ contextBridge.exposeInMainWorld("api", {
   pokedexMark: (id: string, state: "seen" | "caught" | null) => ipcRenderer.invoke("pokedex-mark", id, state),
   pokedexCaught: () => ipcRenderer.invoke("pokedex-caught"),
   poke5eItemQty: (item: unknown, quantity: number) => ipcRenderer.invoke("poke5e-item-qty", item, quantity),
+  poke5eRestoreItem: (item: unknown) => ipcRenderer.invoke("poke5e-restore-item", item),
   poke5eItemsCatalog: () => ipcRenderer.invoke("poke5e-items-catalog"),
   ddbCurrency: (op: { set?: Record<string, number>; add?: Record<string, number> }) => ipcRenderer.invoke("ddb-currency", op),
   poke5eAddItems: (picks: { itemId: string; quantity: number }[]) => ipcRenderer.invoke("poke5e-add-items", picks),

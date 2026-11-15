@@ -631,6 +631,12 @@ select.upcast:hover { border-color: var(--accent2); }
 .ip-sum span.err { color: #ff9a8a; white-space: normal; }
 .ip-add { font: inherit; font-size: 12.5px; font-weight: 700; color: #fff; background: var(--accent); border: none; border-radius: 8px; padding: 8px 14px; cursor: pointer; white-space: nowrap; }
 .ip-add:disabled { background: var(--line); color: var(--muted); cursor: default; }
+/* Inventory rows at ×0: a poke5e item's brief "used up · Undo" stand-in, and the D&D Beyond "Used up" group. */
+.used-up-ghost .roll-line { opacity: .6; font-style: italic; }
+.used-up { margin-top: 6px; border-top: 1px dashed var(--line); padding-top: 4px; }
+.used-up > summary { cursor: pointer; font-size: 12px; color: var(--muted); padding: 3px 2px; list-style-position: inside; }
+.used-up > summary:hover { color: inherit; }
+.used-up .roll-line { opacity: .7; }
 .new-badge { margin-left: 7px; font-size: 9.5px; font-weight: 700; color: #b9f0bc; background: #2f5e33; border-radius: 999px; padding: 1px 6px; vertical-align: 1px; }
 /* Evolution bar: the Evolve button + the pending-ASI reminder banner. */
 /* NB: the `hidden` attribute must win over these flex rules, or an empty bar/banner shows. */

@@ -15,7 +15,7 @@ import { displayCard, toDefaultTemplate, toPlainText } from "../src/roll20/forma
 import { r20TokenExpr } from "../src/roll20/token.js";
 import { ddbSlotsExpr, ddbHitDiceExpr, ddbInventoryExpr, ddbFetchCharExpr, type DdbHitDiceMethod } from "../src/ddb/inject.js";
 import { alwaysPreparedRequests, alwaysPreparedUrl, mergeAlwaysPrepared } from "../src/ddb/always-prepared.js";
-import { extractReadKey, fetchTrainer, trainerToRollModel, trainerExtras, buildInventory, fetchTrainerFeats, updateTrainerHp, updateTrainerMoney, trainerMoney, updatePokemonHp, updatePokemonStatus, updatePokemonExp, updateMovePp, updateInventoryItem, addInventoryItem, fetchItemsCatalog, fetchHeldItems, addHeldItem, removeHeldItem, addPokemonToTeam, removePokemon, evolvePokemon, deleteTrainer, setPoke5eCredentials, getPoke5eCredentials } from "../src/poke5e/source.js";
+import { extractReadKey, fetchTrainer, trainerToRollModel, trainerExtras, buildInventory, fetchTrainerFeats, updateTrainerHp, updateTrainerMoney, trainerMoney, updatePokemonHp, updatePokemonStatus, updatePokemonExp, updateMovePp, updateInventoryItem, addInventoryItem, removeInventoryItem, fetchItemsCatalog, fetchHeldItems, addHeldItem, removeHeldItem, addPokemonToTeam, removePokemon, evolvePokemon, deleteTrainer, setPoke5eCredentials, getPoke5eCredentials } from "../src/poke5e/source.js";
 import { buildPokedex } from "../src/poke5e/pokedex.js";
 import type { DexEntry } from "../src/poke5e/pokedex.js";
 import { isNewer } from "../src/update/version.js";
@@ -1897,14 +1897,44 @@ ipcMain.handle("pokedex-caught", () => {
   return { ok: true, species: [...new Set(species)] };
 });
 
+// Write a bag row's new count. At 0 the row is deleted (as poke5e's own ✕ does), so a used-up item
+// leaves the bag rather than sitting at ×0. Removals are tracked so an Undo waits for them to land.
+const pendingBagRemovals = new Map<number, Promise<unknown>>();
+async function setBagQty(writeKey: string, item: { rowId: number; itemId?: string | null; name?: string; customName?: string | null; note?: string }, quantity: number) {
+  if (quantity > 0) return updateInventoryItem(writeKey, item, quantity);
+  const rowId = Number(item.rowId);
+  const p = removeInventoryItem(writeKey, rowId).finally(() => pendingBagRemovals.delete(rowId));
+  pendingBagRemovals.set(rowId, p.catch(() => {}));
+  return p;
+}
+
 // Set a bag item's quantity — writes back to poke5e when we hold the write key, else local-only.
 ipcMain.handle("poke5e-item-qty", async (_e, item: { rowId: number; itemId?: string | null; name?: string; customName?: string | null; note?: string }, quantity: number) => {
   if (!poke5eCtx?.writeKey) return { ok: true, persisted: false }; // read-only trainer → caller decrements locally
   try {
-    await updateInventoryItem(poke5eCtx.writeKey, item, Math.max(0, quantity));
+    await setBagQty(poke5eCtx.writeKey, item, Math.max(0, quantity));
+    schedulePoke5ePaneRefresh();
     return { ok: true, persisted: true };
   } catch (err) {
     return { ok: false, persisted: false, error: String(err) };
+  }
+});
+
+// Undo a used-up item: put one back in the bag (a fresh row — the old one was deleted at 0). Waits
+// for any in-flight removal first, so the re-add can't be overtaken by the delete.
+ipcMain.handle("poke5e-restore-item", async (_e, item: { itemId?: string | null; customName?: string | null; note?: string | null }) => {
+  if (!poke5eCtx?.writeKey) return { ok: false, error: "This trainer is read-only (no write key)." };
+  const { writeKey, readKey } = poke5eCtx;
+  await Promise.all(pendingBagRemovals.values());
+  try {
+    const bag = await buildInventory(readKey).catch(() => [] as any[]);
+    const existing = item.itemId ? bag.find((it: any) => it.itemId && String(it.itemId) === String(item.itemId)) : null;
+    if (existing) await updateInventoryItem(writeKey, existing, (Number(existing.quantity) || 0) + 1);
+    else await addInventoryItem(writeKey, item.itemId || null, 1, { name: item.customName, description: item.note });
+    schedulePoke5ePaneRefresh();
+    return { ok: true, inventory: await buildInventory(readKey).catch(() => bag) };
+  } catch (err) {
+    return { ok: false, error: String(err) };
   }
 });
 
@@ -2175,7 +2205,7 @@ ipcMain.handle("poke5e-use-pp-item", async (_e, pokemonId: number, itemId: strin
       if (next !== (Number(m.pp_cur) || 0)) await updateMovePp(poke5eCtx.writeKey, m.id, m.move_id, next, max, m.notes || "");
       restored.push({ learnedId: m.id, ppCur: next, ppMax: max });
     }
-    await updateInventoryItem(poke5eCtx.writeKey, item, Math.max(0, (Number(item.quantity) || 1) - 1));
+    await setBagQty(poke5eCtx.writeKey, item, Math.max(0, (Number(item.quantity) || 1) - 1));
     schedulePoke5ePaneRefresh();
     return { ok: true, restored, itemName: item.name, remaining: Math.max(0, (Number(item.quantity) || 1) - 1), pokemonId: pid };
   } catch (err) {

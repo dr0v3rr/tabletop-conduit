@@ -75,6 +75,7 @@ declare global {
       pokedexMark(id: string, state: "seen" | "caught" | null): Promise<{ ok: boolean }>;
       pokedexCaught(): Promise<{ ok: boolean; species: string[] }>;
       poke5eItemQty(item: unknown, quantity: number): Promise<{ ok: boolean; persisted: boolean; error?: string }>;
+      poke5eRestoreItem(item: { itemId?: string | null; customName?: string | null; note?: string | null }): Promise<{ ok: boolean; inventory?: any[]; error?: string }>;
       poke5eItemsCatalog(): Promise<{ ok: boolean; items: { id: string; name: string; type: string }[]; error?: string }>;
       ddbCurrency(op: { set?: Partial<Coins>; add?: Partial<Coins> }): Promise<{ ok: boolean; currencies?: Coins; error?: string }>;
       poke5eAddItems(picks: { itemId: string; quantity: number }[]): Promise<{ ok: boolean; inventory?: any[]; added?: string[]; failed?: string[]; error?: string }>;
@@ -1861,69 +1862,146 @@ function renderInventory() {
     box.insertAdjacentHTML("beforeend", `<div class="empty-note">No items in the bag yet${canAddPoke ? " — use ＋ Add item." : "."}</div>`);
     return;
   }
-  const rollableCount = inventory.filter((it) => it.kind === "heal" || it.kind === "damage").length;
+  const rollableCount = inventory.filter((it) => (it.kind === "heal" || it.kind === "damage") && it.quantity > 0).length;
   ($("itemMeta") as HTMLElement).textContent = rollableCount ? `${rollableCount} rollable` : "";
-  for (const it of inventory) {
-    const rollable = it.kind === "heal" || it.kind === "damage";
-    // Consumables (and any stackable) get quantity controls + a Use action; equipment is reference.
-    const managed = it.consumable || it.quantity > 1;
-    const row = document.createElement("div");
-    row.className = "item-row";
-
-    // Main label / roll target. Rollable items roll on click (no consume — preview/reroll).
-    const label = document.createElement(rollable ? "button" : "div");
-    // Usable consumables read as active (white); only pure reference gear is dimmed.
-    const isReference = !rollable && !it.consumable;
-    label.className = "roll-line item" + (rollable ? "" : " noroll") + (isReference ? " reference" : "");
-    let nums = "";
-    if (it.kind === "heal") nums = `<span class="dmg heal">${esc(it.dice)}</span>`;
-    else if (it.kind === "damage") nums = `<span class="dmg">${esc(it.dice)}${it.damageType ? " " + esc(it.damageType) : ""}</span>`;
-    else {
-      const note = it.attuned ? "attuned" : it.magic ? "magic" : "";
-      nums = `<span class="item-note">${esc(it.typeName)}${note ? " · " + note : ""}</span>`;
+  // A–Z, so a long bag is scannable. Rows at ×0 don't sit among the stock: a poke5e item is deleted
+  // from the bag at 0 (a brief "used up · Undo" row stands in for it); elsewhere (D&D Beyond keeps
+  // the row) they collect in a collapsed "Used up" group at the bottom, where + restocks them.
+  const sorted = [...inventory].sort(byName);
+  const usedUp: any[] = [];
+  for (const it of sorted) {
+    if (it.consumable && it.quantity <= 0) {
+      if (activeSource === "poke5e") { const g = usedUpGhost(it); if (g) box.appendChild(g); }
+      else usedUp.push(it);
+      continue;
     }
-    // Poké Balls get their own art inline, so the bag shows which ball each row is at a glance.
-    const isBall = String(it.itemType || "").toLowerCase() === "pokeball";
-    const ballIcon = isBall ? `<span class="ball-icon" aria-hidden="true">${ballSvg(it.itemId, { title: it.name })}</span>` : "";
-    const recent = it.itemId ? recentAdds.get(String(it.itemId)) : undefined;
-    const badge = recent && recent.until > Date.now() ? `<span class="new-badge">${recent.isNew ? "new" : `+${recent.add}`}</span>` : "";
-    label.innerHTML = `<span class="label">${ballIcon}${esc(it.name)}${badge}</span><span class="atk-nums">${nums}</span>`;
-    if (rollable) (label as HTMLButtonElement).onclick = () => sendRoll(itemReq(it));
-    row.appendChild(label);
-
-    // Quantity stepper + Use, for consumables / stackables.
-    if (managed) {
-      const ctl = document.createElement("div");
-      ctl.className = "item-ctl";
-      const minus = mkMini("−", () => adjustItemQty(it, -1), "Decrease quantity on D&D Beyond");
-      const count = document.createElement("span");
-      count.className = "item-qty";
-      count.textContent = `×${it.quantity}`;
-      const plus = mkMini("+", () => adjustItemQty(it, +1), "Increase quantity on D&D Beyond");
-      ctl.append(minus, count, plus);
-      if (String(it.itemType || "").toLowerCase() === "pokeball") {
-        // A Poké Ball → throw it directly: roll the Animal Handling catch check to Roll20 and
-        // decrement THIS ball. (The Pokédex "Catch…" flow still uses the full card to record a species.)
-        const th = mkMini("Throw", () => throwBallFromBag(it), "Throw this ball — rolls Animal Handling to Roll20 and uses one");
-        th.classList.add("use-btn");
-        if (it.quantity <= 0) (th as HTMLButtonElement).disabled = true;
-        ctl.appendChild(th);
-      } else if (it.consumable) {
-        const use = mkMini("Use", () => useItem(it), "Use one — rolls dice (if any) and decrements on D&D Beyond");
-        use.classList.add("use-btn");
-        if (it.quantity <= 0) (use as HTMLButtonElement).disabled = true;
-        ctl.appendChild(use);
-      }
-      if (it.quantity <= 0) (minus as HTMLButtonElement).disabled = true;
-      row.appendChild(ctl);
-    }
-
-    // 📖 Display in VTT — pushes the item's wording to the table (items carry their note/description).
-    const disp = makeDisplayBtn({ name: it.name, description: it.note || it.description || it.snippet, meta: it.typeName, label: "Item" });
-    if (disp) { disp.classList.add("item-mini"); row.appendChild(disp); }
-
-    box.appendChild(row);
+    box.appendChild(itemRow(it));
   }
+  if (!box.querySelector(".item-row") && !usedUp.length) // every bag row was at ×0
+    box.insertAdjacentHTML("beforeend", `<div class="empty-note">The bag is empty${canAddPoke ? " — use ＋ Add item." : "."}</div>`);
+  if (usedUp.length) {
+    const grp = document.createElement("details");
+    grp.className = "used-up";
+    grp.open = usedUpOpen;
+    grp.ontoggle = () => { if (!($("search") as HTMLInputElement).value.trim()) usedUpOpen = grp.open; }; // a search opening it isn't the user's choice
+    grp.innerHTML = `<summary>Used up (${usedUp.length})</summary>`;
+    for (const it of usedUp) grp.appendChild(itemRow(it));
+    box.appendChild(grp);
+  }
+}
+
+const byName = (a: { name?: string }, b: { name?: string }) =>
+  String(a.name || "").localeCompare(String(b.name || ""), undefined, { sensitivity: "base", numeric: true });
+
+let usedUpOpen = false;
+// poke5e bag rows that just hit ×0 (and were deleted on poke5e), keyed by row id → when the Undo lapses.
+const emptiedRows = new Map<number, number>();
+const UNDO_MS = 8000;
+
+// A poke5e bag row was just taken to ×0 here (Use, −, Throw, a PP item): offer Undo for a few seconds.
+function noteEmptied(it: any) {
+  if (activeSource !== "poke5e" || it?.rowId == null || it.quantity > 0) return;
+  const key = Number(it.rowId), until = Date.now() + UNDO_MS;
+  emptiedRows.set(key, until);
+  setTimeout(() => {
+    if (emptiedRows.get(key) !== until) return;
+    emptiedRows.delete(key);
+    inventory = inventory.filter((x: any) => x !== it);
+    renderInventory(); applyFilter();
+  }, UNDO_MS + 50);
+}
+
+// The stand-in for a poke5e item that was just used up: "Potion — used up · Undo" for a few seconds,
+// then nothing (the row is gone from poke5e). Undo puts one back.
+function usedUpGhost(it: any): HTMLElement | null {
+  const until = emptiedRows.get(Number(it.rowId));
+  if (until == null || until < Date.now()) return null; // an old ×0 row from poke5e: just hide it
+  const row = document.createElement("div");
+  row.className = "item-row used-up-ghost";
+  row.innerHTML = `<div class="roll-line item noroll reference"><span class="label">${esc(it.name)}</span><span class="atk-nums"><span class="item-note">used up${writable ? " · removed from bag" : ""}</span></span></div>`;
+  const undo = mkMini("Undo", () => undoUsedUp(it, undo as HTMLButtonElement), `Put one ${it.name} back in the bag`);
+  undo.classList.add("use-btn");
+  row.appendChild(undo);
+  return row;
+}
+
+async function undoUsedUp(it: any, btn: HTMLButtonElement) {
+  btn.disabled = true;
+  emptiedRows.delete(Number(it.rowId));
+  if (!writable) { // read-only trainer: counts are local-only anyway
+    it.quantity = 1; if (it.entries?.[0]) it.entries[0].quantity = 1;
+    renderInventory(); applyFilter(); return;
+  }
+  setStatus(`Putting ${it.name} back…`);
+  const r = await window.api.poke5eRestoreItem({ itemId: it.itemId, customName: it.customName, note: it.note }).catch(() => null);
+  if (!r?.ok) { setStatus(r?.error || `Couldn't put ${it.name} back`, true); btn.disabled = false; return; }
+  if (Array.isArray(r.inventory)) inventory = r.inventory;
+  else { it.quantity = 1; if (it.entries?.[0]) it.entries[0].quantity = 1; }
+  renderInventory(); applyFilter();
+  setStatus(`${it.name} ×1 back in the bag ✓`);
+}
+
+// One bag/inventory row: label (rolls if rollable), quantity stepper + Use/Throw, Display in VTT.
+function itemRow(it: any): HTMLElement {
+  const rollable = it.kind === "heal" || it.kind === "damage";
+  // Consumables (and any stackable) get quantity controls + a Use action; equipment is reference.
+  const managed = it.consumable || it.quantity > 1;
+  const row = document.createElement("div");
+  row.className = "item-row";
+
+  // Main label / roll target. Rollable items roll on click (no consume — preview/reroll).
+  const label = document.createElement(rollable ? "button" : "div");
+  // Usable consumables read as active (white); only pure reference gear is dimmed.
+  const isReference = !rollable && !it.consumable;
+  label.className = "roll-line item" + (rollable ? "" : " noroll") + (isReference ? " reference" : "");
+  let nums = "";
+  if (it.kind === "heal") nums = `<span class="dmg heal">${esc(it.dice)}</span>`;
+  else if (it.kind === "damage") nums = `<span class="dmg">${esc(it.dice)}${it.damageType ? " " + esc(it.damageType) : ""}</span>`;
+  else {
+    const note = it.attuned ? "attuned" : it.magic ? "magic" : "";
+    nums = `<span class="item-note">${esc(it.typeName)}${note ? " · " + note : ""}</span>`;
+  }
+  // Poké Balls get their own art inline, so the bag shows which ball each row is at a glance.
+  const isBall = String(it.itemType || "").toLowerCase() === "pokeball";
+  const ballIcon = isBall ? `<span class="ball-icon" aria-hidden="true">${ballSvg(it.itemId, { title: it.name })}</span>` : "";
+  const recent = it.itemId ? recentAdds.get(String(it.itemId)) : undefined;
+  const badge = recent && recent.until > Date.now() ? `<span class="new-badge">${recent.isNew ? "new" : `+${recent.add}`}</span>` : "";
+  label.innerHTML = `<span class="label">${ballIcon}${esc(it.name)}${badge}</span><span class="atk-nums">${nums}</span>`;
+  if (rollable) (label as HTMLButtonElement).onclick = () => sendRoll(itemReq(it));
+  row.appendChild(label);
+
+  // Quantity stepper + Use, for consumables / stackables.
+  if (managed) {
+    const ctl = document.createElement("div");
+    ctl.className = "item-ctl";
+    const minus = mkMini("−", () => adjustItemQty(it, -1), "Decrease quantity on D&D Beyond");
+    const count = document.createElement("span");
+    count.className = "item-qty";
+    count.textContent = `×${it.quantity}`;
+    const plus = mkMini("+", () => adjustItemQty(it, +1), "Increase quantity on D&D Beyond");
+    ctl.append(minus, count, plus);
+    if (String(it.itemType || "").toLowerCase() === "pokeball") {
+      // A Poké Ball → throw it directly: roll the Animal Handling catch check to Roll20 and
+      // decrement THIS ball. (The Pokédex "Catch…" flow still uses the full card to record a species.)
+      const th = mkMini("Throw", () => throwBallFromBag(it), "Throw this ball — rolls Animal Handling to Roll20 and uses one");
+      th.classList.add("use-btn");
+      if (it.quantity <= 0) (th as HTMLButtonElement).disabled = true;
+      ctl.appendChild(th);
+    } else if (it.consumable) {
+      const use = mkMini("Use", () => useItem(it), "Use one — rolls dice (if any) and decrements on D&D Beyond");
+      use.classList.add("use-btn");
+      if (it.quantity <= 0) (use as HTMLButtonElement).disabled = true;
+      ctl.appendChild(use);
+    }
+    if (it.quantity <= 0) (minus as HTMLButtonElement).disabled = true;
+    row.appendChild(ctl);
+  }
+
+  // 📖 Display in VTT — pushes the item's wording to the table (items carry their note/description).
+  const disp = makeDisplayBtn({ name: it.name, description: it.note || it.description || it.snippet, meta: it.typeName, label: "Item" });
+  if (disp) { disp.classList.add("item-mini"); row.appendChild(disp); }
+
+  return row;
 }
 
 // Held items for the active Pokémon (its own per-Pokémon list). Shown in the "Items" section when a
@@ -1938,7 +2016,7 @@ function renderHeldItems(sec: HTMLElement, box: HTMLElement) {
   if (!heldItems.length) {
     box.insertAdjacentHTML("beforeend", `<div class="empty-note">No held items${canWrite ? " — use ＋ Add held item." : "."}</div>`);
   }
-  for (const h of heldItems) {
+  for (const h of [...heldItems].sort(byName)) {
     const row = document.createElement("div");
     row.className = "item-row";
     const label = document.createElement("div");
@@ -2008,7 +2086,9 @@ async function useItem(it: any) {
   if (req) sendRoll(req); // Potion of Healing rolls 2d4+2 …
   else announceUse(it); // … utility consumables (Fire Resistance etc.) announce the use instead
   const ok = await adjustItemQty(it, -1, /*silent*/ true);
-  if (ok) setStatus(`Used ${it.name}${req ? " (rolled)" : ""} — ${Math.max(0, it.quantity)} left`);
+  if (ok) setStatus(it.quantity > 0
+    ? `Used ${it.name}${req ? " (rolled)" : ""} — ${it.quantity} left`
+    : `Used your last ${it.name}${req ? " (rolled)" : ""}${activeSource === "poke5e" ? " — removed from the bag" : ""}`);
 }
 
 // Announce a no-dice consumable (Potion of Fire Resistance, etc.) on the table so a "Use" is
@@ -2035,6 +2115,7 @@ async function adjustItemQty(it: any, delta: number, silent = false): Promise<bo
   if (!writable || activeSource !== "ddb") {
     if (target) target.quantity = Math.max(0, target.quantity + delta);
     it.quantity = entries.length ? entries.reduce((a, e) => a + e.quantity, 0) : Math.max(0, it.quantity + delta);
+    noteEmptied(it);
     renderInventory();
     if (activeSource === "poke5e" && writable && it.rowId != null) {
       const r = await window.api
@@ -2269,6 +2350,12 @@ function applyFilter() {
   document.querySelectorAll<HTMLElement>("#items .item-row").forEach((el) => {
     const name = (el.querySelector(".label")?.textContent || "").toLowerCase();
     el.style.display = !q || name.includes(q) ? "" : "none";
+  });
+  // The "Used up" group opens to show a match inside it, and hides when a search matches nothing there.
+  document.querySelectorAll<HTMLDetailsElement>("#items details.used-up").forEach((g) => {
+    const any = [...g.querySelectorAll<HTMLElement>(".item-row")].some((r) => r.style.display !== "none");
+    g.style.display = !q || any ? "" : "none";
+    g.open = q ? any : usedUpOpen;
   });
   document.querySelectorAll<HTMLElement>("#spells .spell-group").forEach((g) => {
     const any = [...g.querySelectorAll<HTMLElement>(".roll-line")].some((r) => r.style.display !== "none");
@@ -3485,7 +3572,7 @@ async function usePpItem() {
   // to the trainer re-fetches it fresh anyway).
   if (activeSource === "poke5e" && !activeRef.startsWith("pmon:")) {
     const inv = inventory.find((i: any) => i.itemId === usedItemId);
-    if (inv) { inv.quantity = r.remaining ?? Math.max(0, (Number(inv.quantity) || 1) - 1); renderInventory(); }
+    if (inv) { inv.quantity = r.remaining ?? Math.max(0, (Number(inv.quantity) || 1) - 1); noteEmptied(inv); renderInventory(); }
   }
   // Refresh the target Pokémon's moves/PP if it's the currently-loaded sheet (Option A).
   if (isPoke5ePokemon() && Number(pmonId(activeRef)) === ppWiz.pid) await reloadCurrent();
@@ -4973,6 +5060,7 @@ function consumeBall(ball: any) {
   const q = Math.max(0, (ball.quantity || 0) - 1); ball.quantity = q;
   if (Array.isArray(ball.entries) && ball.entries[0]) ball.entries[0].quantity = q;
   window.api.poke5eItemQty({ rowId: ball.rowId, itemId: ball.itemId, name: ball.name, customName: ball.customName, note: ball.note }, q).catch(() => {});
+  noteEmptied(ball);
   renderInventory();
 }
 

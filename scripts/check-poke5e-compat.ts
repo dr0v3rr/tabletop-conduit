@@ -101,6 +101,7 @@ async function main() {
     ["update_inventory_item", { _write_key: FAKE, _id: 0, _item_id: "potion", _quantity: 1, _custom_name: null, _description: null }],
     ["add_held_item", { _write_key: FAKE, _pokemon_id: 0, _item_id: "leftovers", _custom_name: null, _description: null, _rank: 0 }],
     ["remove_held_item", { _write_key: FAKE, _id: 0 }],
+    ["remove_inventory_item", { _write_key: FAKE, _id: 0 }],
     ["remove_pokemon", { _write_key: FAKE, _id: 0 }],
     ["delete_trainer", { _write_key: FAKE, _id: "00000000-0000-0000-0000-000000000000" }],
   ];

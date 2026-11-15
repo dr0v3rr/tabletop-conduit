@@ -238,15 +238,27 @@ export async function updateInventoryItem(
 
 /** Add a NEW standard item to the bag. add_inventory_item creates a fresh row (no _id), so this is
  *  how you re-add an item that was fully removed — the ± controls can only touch rows that exist. */
-export async function addInventoryItem(writeKey: string, itemId: string, quantity = 1): Promise<boolean> {
+export async function addInventoryItem(
+  writeKey: string,
+  itemId: string | null,
+  quantity = 1,
+  custom?: { name?: string | null; description?: string | null },
+): Promise<boolean> {
   await poke5eRpc("add_inventory_item", {
     _write_key: writeKey,
-    _item_id: itemId,
+    _item_id: itemId || null,
     _quantity: quantity,
-    _custom_name: null,
-    _description: null,
+    _custom_name: itemId ? null : (custom?.name || null),
+    _description: itemId ? null : (custom?.description || null),
   });
   return true;
+}
+
+/** Delete a bag row outright (remove_inventory_item) — what poke5e's own ✕ does. Used when a count
+ *  reaches 0, so a used-up item leaves the bag instead of lingering at ×0. */
+export async function removeInventoryItem(writeKey: string, rowId: number): Promise<boolean> {
+  const r = await poke5eRpc("remove_inventory_item", { _write_key: writeKey, _id: rowId });
+  return Number(r) > 0;
 }
 
 // ---- Held items: a per-Pokémon item list. Its own table + CRUD RPCs (get_held_items / add_held_item
