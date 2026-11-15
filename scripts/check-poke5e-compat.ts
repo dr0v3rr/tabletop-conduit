@@ -1,7 +1,7 @@
 // poke5e compatibility check — fails if poke5e has drifted from what Conduit expects.
 //
-//   npx tsx scripts/check-poke5e-compat.ts                 # data files + anon key + write-RPC signatures
-//   npx tsx scripts/check-poke5e-compat.ts <readKey>       # also exercises read RPCs + full-row updates
+//   npx tsx scripts/check-poke5e-compat.ts                 # data files + anon key + write-RPC signatures (incl. full-row updates)
+//   npx tsx scripts/check-poke5e-compat.ts <readKey>       # also exercises read RPCs against that trainer
 //   npm run check:poke5e -- <readKey>                      # (same, via the npm script)
 //
 // poke5e has repeatedly broken Conduit by moving a data file (/items.json → /data/items.json) or
@@ -49,6 +49,7 @@ async function main() {
     ["https://poke5e.app/moves.json", (j) => !!j.moves || Array.isArray(j), "moves"],
     ["https://poke5e.app/data/items.json", (j) => Array.isArray(j.items) && j.items.length > 0, "items catalogue"],
     ["https://poke5e.app/data/abilities.json", (j) => !!j && Object.keys(j).length > 0, "abilities"],
+    ["https://poke5e.app/srd/v1/2024/items.json", (j) => Array.isArray(j.values) && j.values.some((it: any) => it.type === "TM" && /^tm-\d+$/.test(it.id)), "TMs (SRD items API)"],
   ];
   for (const [u, shapeOk, label] of files) {
     try {
@@ -85,7 +86,7 @@ async function main() {
       }
     }
   } else {
-    skip("read RPCs + full-row update signatures (pass a read key to include them)");
+    skip("read RPCs (pass a read key to include them)");
   }
 
   // 4. Write-RPC signature compatibility (fake key → no mutation; PGRST202 = Conduit's call would break).
@@ -105,9 +106,11 @@ async function main() {
     ["remove_pokemon", { _write_key: FAKE, _id: 0 }],
     ["delete_trainer", { _write_key: FAKE, _id: "00000000-0000-0000-0000-000000000000" }],
   ];
-  if (trainer) sigChecks.unshift(["update_trainer", { ...buildParams(TRAINER_PARAMS, trainer, {}), _write_key: FAKE }]);
-  if (pk) sigChecks.unshift(["update_pokemon", { ...buildParams(POKEMON_PARAMS, pk, {}), _write_key: FAKE }]);
-  if (!trainer) skip("update_trainer / update_pokemon full-row signatures (need a read key)");
+  // Full-row upserts: PostgREST matches on parameter NAMES, so a null-filled row tests the same call
+  // shape without needing a real trainer. (Nulls, not undefined — JSON.stringify drops undefined keys.)
+  const nullRow = new Proxy({}, { get: () => null });
+  sigChecks.unshift(["update_trainer", { ...buildParams(TRAINER_PARAMS, trainer ?? nullRow, {}), _write_key: FAKE }]);
+  sigChecks.unshift(["update_pokemon", { ...buildParams(POKEMON_PARAMS, pk ?? nullRow, pk ? {} : { _id: 0 }), _write_key: FAKE }]);
   for (const [fn, b] of sigChecks) {
     const r = await rpc(fn, b);
     isMissingFn(r) ? bad(`${fn}: signature changed (PGRST202) — Conduit's params no longer match`) : ok(`${fn} resolves (HTTP ${r.status})`);

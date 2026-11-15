@@ -4771,7 +4771,7 @@ const ipSel = new Map<string, number>(); // catalogue item id → quantity to ad
 let ipType = "all"; // type filter chip
 let ipView: { id: string; name: string; type: string }[] = []; // the rows currently listed
 let ipNote = ""; // a failed add, shown in the picker's footer (the status line sits behind the overlay)
-const IP_MAX_ROWS = 200;
+const IP_MAX_ROWS = 300; // a type chip (TMs: 256) fits whole; "All" shows a narrowing note past this
 
 function ensureItemPicker(): HTMLElement {
   let ov = document.getElementById("itemPicker");
@@ -4838,6 +4838,7 @@ function renderItemHits() {
   const scroll = list.scrollTop;
   list.innerHTML = "";
   if (!hits.length) list.innerHTML = `<div class="cm-note">No matching items.</div>`;
+  const total = q ? typed.filter((it) => it.name.toLowerCase().includes(q) || (it.type || "").toLowerCase().includes(q)).length : typed.length;
   for (const it of hits) {
     if (!bag) {
       const b = document.createElement("button");
@@ -4875,6 +4876,7 @@ function renderItemHits() {
     }
     list.appendChild(row);
   }
+  if (total > hits.length) list.insertAdjacentHTML("beforeend", `<div class="cm-note">Showing ${hits.length} of ${total} — search or pick a type to see the rest.</div>`);
   list.scrollTop = scroll;
   if (bag) renderItemFooter();
 }
@@ -4884,13 +4886,14 @@ function renderItemChips(pool: { type: string }[]) {
   const box = document.getElementById("ipChips"); if (!box) return;
   const counts = new Map<string, number>();
   for (const it of pool) { const t = (it.type || "").toLowerCase(); if (t) counts.set(t, (counts.get(t) ?? 0) + 1); }
-  const types = [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([t]) => t);
+  // Biggest groups first, except TMs (256 of them, rarely what you're after) go last.
+  const types = [...counts.entries()].sort((a, b) => Number(a[0] === "tm") - Number(b[0] === "tm") || b[1] - a[1]).map(([t]) => t);
   box.innerHTML = "";
   for (const t of ["all", ...types]) {
     const c = document.createElement("button");
     c.className = "ip-chip" + (ipType === t ? " on" : "");
     c.setAttribute("aria-pressed", String(ipType === t));
-    c.textContent = t === "all" ? "All" : cap(t);
+    c.textContent = t === "all" ? "All" : t === "tm" ? "TMs" : cap(t);
     c.onclick = () => { ipType = t; renderItemHits(); };
     box.appendChild(c);
   }

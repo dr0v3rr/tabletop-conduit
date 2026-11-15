@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { addInventoryItem, removeInventoryItem, fetchItemsCatalog, removePokemon, evolvePokemon } from '../src/poke5e/source';
+import { addInventoryItem, removeInventoryItem, fetchItemsCatalog, buildInventory, resetItemsCacheForTests, removePokemon, evolvePokemon } from '../src/poke5e/source';
 
-afterEach(() => { vi.unstubAllGlobals(); });
+afterEach(() => { vi.unstubAllGlobals(); resetItemsCacheForTests(); });
 
 describe('poke5e addInventoryItem', () => {
   it('POSTs add_inventory_item with no _id (fresh row) and the standard-item fields', async () => {
@@ -106,5 +106,43 @@ describe('poke5e fetchItemsCatalog', () => {
     expect(cat.map((c) => c.name)).toEqual(['Antidote', 'Poké Ball', 'Potion']);
     const ball = cat.find((c) => c.id === 'pokeball');
     expect(ball).toEqual({ id: 'pokeball', name: 'Poké Ball', type: 'pokeball' });
+  });
+  // TMs live only in poke5e's SRD items API (/srd/v1/<edition>/items.json), not /data/items.json.
+  const STATIC = { items: [{ id: 'potion', name: 'Potion', type: 'medicine' }] };
+  const SRD = { values: [
+    { id: 'potion', name: 'Potion (srd)', type: 'medicine' },
+    { id: 'tm-10', name: 'TM 010 - Ice Beam', type: 'TM', description: 'When used, allows a Pokémon to learn the Ice Beam move.' },
+    { id: 'tm-2', name: 'TM 002 - Dragon Claw', type: 'TM' },
+  ] };
+  const stubBy = (routes: Record<string, any>) => vi.stubGlobal('fetch', vi.fn(async (u: string) => {
+    const hit = Object.keys(routes).find((k) => String(u).includes(k));
+    const body = hit ? routes[hit] : null;
+    return body === 'fail' || !hit ? ({ ok: false, status: 500, json: async () => ({}), text: async () => '' } as any)
+      : ({ ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) } as any);
+  }));
+
+  it('merges TMs from the SRD API (only TMs — the static file stays authoritative for the rest)', async () => {
+    stubBy({ '/data/items.json': STATIC, '/srd/v1/2024/items.json': SRD });
+    const cat = await fetchItemsCatalog();
+    expect(cat.map((c) => c.id)).toEqual(['potion', 'tm-2', 'tm-10']); // numeric-aware: 002 before 010
+    expect(cat.find((c) => c.id === 'potion')!.name).toBe('Potion');
+    expect(cat.find((c) => c.id === 'tm-10')).toEqual({ id: 'tm-10', name: 'TM 010 - Ice Beam', type: 'TM' });
+  });
+
+  it('still returns the regular items when the SRD API is down, and picks TMs up on a later call', async () => {
+    stubBy({ '/data/items.json': STATIC, '/srd/v1/2024/items.json': 'fail' });
+    expect((await fetchItemsCatalog()).map((c) => c.id)).toEqual(['potion']);
+    stubBy({ '/data/items.json': STATIC, '/srd/v1/2024/items.json': SRD });
+    expect((await fetchItemsCatalog()).map((c) => c.id)).toContain('tm-10');
+  });
+
+  it('names a TM in the bag instead of "(unnamed item)"', async () => {
+    stubBy({
+      '/rpc/get_inventory_items': [{ id: 5, item_id: 'tm-10', quantity: 1, custom_name: null, description: null }],
+      '/data/items.json': STATIC, '/srd/v1/2024/items.json': SRD,
+    });
+    const [tm] = await buildInventory('READKEY');
+    expect(tm).toMatchObject({ name: 'TM 010 - Ice Beam', itemId: 'tm-10', typeName: 'TM', rowId: 5 });
+    expect(tm.note).toContain('Ice Beam');
   });
 });

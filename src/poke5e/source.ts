@@ -314,7 +314,7 @@ export async function fetchItemsCatalog(): Promise<{ id: string; name: string; t
   const map = await itemsMap();
   return Object.entries(map)
     .map(([id, v]) => ({ id, name: v.name, type: v.type || "" }))
-    .sort((a, b) => a.name.localeCompare(b.name));
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
 }
 
 // The 18 poke5e skills, in add_pokemon's `_prof_<skill>` param spelling (underscored). poke5e
@@ -464,9 +464,45 @@ export function trainerExtras(row: any): { name: string; description: string }[]
   return out;
 }
 
-// Static poke5e items reference (id → name/type), cached — used to name inventory entries.
-let itemsCache: Record<string, { name: string; type?: string; description?: string }> | null = null;
-async function itemsMap(): Promise<Record<string, { name: string; type?: string; description?: string }>> {
+type ItemRef = { name: string; type?: string; description?: string };
+
+// poke5e items reference (id → name/type), cached — used to name inventory entries and fill the
+// "add item" picker. The static /data/items.json holds every regular item; TMs ("tm-1" … "TM 001 -
+// Work Up") were added later and only exist in the SRD API, so they're merged in from there.
+let itemsCache: Record<string, ItemRef> | null = null;
+let tmCache: Record<string, ItemRef> | null = null;
+async function itemsMap(): Promise<Record<string, ItemRef>> {
+  const [items, tms] = await Promise.all([staticItems(), tmItems()]);
+  return Object.keys(tms).length ? { ...tms, ...items } : items;
+}
+
+/** TMs from poke5e's SRD items API. Both rules editions list the same TMs; a failure returns {} and
+ *  retries next time, so a blip only leaves TMs unnamed until the next load. */
+async function tmItems(): Promise<Record<string, ItemRef>> {
+  if (tmCache) return tmCache;
+  try {
+    const r = await fetch("https://poke5e.app/srd/v1/2024/items.json");
+    if (!r.ok) return {};
+    const j: any = await r.json();
+    const arr: any[] = Array.isArray(j.values) ? j.values : Array.isArray(j.items) ? j.items : [];
+    const map: Record<string, ItemRef> = {};
+    for (const it of arr) {
+      if (!it?.id || String(it.type).toUpperCase() !== "TM") continue;
+      const description = Array.isArray(it.description) ? it.description.join(" ") : it.description;
+      map[it.id] = { name: it.name, type: "TM", description };
+    }
+    if (!Object.keys(map).length) return {};
+    tmCache = map;
+  } catch {
+    return {};
+  }
+  return tmCache;
+}
+
+/** Test-only: forget the cached catalogue. */
+export function resetItemsCacheForTests() { itemsCache = null; tmCache = null; }
+
+async function staticItems(): Promise<Record<string, ItemRef>> {
   if (itemsCache) return itemsCache;
   try {
     // poke5e moved this file under /data/ (the old root /items.json now 404s). Its `data/abilities.json`
@@ -476,7 +512,7 @@ async function itemsMap(): Promise<Record<string, { name: string; type?: string;
     const j: any = await r.json();
     const arr: any[] = Array.isArray(j.items) ? j.items : Array.isArray(j.values) ? j.values : Array.isArray(j) ? j : [];
     if (!arr.length) return {}; // empty/unexpected payload → let a later call retry rather than caching {}
-    const map: Record<string, { name: string; type?: string; description?: string }> = {};
+    const map: Record<string, ItemRef> = {};
     for (const it of arr) {
       if (!it || !it.id) continue;
       const description = Array.isArray(it.description) ? it.description.join(" ") : it.description;
