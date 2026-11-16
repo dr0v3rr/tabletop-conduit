@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { addInventoryItem, removeInventoryItem, fetchItemsCatalog, buildInventory, resetItemsCacheForTests, removePokemon, evolvePokemon } from '../src/poke5e/source';
+import { addInventoryItem, removeInventoryItem, fetchItemsCatalog, buildInventory, resetItemsCacheForTests, removePokemon, evolvePokemon, itemHealDice, itemHealFlat, bagItemUsable, trainerToRollModel } from '../src/poke5e/source';
+import { rollFrom } from '../src/pipeline';
 
 afterEach(() => { vi.unstubAllGlobals(); resetItemsCacheForTests(); });
 
@@ -146,3 +147,77 @@ describe('poke5e fetchItemsCatalog', () => {
     expect(tm.note).toContain('Ice Beam');
   });
 });
+
+describe('poke5e healing items roll on Use', () => {
+  it('reads the healing dice from the item wording', () => {
+    expect(itemHealDice('A trainer may use an action to restore 2d4 + 2 HP to an adjacent Pokémon.')).toBe('2d4+2');
+    expect(itemHealDice('A trainer may use an action to restore 4d12 + 10 HP to a fainted Pokémon.')).toBe('4d12+10');
+    expect(itemHealDice('Consume to restore 2d4 + 2 HP.')).toBe('2d4+2');
+    // Not a heal: an extra on another effect, a flat amount, or dice that aren't HP.
+    expect(itemHealDice('…heal the holder restore an additional 1d12 HP to the holder.')).toBeUndefined();
+    expect(itemHealDice('10 minutes after consumption, the Pokémon regains 70 HP.')).toBeUndefined();
+    expect(itemHealDice('it reduces the Hatch Time by 1d20 each day')).toBeUndefined();
+    expect(itemHealDice(undefined)).toBeUndefined();
+  });
+
+  it('makes a Potion in the bag a heal item that sends its dice to Roll20', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (u: string) => {
+      const body = String(u).includes('/rpc/get_inventory_items')
+        ? [{ id: 3, item_id: 'potion', quantity: 2, custom_name: null, description: null },
+           { id: 4, item_id: 'antidote', quantity: 1, custom_name: null, description: null }]
+        : { items: [
+          { id: 'potion', name: 'Potion', type: 'medicine', description: ['A trainer may use an action to restore 2d4 + 2 HP to an adjacent Pokémon. Consumed on use.'] },
+          { id: 'antidote', name: 'Antidote', type: 'medicine', description: ['Cures poison.'] },
+        ] };
+      return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) } as any;
+    }));
+    const bag = await buildInventory('READKEY');
+    const potion = bag.find((b) => b.itemId === 'potion')!;
+    expect(potion).toMatchObject({ kind: 'heal', dice: '2d4+2', consumable: true });
+    expect(bag.find((b) => b.itemId === 'antidote')).toMatchObject({ kind: 'item', dice: undefined });
+    // The request the sheet's Use builds for it (itemReq) makes a real roll for a trainer.
+    const { model } = trainerToRollModel({ name: 'Ash', level: 5, hp_max: 40, hp_cur: 31, strength: 10, dexterity: 10, constitution: 10, intelligence: 10, wisdom: 10, charisma: 10 });
+    const { command } = rollFrom({} as any, { kind: 'damage', key: 'Potion (heal)', baseDamage: potion.dice }, [], model);
+    expect(command).toContain('[[2d4 + 2]]');
+    expect(command).toContain('Potion (heal)');
+  });
+});
+
+describe('poke5e bag items: what Use does', () => {
+  it('reads a fixed heal (Sitrus Berry, Max Potion) but not temp HP or dice', () => {
+    expect(itemHealFlat('Consume to restore 30 HP. Can be consumed as a reaction to dropping below half health.')).toBe(30);
+    expect(itemHealFlat('When consumed, restores 7 HP. A trainer may use a bonus action…')).toBe(7);
+    expect(itemHealFlat('10 minutes after consumption, the Pokémon regains 70 HP and is cured of all status conditions.')).toBe(70);
+    expect(itemHealFlat('When consumed by a Pokémon, it gains 20 temp HP for 1 minute.')).toBeUndefined();
+    expect(itemHealFlat('restore 2d4 + 2 HP')).toBeUndefined();
+  });
+
+  it('only gives a Use to things that are used up from the bag', () => {
+    expect(bagItemUsable('potion', 'medicine')).toBe(true);
+    expect(bagItemUsable('sitrus-berry', 'berry')).toBe(true);
+    expect(bagItemUsable('escape-rope', 'trainer gear')).toBe(true);
+    expect(bagItemUsable('pokedex', 'trainer gear')).toBe(false); // kept — using it mustn't remove it
+    expect(bagItemUsable('key-stone', 'trainer gear')).toBe(false);
+    expect(bagItemUsable('leftovers', 'held item')).toBe(false);
+    expect(bagItemUsable('fire-stone', 'evolution')).toBe(false);
+    expect(bagItemUsable('tm-1', 'TM')).toBe(false);
+    expect(bagItemUsable('poke-ball', 'pokeball')).toBe(false); // Throw instead
+    expect(bagItemUsable(null, undefined)).toBe(true); // a custom item could be anything
+  });
+
+  it('carries usable + the fixed heal onto bag rows', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (u: string) => {
+      const body = String(u).includes('/rpc/get_inventory_items')
+        ? [{ id: 1, item_id: 'sitrus-berry', quantity: 1 }, { id: 2, item_id: 'pokedex', quantity: 1 }]
+        : { items: [
+          { id: 'sitrus-berry', name: 'Sitrus Berry', type: 'berry', description: ['Consume to restore 30 HP.'] },
+          { id: 'pokedex', name: 'Pokédex', type: 'trainer gear', description: ['A hand-held computer.'] },
+        ] };
+      return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) } as any;
+    }));
+    const bag = await buildInventory('READKEY');
+    expect(bag.find((b) => b.itemId === 'sitrus-berry')).toMatchObject({ usable: true, healFlat: 30, kind: 'item' });
+    expect(bag.find((b) => b.itemId === 'pokedex')).toMatchObject({ usable: false, consumable: true });
+  });
+});
+

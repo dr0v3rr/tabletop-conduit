@@ -527,6 +527,37 @@ async function staticItems(): Promise<Record<string, ItemRef>> {
 
 const capType = (s?: string) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : "Item");
 
+/** The healing roll in a poke5e item's wording ("…restore 2d4 + 2 HP…" → "2d4+2"), if it has one.
+ *  Only "restore(s) <dice> HP" counts, so Big Root's "restore an additional 1d12" stays a note. */
+export function itemHealDice(text?: string | null): string | undefined {
+  const m = /\brestores?\s+(\d+d\d+(?:\s*[+-]\s*\d+)?)\s*(?:HP|hit points)\b/i.exec(String(text ?? ""));
+  return m?.[1] ? m[1].replace(/\s+/g, "") : undefined;
+}
+
+/** A fixed heal in a poke5e item's wording — "restores 30 HP" (Sitrus, Lemonade …) or "regains 70 HP"
+ *  (Max Potion, Full Restore) → 30 / 70. Dice heals are itemHealDice's; "temp HP" isn't a heal. */
+export function itemHealFlat(text?: string | null): number | undefined {
+  const m = /\b(?:restores?|regains?)\s+(\d+)\s*(?:HP|hit points)\b/i.exec(String(text ?? ""));
+  return m?.[1] ? Number(m[1]) : undefined;
+}
+
+// Trainer gear that's used up when used. Everything else in that group (Pokédex, rods, tents, kits,
+// Key Stone …) is kept, so it gets no "Use" — only the ± count.
+const CONSUMED_GEAR = new Set(["escape-rope", "honey", "camping-ration", "energy-cell", "rebreather-filter"]);
+
+/** Whether a bag item is something you USE up from the bag (gets a Use button). Medicine and berries
+ *  are; Poké Balls have Throw instead; held items go on a Pokémon; evolution items are spent by the
+ *  evolution itself; TMs teach a move (not a roll). A custom item could be anything, so it's usable. */
+export function bagItemUsable(itemId: string | null | undefined, type: string | undefined): boolean {
+  if (!itemId) return true;
+  switch (String(type || "").toLowerCase()) {
+    case "medicine": case "berry": return true;
+    case "trainer gear": return CONSUMED_GEAR.has(itemId);
+    case "": return true; // not in the catalogue — treat like a custom item
+    default: return false;
+  }
+}
+
 /** The trainer's bag (get_inventory_items), normalized to the app's inventory-entry shape. */
 export async function buildInventory(readKey: string): Promise<any[]> {
   const rows = await rpc("get_inventory_items", { _read_key: readKey }).catch(() => []);
@@ -540,16 +571,21 @@ export async function buildInventory(readKey: string): Promise<any[]> {
       const ref = r.item_id ? items[r.item_id] : null;
       const name = (r.custom_name && String(r.custom_name).trim()) || ref?.name || "(unnamed item)";
       const quantity = Number(r.quantity) || 0;
+      const note = r.description ? String(r.description) : (ref?.description || "");
+      const dice = itemHealDice(note); // Potion, Oran Berry … roll their healing on Use
       return {
         name,
         quantity,
-        consumable: true, // bag items get quantity controls + Use (decrements locally; poke5e is read-only)
-        kind: "item", // not heal/damage → not a dice roll
+        consumable: true, // bag items get quantity controls (and Use, when `usable`)
+        usable: bagItemUsable(r.item_id, ref?.type),
+        kind: dice ? "heal" : "item", // "item" → nothing to roll; Use announces it with its effect
+        dice,
+        healFlat: dice ? undefined : itemHealFlat(note), // Sitrus Berry, Lemonade, Max Potion …
         itemType: ref?.type || "", // raw poke5e type (e.g. "pokeball") — lets the UI theme the "Use"
         typeName: capType(ref?.type),
         magic: false,
         attuned: false,
-        note: r.description ? String(r.description) : (ref?.description || ""),
+        note,
         entries: [{ id: r.id, quantity }],
         // write-back fields (update_inventory_item): the row id + whether it's a standard/custom item
         rowId: r.id,

@@ -91,8 +91,18 @@ describe('poke5e moveStat', () => {
     expect(atk.find((m) => /burn/i.test(m.ability))).toBeUndefined();
     expect(atk.find((m) => /flinch/i.test(m.ability))).toBeDefined(); // flinch is not negated by Guts
   });
-  it('a non-attack, non-damage move gets no status mods', () => {
-    expect(statusMoveMods('utility', false, false)).toEqual([]);
+  it('a non-attack, non-damage move gets no roll-changing status mods — only the can-it-act reminders', () => {
+    const mods = statusMoveMods('utility', false, false);
+    expect(mods.some((m) => m.attackDisadvantage || m.attackAdvantage)).toBe(false);
+    expect(mods.map((m) => m.ability).sort()).toEqual(['⚠ Asleep', '⚠ Confused', '⚠ Frozen', '⚠ Paralysis']);
+  });
+  it('Confused follows the rules edition (2018 d20 before acting, 2024 d8 at the start of the turn)', () => {
+    const conf = (ed: '2018' | '2024') => statusMoveMods('utility', false, false, ed).find((m) => m.ability === '⚠ Confused')!.note;
+    expect(conf('2018')).toMatch(/d20/);
+    expect(conf('2024')).toMatch(/d8/);
+  });
+  it('Flinched gives the targets of a save move advantage', () => {
+    expect(statusMoveMods('save', true, false).find((m) => /flinch/i.test(m.ability))?.note).toMatch(/advantage/);
   });
   it('a plain no-roll utility move stays a no-dice announcement', () => {
     const harden = { id: 'harden', name: 'Harden', type: 'normal', power: 'none', description: ['You tense your body, raising your AC by 1 until the end of your next turn.'] };

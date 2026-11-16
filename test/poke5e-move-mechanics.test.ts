@@ -10,17 +10,20 @@ const mon = (type = "normal") => ({
 });
 
 describe("move-mechanics overlay", () => {
-  it("heal patch: Milk Drink renders as a heal (2d6 + MOVE), not a bare cast", () => {
+  it("heal patch: Milk Drink renders as a heal at its level's dice (5d6 + MOVE at level 10), not a bare cast", () => {
     const s = moveStat({ id: "milk-drink", name: "Milk Drink", type: "normal" }, mon());
     expect(s.casting).toBe("utility");
-    expect(s.healDice).toMatch(/^2d6/);
+    expect(s.healDice).toMatch(/^5d6/);
+    expect(moveStat({ id: "milk-drink", name: "Milk Drink", type: "normal" }, { ...mon(), level: 1 }).healDice).toMatch(/^2d6/);
     expect(s.damageDice).toBeFalsy();
     expect(s.mechanicNote).toMatch(/Heals/);
   });
 
-  it("fixed damage: Seismic Toss is a flat 1d6 + trainer level with NO STAB (on-type user)", () => {
-    const s = moveStat({ id: "seismic-toss", name: "Seismic Toss", type: "fighting", attack: { scope: "melee" } }, mon("fighting"));
-    expect(s.damageDice).toBe("1d6 + 10"); // level 10, no dice scaling, no STAB
+  it("level damage: Seismic Toss is its level's dice + the Pokémon's level, with NO STAB (on-type user)", () => {
+    const st = { id: "seismic-toss", name: "Seismic Toss", type: "fighting", attack: { scope: "melee" },
+      damage: { dice: { "1": "1d6", "5": "2d4", "10": "1d12", "17": "4d4" }, modifier: "LEVEL", type: ["fighting"] } };
+    expect(moveStat(st, mon("fighting")).damageDice).toBe("1d12 + 10"); // level 10, no STAB
+    expect(moveStat(st, { ...mon("fighting"), level: 3 }).damageDice).toBe("1d6 + 3");
   });
 
   it("fixed damage: Sonic Boom is a flat 16, no STAB (on-type user)", () => {
@@ -39,10 +42,11 @@ describe("move-mechanics overlay", () => {
   it("autoHit multi-hit: Swift gets the fixed hit count on top of its guaranteed-hit damage", () => {
     // Swift is already an autoHit damage move in the real data (no attack/save); the overlay only adds N.
     const s = moveStat({ id: "swift", name: "Swift", type: "normal", damage: { dice: { "1": "1d4" }, modifier: "MOVE", type: ["normal"] } }, mon());
-    expect(s.attacks).toBe(2);
+    expect(s.attacks).toBe(5); // level 10 → 5 projectiles (2 / 4 at 5 / 5 at 10 / 6 at 17)
+    expect(moveStat({ id: "swift", name: "Swift", type: "normal", damage: { dice: { "1": "1d4" }, modifier: "MOVE", type: ["normal"] } }, { ...mon(), level: 4 }).attacks).toBe(2);
     expect(s.autoHit).toBe(true);
     expect(s.damageDice).toMatch(/^1d4/);
-    expect(s.mechanicNote).toMatch(/two/i);
+    expect(s.mechanicNote).toMatch(/6 at level 17/);
   });
 
   it("note-only move keeps its normal roll but carries a mechanic note", () => {
@@ -79,3 +83,35 @@ describe("move-mechanics overlay", () => {
     }
   });
 });
+
+describe("escalating / table damage moves roll real dice", () => {
+  const R = { "1": "Rd6", "5": "Rd8", "10": "Rd10", "17": "Rd12" };
+  const at = (level: number) => ({ ...mon("ground"), level });
+
+  it("Rollout rolls its first hit as one die of the level's size (not the literal 'Rd8')", () => {
+    const rollout = { id: "rollout", name: "Rollout", type: "rock", attack: { scope: "melee" }, damage: { dice: R, modifier: "MOVE", type: ["rock"] } };
+    expect(moveStat(rollout, at(1)).damageDice).toMatch(/^1d6(?: \+ \d+)?$/);
+    expect(moveStat(rollout, at(8)).damageDice).toMatch(/^1d8(?: \+ \d+)?$/);
+    expect(moveStat(rollout, at(17)).damageDice).toMatch(/^1d12(?: \+ \d+)?$/);
+    expect(moveStat(rollout, at(8)).mechanicNote).toMatch(/double the number of dice/);
+  });
+
+  it("Outrage keeps its level-scaled die (d8 at level 5), auto-hit", () => {
+    const outrage = { id: "outrage", name: "Outrage", type: "dragon", damage: { dice: R, modifier: "MOVE", type: ["dragon"] } };
+    const s = moveStat(outrage, { ...at(5), type: ["normal"] });
+    expect(s.damageDice).toMatch(/^1d8(?: \+ \d+)?$/);
+    expect(s.autoHit).toBe(true);
+  });
+
+  it("Magnitude is a DEX save that rolls its d100 (its damage table can't be one roll)", () => {
+    const mag = { id: "magnitude", name: "Magnitude", type: "ground", save: { attribute: ["dex"], dc: "MOVE" },
+      damage: { dice: { "1": "dice", "5": "2×dice", "10": "3×dice", "17": "4×dice" }, modifier: "MOVE", type: ["ground"] } };
+    const s = moveStat(mag, at(10));
+    expect(s.casting).toBe("save");
+    expect(s.saveDc).toBeGreaterThan(0);
+    expect(s.damageDice).toBeFalsy(); // never the bogus "3×dice + 2"
+    expect(s.rollDie).toBe("1d100");
+    expect(s.mechanicNote).toMatch(/1-5: 1d4/);
+  });
+});
+

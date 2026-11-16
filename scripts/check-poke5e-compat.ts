@@ -17,6 +17,11 @@
 // for GET calls and is never written anywhere.
 
 import { getPoke5eCredentials, buildParams, buildAddPokemonParams, TRAINER_PARAMS, POKEMON_PARAMS, type AddPokemonSpecies } from "../src/poke5e/source.ts";
+import { isKnownDiceClass } from "../src/poke5e/pokemon.ts";
+
+// The SRD moves list poke5e's sheet reads: a list of moves whose dice are a known class (or 4 custom tiers).
+const srdMovesOk = (j: any) => Array.isArray(j?.values) && j.values.length > 500 && j.values.every((m: any) => !m.dice
+  || (m.dice.class === "custom" ? Array.isArray(m.dice.tiers) && m.dice.tiers.length === 4 : isKnownDiceClass(m.dice.class)));
 
 const { url, anonKey } = getPoke5eCredentials();
 const readKey = process.argv[2] || "";
@@ -46,7 +51,9 @@ async function main() {
   console.log("Data files:");
   const files: [string, (j: any) => boolean, string][] = [
     ["https://poke5e.app/pokemon.json", (j) => Array.isArray(j) || Array.isArray(j.items) || Object.keys(j).length > 50, "species list"],
-    ["https://poke5e.app/moves.json", (j) => !!j.moves || Array.isArray(j), "moves"],
+    ["https://poke5e.app/moves.json", (j) => !!j.moves || Array.isArray(j), "moves (older static file — fallback + charge/recharge timing)"],
+    ["https://poke5e.app/srd/v1/2018/moves.json", srdMovesOk, "moves (SRD 2018 — what poke5e's sheet shows by default)"],
+    ["https://poke5e.app/srd/v1/2024/moves.json", srdMovesOk, "moves (SRD 2024 — poke5e's Preview Updated Moves)"],
     ["https://poke5e.app/data/items.json", (j) => Array.isArray(j.items) && j.items.length > 0, "items catalogue"],
     ["https://poke5e.app/data/abilities.json", (j) => !!j && Object.keys(j).length > 0, "abilities"],
     ["https://poke5e.app/srd/v1/2024/items.json", (j) => Array.isArray(j.values) && j.values.some((it: any) => it.type === "TM" && /^tm-\d+$/.test(it.id)), "TMs (SRD items API)"],
@@ -83,6 +90,14 @@ async function main() {
       for (const [fn, b] of reads) {
         const r = await rpc(fn, b);
         isMissingFn(r) ? bad(`${fn} missing (PGRST202)`) : Array.isArray(r.json) ? ok(`${fn} (${r.json.length} rows)`) : bad(`${fn}: unexpected (HTTP ${r.status})`);
+      }
+      // Per-move customization (to-hit / damage / DC bonuses, custom type & powers) — Conduit applies it.
+      const learned = pk ? (await rpc("get_moveset", { _pokemon_id: pk.id })).json?.[0] : null;
+      if (!learned) skip("move customization columns (that Pokémon knows no moves)");
+      else {
+        const cols = ["to_hit_modifier", "damage_modifier", "save_dc_modifier", "custom_type", "custom_powers"];
+        const missing = cols.filter((c) => !(c in learned));
+        missing.length ? bad(`get_moveset rows lack ${missing.join(", ")} — move customization would be ignored`) : ok("get_moveset carries the move customization columns");
       }
     }
   } else {

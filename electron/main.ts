@@ -21,7 +21,7 @@ import type { DexEntry } from "../src/poke5e/pokedex.js";
 import { isNewer } from "../src/update/version.js";
 import electronUpdater from "electron-updater";
 const { autoUpdater } = electronUpdater;
-import { fetchPokemon, fetchMoveset, movesMap, pokemonToCharacter, resolveAbilities, fetchPokemonFeats, pokemonMeta } from "../src/poke5e/pokemon.js";
+import { fetchPokemon, fetchMoveset, movesMap, pokemonToCharacter, resolveAbilities, fetchPokemonFeats, pokemonMeta, type Poke5eEdition } from "../src/poke5e/pokemon.js";
 import { ppItemSpec, ppItemEffect, restoredPp } from "../src/poke5e/pp-items.js";
 import { specCounts } from "../src/poke5e/specializations.js";
 import { abilityIds, passiveAbilityEffects } from "../src/poke5e/abilities-engine.js";
@@ -934,15 +934,33 @@ ipcMain.handle("poke5e-keys", async () => {
   };
 });
 
+// The rules edition the reader picked in poke5e (its localStorage "rules-version", default 2024 — sets the
+// "default" STAB) and the move data its sheet shows (2018 unless the "Preview Updated Moves" toggle is
+// on). Read from the poke5e pane; remembered for when that pane is on another site.
+let poke5eEditionsSeen: { rules: Poke5eEdition; moves: Poke5eEdition } = { rules: "2024", moves: "2018" };
+async function poke5eEditions(): Promise<{ rules: Poke5eEdition; moves: Poke5eEdition }> {
+  const wc = ddbView?.webContents;
+  if (!wc || !(wc.getURL?.() || "").includes("poke5e.app")) return poke5eEditionsSeen;
+  const raw: string = await wc
+    .executeJavaScript(`(function(){try{return JSON.stringify([localStorage.getItem("rules-version"),localStorage.getItem("feature-toggle::PreviewUpdatedMoves")]);}catch(e){return "[]";}})()`, true)
+    .catch(() => "[]");
+  let rv: unknown = null, preview: unknown = null;
+  try { [rv, preview] = JSON.parse(raw); } catch { /* keep the defaults */ }
+  const rules: Poke5eEdition = rv === "2018" ? "2018" : "2024";
+  poke5eEditionsSeen = { rules, moves: preview != null ? rules : "2018" };
+  return poke5eEditionsSeen;
+}
+
 /** Load one of the trainer's Pokémon (from the cached team) with its moves as rollable "spells". */
 ipcMain.handle("load-poke5e-pokemon", async (_e, pokemonId: number) => {
   if (!poke5eCtx) return { ok: false, error: "Load your trainer first" };
   const pk = poke5eCtx.team.get(Number(pokemonId));
   if (!pk) return { ok: false, error: "Pokémon not found on this trainer" };
   try {
+    const editions = await poke5eEditions();
     const [moveset, moves, abilities, pfeats, heldItems] = await Promise.all([
       fetchMoveset(Number(pokemonId)),
-      movesMap(),
+      movesMap(editions.moves),
       resolveAbilities(pk),
       fetchPokemonFeats(Number(pokemonId)),
       fetchHeldItems(Number(pokemonId)).catch(() => []),
@@ -951,7 +969,10 @@ ipcMain.handle("load-poke5e-pokemon", async (_e, pokemonId: number) => {
     // Speed + evolution live on the SPECIES (pokemon.json), not the pokémon row — look them up.
     const dex = await ensurePokedex().catch(() => [] as DexEntry[]);
     const speciesEntry = dex.find((e) => e.id === String(pk.species));
-    const { model, hp, spellcasting } = pokemonToCharacter(pk, moveset, moves, featNames, speciesEntry?.speedModes ?? [], speciesEntry?.name ?? "", specCounts(poke5eCtx.trainerRow));
+    const { model, hp, spellcasting } = pokemonToCharacter(pk, moveset, moves, featNames, speciesEntry?.speedModes ?? [], speciesEntry?.name ?? "", specCounts(poke5eCtx.trainerRow), editions.rules);
+    // 2018 rules: one initiative roll covers the trainer and their Pokémon, using the TRAINER's bonus
+    // (/rules/combat). 2024: each Pokémon rolls its own, with its own bonus (its DEX — the default).
+    if (editions.rules === "2018" && poke5eCtx.trainerRow) model.initiative = trainerToRollModel(poke5eCtx.trainerRow).model.initiative;
     current = { data: {} as CharacterData, name: model.name, id: `pmon:${pokemonId}`, model };
     // A Pokémon's "feats" section = its passive abilities (Blaze, …) plus any Pokémon feats.
     const feats = [...abilities, ...pfeats];
@@ -2175,7 +2196,7 @@ ipcMain.handle("poke5e-pp-items", async () => {
 
 /** A Pokémon's PP-tracked moves with current/max PP — so the picker can show what a restore will fill. */
 ipcMain.handle("poke5e-pokemon-moves-pp", async (_e, pokemonId: number) => {
-  const [moveset, moves] = await Promise.all([fetchMoveset(Number(pokemonId)).catch(() => [] as any[]), movesMap().catch(() => ({} as any))]);
+  const [moveset, moves] = await Promise.all([fetchMoveset(Number(pokemonId)).catch(() => [] as any[]), poke5eEditions().then((e) => movesMap(e.moves)).catch(() => ({} as any))]);
   const list = (Array.isArray(moveset) ? moveset : [])
     .filter((m: any) => (Number(m.pp_max) || 0) > 0)
     .map((m: any) => ({ learnedId: m.id, moveId: m.move_id, name: moves[m.move_id]?.name || String(m.move_id), ppCur: Number(m.pp_cur) || 0, ppMax: Number(m.pp_max) || 0 }));

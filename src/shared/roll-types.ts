@@ -62,4 +62,7 @@ export interface RollRequest {
    *  Fighting (a melee weapon held in two hands — Two-Handed, or Versatile rolled 2H) and Rage (an
    *  attack using Strength). Absent for spells and other attacks. */
   weapon?: { ability: string; melee: boolean; twoHanded: boolean };
+  /** More dice the card rolls, each on its own labelled line (a move's status d6, the d20 for a later
+   *  Protect, Hidden Power's damage type). Rendered on the universal default card. */
+  extraRolls?: { label: string; dice: string }[];
 }

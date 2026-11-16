@@ -299,7 +299,8 @@ export function composeRoll(model: RollModel, request: RollRequest): ComposedRol
         if (e.target === 'damage') damageMin = e.min;
         break;
       case 'crit-range':
-        if (request.kind === 'attack') critRange = e.range;
+        // Crit ranges don't stack — the widest one counts (Champion 19 + a 19-20 move → 19).
+        if (request.kind === 'attack') critRange = Math.min(critRange, e.range);
         break;
       case 'reroll-keep-higher':
         notes.push(`${e.label ?? 'Savage Attacker'}: reroll damage dice once, keep higher (manual)`);
@@ -324,7 +325,8 @@ export function composeRoll(model: RollModel, request: RollRequest): ComposedRol
     const verb = request.verb ?? 'Casts';
     if (style === 'sheet') p.push('&{template:simple}', `{{rname=${verb} ${request.key ?? name}}}`);
     else p.push('&{template:default}', `{{name=${verb} ${request.key ?? name}}}`);
-    return { template: style === 'sheet' ? 'simple' : 'default', name, whisper, advantage, d20Mod: 0, critRange: 20, d20BonusDice: [], notes, command: p.join(' ') };
+    const extra = style === 'sheet' ? '' : extraRollFields(request);
+    return { template: style === 'sheet' ? 'simple' : 'default', name, whisper, advantage, d20Mod: 0, critRange: 20, d20BonusDice: [], notes, command: p.join(' ') + extra };
   }
 
   // Universal &{template:default} path — renders in any campaign (no D&D 5e sheet required).
@@ -354,7 +356,7 @@ export function composeRoll(model: RollModel, request: RollRequest): ComposedRol
       if (request.crit && critRoll) p.push(`{{Crit=[[${critRoll}]]}}`);
       return { template: 'default', name, whisper, advantage, d20Mod, critRange, d20BonusDice,
         damage: { formula: baseSplit.dice, mod: damageMod, bonusDice: damageBonusDice },
-        notes, command: p.join(' ') };
+        notes, command: p.join(' ') + extraRollFields(request) };
     }
     if (request.kind !== 'damage') {
       const command = defaultRoll({ name, formula: d20Single, whisper, speakingAs, advantage });
@@ -409,7 +411,7 @@ export function composeRoll(model: RollModel, request: RollRequest): ComposedRol
     // On a D&D-5e sheet, render as a proper damage card; otherwise the plain default box.
     const command = style === 'sheet'
       ? damageCardRoll({ name, formula, damageType: extras.damageType, whisper, speakingAs })
-      : defaultRoll({ name, formula, whisper, speakingAs });
+      : defaultRoll({ name, formula, whisper, speakingAs }) + extraRollFields(request);
     return {
       template: style === 'sheet' ? 'atkdmg' : 'default',
       name,
@@ -448,6 +450,18 @@ export function composeRoll(model: RollModel, request: RollRequest): ComposedRol
     notes,
     command,
   };
+}
+
+/** The request's extra dice as default-card lines: ` {{label=[[dice]]}}`. The label is text (template
+ *  delimiters stripped); the dice must be a plain dice expression, so nothing else can ride along. */
+function extraRollFields(request: RollRequest): string {
+  return (request.extraRolls ?? [])
+    .map((r) => {
+      const label = String(r.label ?? '').replace(/[{}[\]=|]/g, '').replace(/\s+/g, ' ').trim();
+      const dice = String(r.dice ?? '').trim();
+      return label && /^[0-9dDkhl+\-*\s()]+$/.test(dice) ? ` {{${label}=[[${dice}]]}}` : '';
+    })
+    .join('');
 }
 
 /** Convenience: compose and return only the Roll20 chat-command string. */

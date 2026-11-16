@@ -10,6 +10,7 @@ import { longRestUsed, hitDieHealFormula } from "../src/engine/hit-dice.js"; // 
 import { matchInline, matchBlock, isHrLine, blockTag } from "../src/notebook/markdown.js"; // notebook md shortcuts (pure, tested)
 import { sanitizeNoteHtml } from "../src/notebook/sanitize.js"; // strip unsafe/remote content from note HTML
 import { POKE_TYPES, typeMultiplier, effectivenessLabel, typeMatchup } from "../src/poke5e/type-chart.js"; // Pokémon damage types + effectiveness
+import { ppItemSpec } from "../src/poke5e/pp-items.js"; // Ether/Elixir/Leppa → the PP picker
 import { ballSvg } from "../src/poke5e/ball-art.js"; // per-ball vector art, keyed by the same ids as BALL_DC
 type Ability = "STR" | "DEX" | "CON" | "INT" | "WIS" | "CHA";
 type AdvMode = "normal" | "advantage" | "disadvantage" | "super-advantage" | "super-disadvantage";
@@ -1389,10 +1390,10 @@ async function detectTemplateStyle() {
 // frequently have the D&D `atkdmg` template (so dice rolls render) but NOT `simple` — which made
 // text-only announcements render as an empty card. Use the universal `default` template for poke5e
 // announcements so they always show; D&D 5e keeps its nicer `simple` card.
-function announceTemplate(line: string, detail?: [string, string]): string {
+function announceTemplate(line: string, ...rows: [string, string][]): string {
   if (activeSource !== "poke5e" && templateStyle === "sheet") return `&{template:simple} {{rname=${line}}}`;
   // A title-only `default` card can render empty, so give it a row when there's something to say.
-  return `&{template:default} {{name=${line}}}${detail ? ` {{${detail[0]}=${detail[1]}}}` : ""}`;
+  return `&{template:default} {{name=${line}}}` + rows.map(([k, v]) => ` {{${k}=${v}}}`).join("");
 }
 
 // Watch the Roll20 turn order and alert when it becomes this character's turn.
@@ -1941,6 +1942,14 @@ async function undoUsedUp(it: any, btn: HTMLButtonElement) {
   setStatus(`${it.name} ×1 back in the bag ✓`);
 }
 
+// Where a quantity change is saved, for the item buttons' tooltips (" on D&D Beyond", " from your poke5e bag" …).
+function qtyWhere(prep = "in"): string {
+  if (!writable) return " (this sheet only — not saved)";
+  if (activeSource === "ddb") return " on D&D Beyond";
+  if (activeSource === "poke5e") return ` ${prep} your poke5e bag`;
+  return "";
+}
+
 // One bag/inventory row: label (rolls if rollable), quantity stepper + Use/Throw, Display in VTT.
 function itemRow(it: any): HTMLElement {
   const rollable = it.kind === "heal" || it.kind === "damage";
@@ -1974,11 +1983,12 @@ function itemRow(it: any): HTMLElement {
   if (managed) {
     const ctl = document.createElement("div");
     ctl.className = "item-ctl";
-    const minus = mkMini("−", () => adjustItemQty(it, -1), "Decrease quantity on D&D Beyond");
+    const where = qtyWhere();
+    const minus = mkMini("−", () => adjustItemQty(it, -1), `Decrease quantity${where}`);
     const count = document.createElement("span");
     count.className = "item-qty";
     count.textContent = `×${it.quantity}`;
-    const plus = mkMini("+", () => adjustItemQty(it, +1), "Increase quantity on D&D Beyond");
+    const plus = mkMini("+", () => adjustItemQty(it, +1), `Increase quantity${where}`);
     ctl.append(minus, count, plus);
     if (String(it.itemType || "").toLowerCase() === "pokeball") {
       // A Poké Ball → throw it directly: roll the Animal Handling catch check to Roll20 and
@@ -1987,8 +1997,13 @@ function itemRow(it: any): HTMLElement {
       th.classList.add("use-btn");
       if (it.quantity <= 0) (th as HTMLButtonElement).disabled = true;
       ctl.appendChild(th);
-    } else if (it.consumable) {
-      const use = mkMini("Use", () => useItem(it), "Use one — rolls dice (if any) and decrements on D&D Beyond");
+    } else if (it.consumable && it.usable !== false) {
+      const pp = isPpItem(it) ? ppItemSpec(it.itemId) : null;
+      const shows = activeSource === "poke5e" ? `${it.healFlat ? ` (heals ${it.healFlat} HP)` : ""} with its effect` : "";
+      const tip = pp
+        ? `Use — restores ${pp.restore} PP to ${pp.scope === "all" ? "all moves of a Pokémon you choose" : "one move (choose the Pokémon and move)"}; takes one from the bag once used`
+        : `Use one — ${rollable ? `rolls ${it.dice} to Roll20` : `announces it${shows} in Roll20`} and takes one${qtyWhere("from")}`;
+      const use = mkMini("Use", () => useItem(it), tip);
       use.classList.add("use-btn");
       if (it.quantity <= 0) (use as HTMLButtonElement).disabled = true;
       ctl.appendChild(use);
@@ -2080,8 +2095,12 @@ function mkMini(text: string, onclick: () => void, title = ""): HTMLButtonElemen
 // D&D Beyond in the background (adjustItemQty updates the local count instantly and reverts if
 // the write fails). We trust the local quantity rather than round-tripping DDB first — the Use
 // button is already disabled at 0, and this keeps clicks snappy.
+// An Ether / Elixir / Leppa Berry in a poke5e bag — its Use restores PP through the PP picker.
+const isPpItem = (it: any) => activeSource === "poke5e" && !!ppItemSpec(it.itemId);
+
 async function useItem(it: any) {
   if (it.quantity <= 0) return;
+  if (isPpItem(it)) { await openRestorePp(it.itemId); return; } // the picker spends the item once a move is chosen
   const req = itemReq(it);
   if (req) sendRoll(req); // Potion of Healing rolls 2d4+2 …
   else announceUse(it); // … utility consumables (Fire Resistance etc.) announce the use instead
@@ -2098,9 +2117,27 @@ async function announceUse(it: any) {
   // Capture items read as a throw; everything else is "Uses". Match on the poke5e item TYPE
   // (e.g. "pokeball") only — not the display name, which would misfire on "Snowball"/"Eyeball".
   const line = /ball/i.test(String(it.itemType || "")) ? `Threw a ${name}` : `Uses ${name}`;
+  const left = Math.max(0, (Number(it.quantity) || 1) - 1); // read now — the caller drops the count while we wait below
   await detectTemplateStyle();
-  const left = Math.max(0, (Number(it.quantity) || 1) - 1); // announced before the count drops
-  say(announceTemplate(tclean(line), ["Remaining", String(left)]), model?.name);
+  // A poke5e item has no dice to show its mechanics, so the card carries them: a fixed heal (Sitrus
+  // Berry 30 HP, Max Potion 70 HP) and the item's own wording (cures, X Attack's +2, reactions …).
+  const rows: [string, string][] = [];
+  if (activeSource === "poke5e") {
+    // Max Potion / Full Restore heal "10 minutes after consumption" — say so, it's not instant.
+    const delay = /(\d+)\s*minutes? after/i.exec(String(it.note || ""));
+    if (it.healFlat) rows.push(["Heals", `${it.healFlat} HP${delay ? ` (after ${delay[1]} minutes)` : ""}`]);
+    const effect = cardText(it.note);
+    if (effect) rows.push(["Effect", effect]);
+  }
+  rows.push(["Remaining", String(left)]);
+  say(announceTemplate(tclean(line), ...rows), model?.name);
+}
+
+// Item wording made safe for a Roll20 card row: one line, no {{ }} / [[ ]], cut at a sentence near 400 chars.
+function cardText(text: any, max = 400): string {
+  let t = String(text ?? "").replace(/<[^>]*>/g, " ").replace(/[{}\[\]]/g, "").replace(/\s+/g, " ").trim();
+  if (t.length > max) { const cut = t.lastIndexOf(". ", max); t = cut > 80 ? t.slice(0, cut + 1) : t.slice(0, max).trimEnd() + "…"; }
+  return t;
 }
 
 // Adjust an item's quantity by ±1, writing back to D&D Beyond. Targets the right underlying row:
@@ -2202,14 +2239,18 @@ function spellRow(sp: any): HTMLElement {
   const upDice = extraLevels > 0 && sp.higherLevelDice ? scaleDamageDice(sd.dice || "", sp.higherLevelDice, extraLevels) : (sd.dice || "");
   // Hover tooltips break a bonus down into where it comes from (prof / ability / STAB / flat).
   const tip = (t?: string) => (t ? ` title="${esc(t)}"` : "");
-  if (sp.casting === "attack") right = `<span class="mod"${tip(sp.attackTip)}>${sgn(sp.attackBonus)}</span><span class="dmg"${tip(sp.damageTip)}>${esc(upDice)} ${esc(sd.type || "")}</span>`;
-  else if (sp.casting === "save") right = `<span class="dmg"${tip([sp.saveTip, sp.damageTip].filter(Boolean).join(" · "))}>${esc(sp.saveAbility || "")} DC ${esc(sp.saveDc)} · ${esc(upDice || "—")}</span>`;
+  // A 19-20 move says so on its to-hit tooltip; a poke5e-customized move lists what was changed.
+  const atkTip = [sp.attackTip, sp.critRange ? `crits on ${sp.critRange}–20` : "", sp.selfAdvantage ? `rolled with ${sp.selfAdvantage}` : ""].filter(Boolean).join(" · ");
+  if (sp.casting === "attack") right = `<span class="mod"${tip(atkTip)}>${sgn(sp.attackBonus)}</span><span class="dmg"${tip(sp.damageTip)}>${esc(upDice)} ${esc(sd.type || "")}</span>`;
+  else if (sp.casting === "save") right = `<span class="dmg"${tip([sp.saveTip, sp.damageTip, sp.rollLabel].filter(Boolean).join(" · "))}>${esc(sp.saveAbility || "")} DC ${esc(sp.saveDc)} · ${esc(upDice || (sp.rollDie ? `roll ${sp.rollDie}` : "—"))}</span>`;
   else if (sp.healDice) right = `<span class="dmg heal"${tip(sp.damageTip)}>heal ${esc(sp.healDice)}</span>`;
+  else if (sp.reductionDice) right = `<span class="dmg"${tip(sp.damageTip)}>reduce ${esc(sp.reductionDice)}</span>`; // Harden: damage reduction
   else if (sp.autoHit && sp.damageDice) right = `<span class="dmg"${tip(sp.damageTip)}>${esc(upDice || sp.damageDice)} ${esc(sp.damageType || "")}</span>`; // guaranteed-hit damage
-  else if (sp.rollDie) right = `<span class="dmg">roll ${esc(sp.rollDie)}</span>`; // OHKO / prose die
+  else if (sp.rollDie) right = `<span class="dmg"${tip(sp.rollLabel)}>roll ${esc(sp.rollDie)}</span>`; // OHKO / prose die / a move's own die
   else right = `<span class="dmg util">cast</span>`;
   const pp = sp.pp && sp.pp.max > 0 ? `<span class="pp">${sp.pp.current}/${sp.pp.max} PP</span>` : "";
   b.innerHTML = `<span class="label">${esc(sp.name)}<span class="stags">${spellTags(sp)}${abilityBadge(sp)}</span></span><span class="atk-nums">${right}${pp}</span>`;
+  if (sp.customized?.length && !depleted) b.title = `Customized in poke5e: ${sp.customized.join(", ")}`;
   b.onclick = () => castSpell(sp);
   const shown = [sp.type || sp.school, sp.casting, sp.range].filter(Boolean).join(" · ");
   const meta = [shown, sp.pp && sp.pp.max ? `${sp.pp.current}/${sp.pp.max} PP` : null].filter(Boolean).join(" · ");
@@ -2519,7 +2560,7 @@ async function castSpell(sp: any) {
     cast.name = `${sp.name} (${ordLvl(lvl)})`;
   }
   const req = spellReq(cast);
-  if (req && advantage && req.kind === "attack") req.advantage = advantage;
+  if (req && req.kind === "attack") req.advantage = combineAdvantage(adv, [advantage, sp.selfAdvantage]);
   // A no-dice poke5e move announcement uses the universal template (the D&D `simple` card is often
   // absent in a Pokémon Roll20 game, which would render the announcement as an empty card).
   if (req && req.kind === "cast" && activeSource === "poke5e") req.templateStyle = "default";
@@ -2598,25 +2639,47 @@ function spellReq(sp: any): any | null {
   // poke5e Pokémon moves are "used", not "cast" — only affects the no-dice announcement verb.
   const verb = activeSource === "poke5e" ? "Uses" : undefined;
   const d = spellDamage(sp);
+  // A move's other dice (a status d6, the d20 for a later Protect, Hidden Power's type) ride on the
+  // card as their own lines — only the universal default card shows extra lines, so use it.
+  const extra = sp.extraRolls?.length ? { extraRolls: sp.extraRolls, templateStyle: "default" } : {};
+  // STAB is once per target, first instance. Auto-apply it only to the first hit (always correct);
+  // every 2nd+ hit drops it — the player adds it back per ADDITIONAL target on a multi-target move.
+  const repeat = sp.attacks > 1 && sp.damageDiceNoStab ? sp.damageDiceNoStab : undefined;
+  const dieLabel = (die: string) => `${sp.rollLabel || "roll"} ${die}`;
   if (sp.casting === "attack") {
-    // STAB is once per target, first instance. Auto-apply it only to the first hit (always correct);
-    // every 2nd+ hit drops it — the player adds it back per ADDITIONAL target on a multi-target move.
-    const repeat = sp.attacks > 1 && sp.damageDiceNoStab ? sp.damageDiceNoStab : undefined;
-    return { kind: "attack", key: sp.name, baseAttackMod: sp.attackBonus ?? 0, baseDamage: d.dice, baseDamageRepeat: repeat, damageType: d.type, advantage: adv, attacks: sp.attacks };
+    // A move that crits on 19-20 (Slash, Karate Chop …) carries its range so Roll20 flags the crit.
+    const effects = sp.critRange ? [{ op: "crit-range", target: "attack", range: sp.critRange, label: `${sp.name}: crit ${sp.critRange}-20` }] : undefined;
+    return { kind: "attack", key: sp.name, baseAttackMod: sp.attackBonus ?? 0, baseDamage: d.dice, baseDamageRepeat: repeat, damageType: d.type, advantage: adv, attacks: sp.attacks, effects, ...extra };
   }
   if (sp.casting === "save") {
+    // A save move whose damage hangs on a die (Magnitude's d100, Spite's PP drain) rolls that die alongside the DC.
+    if (!d.dice && sp.rollDie) return { kind: "damage", key: `${sp.name} (DC ${sp.saveDc} ${sp.saveAbility}) — ${dieLabel(sp.rollDie)}`, baseDamage: sp.rollDie, ...extra };
     // No-damage save spell/move (Bane, Web, Growl …) → announce the DC instead of rolling empty dice.
-    if (!d.dice) return { kind: "cast", key: `${sp.name} (${sp.saveAbility} DC ${sp.saveDc} save)`, verb };
-    return { kind: "damage", key: `${sp.name} (DC ${sp.saveDc} ${sp.saveAbility})`, baseDamage: d.dice, damageType: d.type };
+    if (!d.dice) return { kind: "cast", key: `${sp.name} (${sp.saveAbility} DC ${sp.saveDc} save)`, verb, ...extra };
+    // A move with several separate saves (Fire Blast's two pillars) fans into one damage card each.
+    return { kind: "damage", key: `${sp.name} (DC ${sp.saveDc} ${sp.saveAbility})`, baseDamage: d.dice, baseDamageRepeat: repeat, damageType: d.type, attacks: sp.attacks, ...extra };
   }
   // Healing spells (Cure Wounds, Healing Word …) → roll the healing dice.
-  if (sp.healDice) return { kind: "damage", key: `${sp.name} (heal)`, baseDamage: sp.healDice };
+  if (sp.healDice) return { kind: "damage", key: `${sp.name} (heal)`, baseDamage: sp.healDice, ...extra };
+  // A damage-reduction move (Harden: reduce damage by 1d4 + MOVE) rolls the amount it takes off.
+  if (sp.reductionDice) return { kind: "damage", key: `${sp.name} (damage reduction)`, baseDamage: sp.reductionDice, ...extra };
   // Guaranteed-hit damage move (Swift, Aura Sphere, Magical Leaf …) — roll damage, no to-hit. A fixed
   // multi-hit autoHit move (Swift ×2, Hyperspace Fury ×3) carries `attacks` so it fans into N cards.
-  if (sp.autoHit && sp.damageDice) return { kind: "damage", key: sp.name, baseDamage: sp.damageDice, baseDamageRepeat: sp.attacks > 1 && sp.damageDiceNoStab ? sp.damageDiceNoStab : undefined, damageType: sp.damageType, attacks: sp.attacks };
-  // Prose "roll a d20/d100/…" move (Sheer Cold & the OHKO moves, Metronome, Acupressure) — roll it.
-  if (sp.rollDie) return { kind: "damage", key: `${sp.name} — roll ${sp.rollDie}`, baseDamage: sp.rollDie };
-  return { kind: "cast", key: sp.name, verb };
+  if (sp.autoHit && sp.damageDice) return { kind: "damage", key: sp.name, baseDamage: sp.damageDice, baseDamageRepeat: repeat, damageType: sp.damageType, attacks: sp.attacks, ...extra };
+  // Prose "roll a d20/d100/…" move (Sheer Cold & the OHKO moves, Metronome, Acupressure), or a move's
+  // own die (Clangorous Soul's self-damage, Sing's hit-point pool) — roll it.
+  if (sp.rollDie) return { kind: "damage", key: `${sp.name} — ${dieLabel(sp.rollDie)}`, baseDamage: sp.rollDie, ...extra };
+  return { kind: "cast", key: sp.name, verb, ...extra };
+}
+
+// Advantage the 5e way: any advantage plus any disadvantage is a straight roll. Combines the sticky
+// Adv/Dis control with the move's own (Dig, Fly → advantage; Revenge → disadvantage) and any ability or
+// status effect. Super-advantage modes are left as chosen.
+function combineAdvantage(base: AdvMode, extra: (string | null | undefined)[]): AdvMode {
+  if (String(base).startsWith("super")) return base;
+  const all = [base, ...extra];
+  const a = all.includes("advantage"), d = all.includes("disadvantage");
+  return a && d ? "normal" : a ? "advantage" : d ? "disadvantage" : "normal";
 }
 
 function rollLine(label: string, mod: number, dotCls: string, onclick: () => void, title = "", badge = ""): HTMLElement {
@@ -2799,12 +2862,28 @@ function showRollResult(r: any, canCrit = true) {
   lr.innerHTML = `<b class="${cls}">${esc(r.name || "Roll")}: ${esc(r.total)}${badge}</b>${dmg}`;
 }
 
+// A poke5e status on the Pokémon's OWN d20 rolls (/rules/status-conditions): Asleep → every saving
+// throw at disadvantage; Paralysis → STR/DEX saves; Flinched → ability checks and saves; Poisoned /
+// Badly Poisoned → ability checks (skills, raw checks, initiative). Attack rolls are the moves' side.
+function statusRollDisadvantage(req: { kind: string; key?: string }): string | null {
+  if (!isPoke5ePokemon()) return null;
+  const st = (pokeMeta?.status || "").toLowerCase();
+  if (!st) return null;
+  const save = req.kind === "save";
+  const check = req.kind === "skill" || req.kind === "check" || req.kind === "initiative";
+  if (save && /asleep/.test(st)) return "Asleep: disadvantage on saving throws";
+  if (save && /paralys/.test(st) && (req.key === "STR" || req.key === "DEX")) return "Paralysis: disadvantage on STR and DEX saves";
+  if ((save || check) && /flinch/.test(st)) return "Flinched: disadvantage on ability checks and saves";
+  if (check && /poison/.test(st)) return "Poisoned: disadvantage on ability checks";
+  return null;
+}
+
 function doRoll(req: { kind: string; key?: string }) {
   let advantage: AdvMode = adv;
-  // poke5e Paralysis → disadvantage on STR/DEX saving throws (cancels with a manual advantage).
-  if (req.kind === "save" && (req.key === "STR" || req.key === "DEX") && /paralys/i.test(pokeMeta?.status || "")) {
-    advantage = adv === "advantage" ? "normal" : "disadvantage";
-    setStatus("⚠ Paralysis: disadvantage on this save");
+  const why = statusRollDisadvantage(req); // cancels with a manual advantage, the 5e way
+  if (why) {
+    advantage = combineAdvantage(adv, ["disadvantage"]);
+    setStatus(`⚠ ${why}`);
   }
   return sendRoll({ ...req, advantage });
 }
@@ -3495,12 +3574,12 @@ function ensurePpOverlay(): HTMLElement {
 }
 function closePpWizard() { document.getElementById("ppWizard")?.classList.remove("open"); }
 
-async function openRestorePp() {
+async function openRestorePp(preselect: string | null = null) {
   const res = await window.api.poke5ePpItems().catch(() => ({ items: [], writable: false }));
   if (!res.writable) { setStatus("This trainer is read-only — can't use items", true); return; }
   if (!res.items.length) { setStatus("No Ether/Elixir/Leppa in the trainer's bag", true); return; }
   const onPokemon = isPoke5ePokemon();
-  ppWiz = { pid: onPokemon ? Number(pmonId(activeRef)) || null : null, pName: onPokemon ? (model?.name || "Pokémon") : "", items: res.items, itemId: null, moves: null, learnedId: null };
+  ppWiz = { pid: onPokemon ? Number(pmonId(activeRef)) || null : null, pName: onPokemon ? (model?.name || "Pokémon") : "", items: res.items, itemId: res.items.some((i: any) => i.itemId === preselect) ? preselect : null, moves: null, learnedId: null };
   ensurePpOverlay().classList.add("open");
   if (ppWiz.pid) await loadPpMoves(ppWiz.pid);
   renderPpWizard();
@@ -3553,7 +3632,7 @@ function renderPpWizard() {
   h += `<div class="ew-actions"><button class="mini-btn" id="ppCancel">Cancel</button><button class="mini-btn ew-go" id="ppUse" ${ready ? "" : "disabled"}>Use ${spec ? esc(spec.name) : "item"}</button></div>`;
   body.innerHTML = h;
 
-  body.querySelectorAll<HTMLElement>(".ew-tgt[data-pid]").forEach((b) => { b.onclick = async () => { w.pid = Number(b.dataset.pid); w.pName = roster.find((r) => pmonId(r.id) === b.dataset.pid)?.name || "Pokémon"; w.itemId = null; w.learnedId = null; await loadPpMoves(w.pid); renderPpWizard(); }; });
+  body.querySelectorAll<HTMLElement>(".ew-tgt[data-pid]").forEach((b) => { b.onclick = async () => { w.pid = Number(b.dataset.pid); w.pName = roster.find((r) => pmonId(r.id) === b.dataset.pid)?.name || "Pokémon"; w.learnedId = null; await loadPpMoves(w.pid); renderPpWizard(); }; });
   body.querySelectorAll<HTMLElement>(".ew-tgt[data-item]").forEach((b) => { b.onclick = () => { w.itemId = b.dataset.item!; w.learnedId = null; renderPpWizard(); }; });
   body.querySelectorAll<HTMLElement>(".pp-move").forEach((b) => { b.onclick = () => { w.learnedId = Number(b.dataset.lid); renderPpWizard(); }; });
   (document.getElementById("ppCancel") as HTMLElement).onclick = closePpWizard;
@@ -4718,27 +4797,26 @@ const BALL_DC: Record<string, { mod: number | "auto" | string; note?: string }> 
   "safari-ball": { mod: "skill:nature", note: "− your Nature modifier" },
   "friend-ball": { mod: "skill:persuasion", note: "− your Persuasion modifier" },
   "sport-ball": { mod: "skill:athletics", note: "− your Athletics modifier" },
-  "net-ball": { mod: "cond", note: "−10 vs Water/Bug (apply if it fits)" },
-  "dive-ball": { mod: "cond", note: "−10 underwater" },
-  "heavy-ball": { mod: "cond", note: "−10 vs a heavy Pokémon" },
+  "net-ball": { mod: "cond", note: "−10 vs Water- or Bug-type Pokémon" },
+  "dive-ball": { mod: "cond", note: "−10 while underwater" },
+  "heavy-ball": { mod: "cond", note: "−10 vs a Medium or larger Pokémon" },
   "repeat-ball": { mod: "cond", note: "−10 vs a species you've caught before" },
-  "moon-ball": { mod: "cond", note: "−10 vs Moon-Stone evolvers" },
+  "moon-ball": { mod: "cond", note: "−10 vs Pokémon that evolve with a Moon Stone" },
   "lure-ball": { mod: "cond", note: "−10 while fishing" },
-  "level-ball": { mod: "cond", note: "−5 if your level is higher" },
-  "nest-ball": { mod: "cond", note: "−5 vs a low-level Pokémon" },
-  "quick-ball": { mod: "cond", note: "−10 on the first round" },
-  "dusk-ball": { mod: "cond", note: "−10 in the dark" },
-  "love-ball": { mod: "cond", note: "situational" },
-  "timer-ball": { mod: "cond", note: "scales with rounds elapsed" },
+  "level-ball": { mod: "cond", note: "−5 if your level is higher than the target's" },
+  "nest-ball": { mod: "cond", note: "−5 vs a Pokémon of level 5 or lower" },
+  "quick-ball": { mod: "cond", note: "−15 on the first round of combat" },
+  "dusk-ball": { mod: "cond", note: "−10 at night or in darkness" },
+  "love-ball": { mod: "cond", note: "− twice your active Pokémon's CHA modifier" },
+  "timer-ball": { mod: "cond", note: "2024 rules: −15 if its timer was activated (Utilize action) on your previous turn · 2018 rules: −1 per turn spent concentrating, max −10" },
   "fast-ball": { mod: 0, note: "throw as a reaction to a fleeing Pokémon" },
-  "dream-ball": { mod: "cond", note: "−5 vs a Pokémon affected by Sleep" },
+  "dream-ball": { mod: "cond", note: "−5 vs a Pokémon that is asleep" },
   "heal-ball": { mod: 0, note: "no catch bonus; held Pokémon rerolls a short-rest hit die, keeping the higher" },
   "luxury-ball": { mod: 0, note: "no catch bonus; held Pokémon gains +1 to max hit dice" },
   "premier-ball": { mod: 0, note: "no catch bonus; a rare collector's ball" },
 };
 /** Resolve a ball's DC effect for the current trainer (skill balls read the trainer's skill mod).
- *  The `note` strings in BALL_DC are descriptive documentation only — the app posts the ball's NAME
- *  and the GM applies flat/conditional reductions to their hidden DC, so ballEffect doesn't surface them. */
+ *  The GM holds the hidden DC and applies the reduction; ballCardField posts what it is. */
 function ballEffect(itemId: string): { flat: number; auto: boolean; skill?: string } {
   const b = BALL_DC[itemId];
   if (!b) return { flat: 0, auto: false };
@@ -4751,6 +4829,20 @@ function ballEffect(itemId: string): { flat: number; auto: boolean; skill?: stri
     return { flat: -(model?.skills?.[skill]?.mod || 0), auto: false, skill };
   }
   return { flat: 0, auto: false }; // conditional — the GM applies it from the posted ball name
+}
+
+/** The ball's effect on the capture DC, as a Roll20 card row for the GM: a flat −5/−10, the trainer's
+ *  own skill modifier for Safari/Friend/Sport (which only the sheet knows), or the condition to check. */
+function ballCardField(itemId: string): string {
+  const b = BALL_DC[itemId];
+  if (!b || b.mod === "auto") return "";
+  const eff = ballEffect(itemId);
+  if (eff.skill) {
+    const skMod = -eff.flat;
+    return skMod !== 0 ? ` {{Ball effect=${sgn(-skMod).replace("-", "−")} to DC (your ${tclean(SKILL_NAMES[eff.skill] || cap(eff.skill))} ${sgn(skMod)})}}` : "";
+  }
+  if (typeof b.mod === "number" && b.mod !== 0) return ` {{Ball effect=${sgn(b.mod).replace("-", "−")} to DC}}`;
+  return b.note ? ` {{Ball effect=${tclean(b.note)}}}` : "";
 }
 
 // ---- Catch modal (shared by the Pokédex "Catch…" button and inventory Poké Ball throws) ----
@@ -5091,8 +5183,7 @@ function rollCatch(ball: any | null, speciesName?: string) {
       setStatus(`Threw a ${ball.name} — automatic catch`);
       return;
     }
-    let ballField = "";
-    if (eff.skill) { const skMod = -eff.flat; if (skMod !== 0) ballField = ` {{Ball effect=${sgn(-skMod)} to DC (your ${tclean(SKILL_NAMES[eff.skill] || cap(eff.skill))} ${sgn(skMod)})}}`; }
+    const ballField = ballCardField(ball.itemId);
     say(`&{template:default} {{name=${title}}} {{Ball=${tclean(ball.name)}}}${ballField} {{Animal Handling=[[${die}${modStr}]]}}${advField}`, model?.name);
     setStatus(`Threw a ${ball.name} — Animal Handling catch roll sent to Roll20`);
   } else {
@@ -5128,11 +5219,7 @@ function doThrow() {
   const modStr = total ? (total >= 0 ? ` + ${total}` : ` - ${Math.abs(total)}`) : "";
   // Skill balls (Safari/Friend/Sport) carry a sheet-derived DC reduction the GM can't compute — post
   // it so they can apply it to their hidden DC. Other balls the GM already knows, so only their name goes.
-  let ballField = "";
-  if (eff.skill) {
-    const skMod = -eff.flat;
-    if (skMod !== 0) ballField = ` {{Ball effect=${sgn(-skMod)} to DC (your ${tclean(SKILL_NAMES[eff.skill] || cap(eff.skill))} ${sgn(skMod)})}}`;
-  }
+  const ballField = ballCardField(ball.itemId);
   const card = `&{template:default} {{name=Catch — ${tclean(sp.name)}}} {{Ball=${tclean(ball.name)}}}${ballField} {{Animal Handling=[[${die}${modStr}]]}}` + (catchCtx.adv ? ` {{Advantage=yes}}` : "");
   say(card, model?.name);
   if (res) {
